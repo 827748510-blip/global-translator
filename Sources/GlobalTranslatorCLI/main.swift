@@ -1,0 +1,101 @@
+import Darwin
+import Foundation
+import GlobalTranslatorApp
+import GlobalTranslatorRuntime
+
+@main
+struct GlobalTranslatorCLI {
+    static func main() async {
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        do {
+            let invocation = try CLIParser.parseInvocation(arguments)
+            let paths: RuntimePaths
+            if let root = invocation.runtimeRoot {
+                paths = try RuntimePaths(validatingRoot: root)
+            } else {
+                paths = try RuntimePaths.fromEnvironment()
+            }
+            try await dispatch(invocation.command, paths: paths)
+        } catch let error as CLIParseError {
+            writeStderr(error.description + "\n")
+            exit(2)
+        } catch {
+            writeStderr(CLIErrorFormatter.message(for: error) + "\n")
+            exit(1)
+        }
+    }
+
+    private static func dispatch(_ command: CLICommand, paths: RuntimePaths) async throws {
+        let manager = RuntimeManager(paths: paths)
+        switch command {
+        case .doctor:
+            let report = Doctor(paths: paths).run()
+            writeStdout(report.renderChinese())
+            if report.hasFailure {
+                exit(1)
+            }
+        case .start:
+            switch try manager.start() {
+            case let .started(pid):
+                writeStdout("已启动，PID \(pid)\n")
+            case let .alreadyRunning(pid):
+                writeStdout("已在运行，PID \(pid)\n")
+            }
+        case .status:
+            let response = manager.status()
+            writeStdout(try encodeJSON(response))
+            exit(CLIExitCode.status(response))
+        case let .logs(follow):
+            if follow {
+                try followLogs(paths: paths)
+            } else {
+                let lines = try manager.logs(limit: 200)
+                if !lines.isEmpty {
+                    writeStdout(lines.joined(separator: "\n") + "\n")
+                }
+            }
+        case .stop:
+            writeStdout(try encodeJSON(try manager.stop()))
+        case let .run(mode):
+            try await GlobalTranslatorApplication.run(paths: paths, mode: mode)
+        }
+    }
+
+    private static func followLogs(paths: RuntimePaths) throws {
+        let url = paths.logURL
+        var offset: UInt64 = 0
+        while true {
+            var information = stat()
+            guard Darwin.lstat(url.path, &information) == 0,
+                  (information.st_mode & S_IFMT) == S_IFREG,
+                  let data = FileManager.default.contents(atPath: url.path) else {
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.25))
+                continue
+            }
+            if UInt64(data.count) < offset {
+                offset = 0
+            }
+            if UInt64(data.count) > offset {
+                let start = Int(offset)
+                let chunk = data.subdata(in: start..<data.count)
+                writeStdout(RuntimeRedactor.redact(String(decoding: chunk, as: UTF8.self)))
+                offset = UInt64(data.count)
+            }
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.25))
+        }
+    }
+
+    private static func encodeJSON<T: Encodable>(_ value: T) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(decoding: try encoder.encode(value), as: UTF8.self) + "\n"
+    }
+
+    private static func writeStdout(_ value: String) {
+        FileHandle.standardOutput.write(Data(value.utf8))
+    }
+
+    private static func writeStderr(_ value: String) {
+        FileHandle.standardError.write(Data(value.utf8))
+    }
+}
