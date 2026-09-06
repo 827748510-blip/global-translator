@@ -66,6 +66,9 @@ public final class AccessibilityTextCollector: AccessibilityCollecting, @uncheck
         let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(timeout * 1_000_000_000)
         var pending = [root]
         var regions: [TextRegion] = []
+        var untranslatedRegions: [TextRegion] = []
+        var largeImageFrames: [CGRect] = []
+        var readableTextFrames: [CGRect] = []
         var seen = Set<String>()
         var visited = 0
         while !pending.isEmpty, visited < maxNodes, regions.count < maxRegions {
@@ -73,31 +76,72 @@ public final class AccessibilityTextCollector: AccessibilityCollecting, @uncheck
             let node = pending.removeLast()
             visited += 1
             pending.append(contentsOf: node.children.reversed())
+            if node.role == .image || node.role == .page || (node.role == .group && node.children.isEmpty), !node.isSecure, !node.isOffscreen, let frame = nodeFrame(node) {
+                let visibleImage = frame.intersection(descriptor.frame)
+                if !visibleImage.isNull, visibleImage.width * visibleImage.height >= descriptor.frame.width * descriptor.frame.height * 0.25 {
+                    if hasInvalidImageTextCoordinates(node, imageFrame: frame, deadline: deadline) {
+                        throw CaptureError.accessibilityUnavailable
+                    }
+                    largeImageFrames.append(visibleImage)
+                }
+            }
             guard let frame = nodeFrame(node), shouldInclude(node, frame: frame, descriptor: descriptor) else { continue }
             let text = normalizedText(for: node)
             guard !text.isEmpty else { continue }
+            if node.role == .staticText || node.role == .textField { readableTextFrames.append(frame) }
             let key = dedupeKey(text: text, frame: frame)
             guard seen.insert(key).inserted else { continue }
-            regions.append(TextRegion(
+            let region = TextRegion(
                 id: UUID(),
                 sourceText: text,
                 screenFrame: frame,
                 confidence: 1,
                 source: .accessibility,
                 windowRevision: descriptor.revision
-            ))
+            )
+            if TextFilter.shouldTranslate(text) {
+                regions.append(region)
+            } else if untranslatedRegions.count < maxRegions {
+                untranslatedRegions.append(region)
+            }
         }
-        return regions
+        if largeImageFrames.contains(where: { imageFrame in
+            !readableTextFrames.contains { imageFrame.contains(CGPoint(x: $0.midX, y: $0.midY)) }
+        }) {
+            throw CaptureError.accessibilityUnavailable
+        }
+        let selectedRegions = Array((regions + untranslatedRegions).prefix(maxRegions))
+        if descriptor.frame.height >= 300, !selectedRegions.isEmpty,
+           selectedRegions.allSatisfy({ $0.screenFrame.midY >= descriptor.frame.minY + descriptor.frame.height * 0.7 }) {
+            throw CaptureError.accessibilityUnavailable
+        }
+        return selectedRegions
+    }
+
+    private func hasInvalidImageTextCoordinates(_ image: AccessibilityNode, imageFrame: CGRect, deadline: UInt64) -> Bool {
+        var pending = image.children
+        var visited = 0
+        while let node = pending.popLast() {
+            guard visited < maxNodes, DispatchTime.now().uptimeNanoseconds < deadline else { return true }
+            visited += 1
+            guard !node.isSecure, !node.isOffscreen else { continue }
+            pending.append(contentsOf: node.children)
+            guard node.role == .staticText || node.role == .textField, !normalizedText(for: node).isEmpty else { continue }
+            guard let frame = nodeFrame(node), frame.width > 0, frame.height > 0,
+                  imageFrame.contains(CGPoint(x: frame.midX, y: frame.midY)) else { return true }
+        }
+        return false
     }
 
     private func shouldInclude(_ node: AccessibilityNode, frame: CGRect, descriptor: ActiveWindowDescriptor) -> Bool {
         guard !node.isSecure, !node.isOffscreen,
               node.bundleIdentifier.map({ !excludedBundleIdentifiers.contains($0) }) ?? true,
-              frame.width > 0, frame.height > 0,
+              frame.width > 1, frame.height > 1,
               descriptor.frame.intersects(frame) else { return false }
         let windowArea = descriptor.frame.width * descriptor.frame.height
         let nodeArea = frame.width * frame.height
         guard windowArea > 0, nodeArea < windowArea * 0.92 else { return false }
+        if node.role == .image { return nodeArea < windowArea * 0.25 }
         return node.role == .staticText || node.role == .button || node.role == .textField ||
             (node.role == .other && node.description != nil)
     }
@@ -123,7 +167,9 @@ public final class AccessibilityTextCollector: AccessibilityCollecting, @uncheck
             candidate = node.value ?? node.title ?? node.description
         case .other:
             candidate = node.description ?? node.value ?? node.title
-        case .group:
+        case .image:
+            candidate = [node.title, node.description, node.value].compactMap { $0 }.first { !$0.isEmpty }
+        case .group, .page:
             candidate = nil
         }
         return candidate?.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ") ?? ""

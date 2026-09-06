@@ -62,41 +62,63 @@ struct JSONSchemaProperty: Encodable {
     let properties: [String: JSONSchemaProperty]?
     let required: [String]?
     let additionalProperties: Bool?
+    let allowedValues: [String]?
+    let minItems: Int?
+    let maxItems: Int?
 
-    static let translations = JSONSchemaProperty(
-        type: "array",
-        items: JSONSchemaObject(
-            properties: [
-                "segmentId": JSONSchemaProperty(type: "string", items: nil, properties: nil, required: nil, additionalProperties: nil),
-                "text": JSONSchemaProperty(type: "string", items: nil, properties: nil, required: nil, additionalProperties: nil)
-            ],
-            required: ["segmentId", "text"]
-        ),
-        properties: nil,
-        required: nil,
-        additionalProperties: nil
-    )
+    private enum CodingKeys: String, CodingKey {
+        case type, items, properties, required, additionalProperties, minItems, maxItems
+        case allowedValues = "enum"
+    }
+
+    static func translations(segmentIDs: [UUID]? = nil) -> JSONSchemaProperty {
+        JSONSchemaProperty(
+            type: "array",
+            items: JSONSchemaObject(
+                properties: [
+                    "segmentId": JSONSchemaProperty(type: "string", items: nil, properties: nil, required: nil, additionalProperties: nil, allowedValues: segmentIDs?.map(\.uuidString)),
+                    "text": JSONSchemaProperty(type: "string", items: nil, properties: nil, required: nil, additionalProperties: nil)
+                ],
+                required: ["segmentId", "text"]
+            ),
+            properties: nil,
+            required: nil,
+            additionalProperties: nil,
+            minItems: segmentIDs?.count,
+            maxItems: segmentIDs?.count
+        )
+    }
 
     init(
         type: String,
         items: JSONSchemaObject?,
         properties: [String: JSONSchemaProperty]?,
         required: [String]?,
-        additionalProperties: Bool?
+        additionalProperties: Bool?,
+        allowedValues: [String]? = nil,
+        minItems: Int? = nil,
+        maxItems: Int? = nil
     ) {
         self.type = type
         self.items = items
         self.properties = properties
         self.required = required
         self.additionalProperties = additionalProperties
+        self.allowedValues = allowedValues
+        self.minItems = minItems
+        self.maxItems = maxItems
     }
 }
 
 enum TranslationSchema {
     static let object = JSONSchemaObject(
-        properties: ["translations": .translations],
+        properties: ["translations": .translations()],
         required: ["translations"]
     )
+
+    static func object(segmentIDs: [UUID]) -> JSONSchemaObject {
+        JSONSchemaObject(properties: ["translations": .translations(segmentIDs: segmentIDs)], required: ["translations"])
+    }
 }
 
 enum TranslationResponseParser {
@@ -168,7 +190,9 @@ enum TranslationResponseParser {
     ) throws -> TranslationResult {
         do {
             let envelope = try JSONDecoder().decode(ResponsesEnvelope.self, from: data)
-            guard envelope.output.count == 1, let output = envelope.output.first, output.type == "message" else {
+            let messages = envelope.output.filter { $0.type == "message" }
+            guard envelope.output.allSatisfy({ $0.type == "message" || $0.type == "reasoning" }),
+                  messages.count == 1, let output = messages.first else {
                 throw TranslationError.invalidResponse("response output message is missing or ambiguous")
             }
             guard output.content.count == 1, let content = output.content.first, content.type == "output_text" else {

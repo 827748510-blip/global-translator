@@ -26,6 +26,7 @@ extension ActiveWindowMonitor {
     }
 
     func removeAXObserver() {
+        imageNotificationLabels.removeAll()
         guard let observer else {
             observedApplication = nil
             observedWindow = nil
@@ -41,11 +42,16 @@ extension ActiveWindowMonitor {
         observedPID = nil
     }
 
-    func descriptor(for pid: pid_t, bundleIdentifier: String) -> ActiveWindowDescriptor? {
+    func descriptor(for pid: pid_t, bundleIdentifier: String, invalidatesOverlay: Bool = true) -> ActiveWindowDescriptor? {
+        guard permissions.snapshot.accessibilityTrusted else {
+            return screenCaptureDescriptor(for: pid, bundleIdentifier: bundleIdentifier, invalidatesOverlay: invalidatesOverlay)
+        }
         let application = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(application, 0.2)
         guard let value = copyElement(application, kAXFocusedWindowAttribute as CFString),
-              let accessibilityFrame = frame(of: value), accessibilityFrame.width > 0, accessibilityFrame.height > 0 else { return nil }
+              let accessibilityFrame = frame(of: value), accessibilityFrame.width > 0, accessibilityFrame.height > 0 else {
+            return screenCaptureDescriptor(for: pid, bundleIdentifier: bundleIdentifier, invalidatesOverlay: invalidatesOverlay)
+        }
         let frame = primaryDisplayFrame().map {
             CoordinateConverter.quartzTopLeftFrameToAppKitGlobal(
                 accessibilityFrame,
@@ -54,7 +60,7 @@ extension ActiveWindowMonitor {
         } ?? accessibilityFrame
         registerWindowNotifications(value)
         let windowID = windowID(for: pid, frame: accessibilityFrame)
-        return ActiveWindowDescriptor(pid: pid, bundleIdentifier: bundleIdentifier, windowID: windowID, frame: frame, revision: 0)
+        return ActiveWindowDescriptor(pid: pid, bundleIdentifier: bundleIdentifier, windowID: windowID, frame: frame, revision: 0, invalidatesOverlay: invalidatesOverlay)
     }
 
     private func primaryDisplayFrame() -> CGRect? {
@@ -123,6 +129,7 @@ extension ActiveWindowMonitor {
     private var axNotifications: [CFString] {
         [
             kAXFocusedWindowChangedNotification as CFString,
+            kAXFocusedUIElementChangedNotification as CFString,
             kAXValueChangedNotification as CFString,
             kAXMovedNotification as CFString,
             kAXResizedNotification as CFString,
@@ -131,11 +138,36 @@ extension ActiveWindowMonitor {
         ]
     }
 
-    private static let axCallback: AXObserverCallback = { _, _, _, refcon in
+    private static let axCallback: AXObserverCallback = { _, element, notification, refcon in
         guard let refcon else { return }
         let monitor = Unmanaged<ActiveWindowMonitor>.fromOpaque(refcon).takeUnretainedValue()
-        Task { @MainActor [weak monitor] in monitor?.refreshFromWorkspace() }
+        var role: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
+        let isRoot = (role as? String) == "AXWindow" || (role as? String) == "AXApplication"
+        let isMetadata = notification == kAXValueChangedNotification as CFString || notification == kAXTitleChangedNotification as CFString
+        let invalidates = !(isRoot && isMetadata)
+        let isImageValue = (role as? String) == "AXImage" && notification == kAXValueChangedNotification as CFString
+        let source = NotificationAXElement(value: element)
+        Task { @MainActor [weak monitor] in
+            guard let monitor else { return }
+            if isImageValue {
+                guard let owner = monitor.copyElement(source.value, kAXWindowAttribute as CFString),
+                      let current = monitor.observedWindow, CFEqual(owner, current) else { return }
+                let title = monitor.copyValue(source.value, kAXTitleAttribute as CFString) as? String
+                let description = monitor.copyValue(source.value, kAXDescriptionAttribute as CFString) as? String
+                let label = [title, description].compactMap { $0 }.map { String($0.prefix(512)) }.joined(separator: "\n")
+                let key = CFHash(source.value)
+                if monitor.imageNotificationLabels[key] == label { return }
+                if monitor.imageNotificationLabels.count >= 128 { monitor.imageNotificationLabels.removeAll(keepingCapacity: true) }
+                monitor.imageNotificationLabels[key] = label
+            }
+            monitor.refreshFromWorkspace(invalidatesOverlay: invalidates)
+        }
     }
+}
+
+private struct NotificationAXElement: @unchecked Sendable {
+    let value: AXUIElement
 }
 
 private extension CGRect {

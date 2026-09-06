@@ -130,6 +130,11 @@ public final class UnixControlServer: @unchecked Sendable {
                 }
                 return
             }
+            let flags = Darwin.fcntl(client, F_GETFL, 0)
+            guard flags >= 0, Darwin.fcntl(client, F_SETFL, flags & ~O_NONBLOCK) == 0 else {
+                Darwin.close(client)
+                continue
+            }
             var noSignal: Int32 = 1
             _ = withUnsafePointer(to: &noSignal) { pointer in
                 setsockopt(

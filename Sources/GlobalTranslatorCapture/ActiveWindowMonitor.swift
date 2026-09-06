@@ -20,17 +20,39 @@ public final class ActiveWindowMonitor {
     var observedApplication: AXUIElement?
     var observedWindow: AXUIElement?
     var observedPID: pid_t?
+    var imageNotificationLabels: [UInt: String] = [:]
     private var workspaceToken: NSObjectProtocol?
     private var throttleTask: Task<Void, Never>?
     private let intervalNanoseconds: UInt64 = 250_000_000
+    private var visualUpdatesEnabled = false
+    private var captureRetryCount = 0
+    private var descriptorRetryCount = 0
+    private var captureRetryTask: Task<Void, Never>?
+    private var visualTask: Task<Void, Never>?
+    private lazy var visualUpdates = WindowVisualUpdates { [weak self] in self?.refreshFromWorkspace() }
+    let permissions: any PermissionControlling
+    var frontmostApplicationProvider: () -> (pid: Int32, bundleIdentifier: String)? = {
+        guard let app = NSWorkspace.shared.frontmostApplication, let bundleIdentifier = app.bundleIdentifier else { return nil }
+        return (app.processIdentifier, bundleIdentifier)
+    }
+    lazy var windowDescriptorProvider: (Int32, String, Bool) -> ActiveWindowDescriptor? = { [weak self] pid, bundleIdentifier, invalidates in
+        if self?.permissions.snapshot.accessibilityTrusted == true {
+            self?.installAXObserver(for: pid)
+        } else {
+            self?.removeAXObserver()
+        }
+        return self?.descriptor(for: pid, bundleIdentifier: bundleIdentifier, invalidatesOverlay: invalidates)
+    }
 
     public init(
         ownBundleIdentifier: String? = Bundle.main.bundleIdentifier,
         excludedBundleIdentifiers: Set<String> = [],
+        permissions: any PermissionControlling = SystemPermissionController(),
         callback: @escaping ActiveWindowCallback = { _ in }
     ) {
         self.ownBundleIdentifier = ownBundleIdentifier
         self.excludedBundleIdentifiers = excludedBundleIdentifiers
+        self.permissions = permissions
         self.callback = callback
     }
 
@@ -61,6 +83,9 @@ public final class ActiveWindowMonitor {
 
     public func stop() {
         running = false
+        captureRetryTask?.cancel()
+        captureRetryTask = nil
+        setVisualUpdatesEnabled(false)
         throttleTask?.cancel()
         throttleTask = nil
         if let token = workspaceToken {
@@ -69,6 +94,43 @@ public final class ActiveWindowMonitor {
         }
         removeAXObserver()
         pending = nil
+    }
+
+    public func setVisualUpdatesEnabled(_ enabled: Bool) {
+        visualUpdatesEnabled = enabled
+        guard enabled, running, let current else {
+            visualTask?.cancel()
+            visualTask = nil
+            visualUpdates.stop()
+            return
+        }
+        visualTask = Task { @MainActor [weak self] in
+            guard let self, !Task.isCancelled else { return }
+            await self.visualUpdates.watch(current)
+        }
+    }
+
+    public func retryCurrentWindowCapture() {
+        scheduleWindowRetry(forMissingDescriptor: false)
+    }
+
+    private func scheduleWindowRetry(forMissingDescriptor: Bool) {
+        guard running, captureRetryTask == nil else { return }
+        do { try permissions.snapshot.validateCapture() } catch { return }
+        if forMissingDescriptor {
+            guard descriptorRetryCount < 2 else { return }
+            descriptorRetryCount += 1
+        } else {
+            guard captureRetryCount < 2 else { return }
+            captureRetryCount += 1
+        }
+        captureRetryTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+            guard let self, self.running else { return }
+            self.captureRetryTask = nil
+            do { try self.permissions.snapshot.validateCapture() } catch { return }
+            self.refreshFromWorkspace(isCaptureRetry: true)
+        }
     }
 
     public func handleApplicationSwitchForTesting(bundleIdentifier: String) {
@@ -96,25 +158,32 @@ public final class ActiveWindowMonitor {
         emitPending(atUptimeNanoseconds: now)
     }
 
-    func refreshFromWorkspace() {
+    func refreshFromWorkspace(isCaptureRetry: Bool = false, invalidatesOverlay: Bool = true) {
         guard running else { return }
-        let application = NSWorkspace.shared.frontmostApplication
-        guard let application, let bundleIdentifier = application.bundleIdentifier else {
+        if !isCaptureRetry {
+            captureRetryCount = 0
+            descriptorRetryCount = 0
+            captureRetryTask?.cancel()
+            captureRetryTask = nil
+        }
+        guard let application = frontmostApplicationProvider() else {
             clearCurrent()
             return
         }
-        guard !isExcluded(bundleIdentifier), application.processIdentifier != getpid() else {
+        let bundleIdentifier = application.bundleIdentifier
+        guard !isExcluded(bundleIdentifier), application.pid != getpid() else {
             removeAXObserver()
             clearCurrent()
             return
         }
-        installAXObserver(for: application.processIdentifier)
-        let descriptor = descriptor(for: application.processIdentifier, bundleIdentifier: bundleIdentifier)
+        let descriptor = windowDescriptorProvider(application.pid, bundleIdentifier, invalidatesOverlay)
         if let descriptor {
+            descriptorRetryCount = 0
             ingestForTesting(descriptor, atUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds)
             scheduleFlushIfNeeded()
         } else {
             clearCurrent()
+            scheduleWindowRetry(forMissingDescriptor: true)
         }
     }
 
@@ -132,6 +201,9 @@ public final class ActiveWindowMonitor {
 
     private func emitPending(atUptimeNanoseconds now: UInt64) {
         guard let descriptor = pending else { return }
+        if current?.pid != descriptor.pid || current?.windowID != descriptor.windowID {
+            setVisualUpdatesEnabled(false)
+        }
         pending = nil
         revision &+= 1
         let emitted = ActiveWindowDescriptor(
@@ -139,14 +211,17 @@ public final class ActiveWindowMonitor {
             bundleIdentifier: descriptor.bundleIdentifier,
             windowID: descriptor.windowID,
             frame: descriptor.frame,
-            revision: revision
+            revision: revision,
+            invalidatesOverlay: descriptor.invalidatesOverlay
         )
         lastEmission = now
         current = emitted
+        if visualUpdatesEnabled { setVisualUpdatesEnabled(true) }
         callback(emitted)
     }
 
     private func clearCurrent() {
+        setVisualUpdatesEnabled(false)
         pending = nil
         current = nil
         callback(nil)

@@ -44,6 +44,29 @@ struct HTTPResponseAccumulator {
     }
 }
 
+private final class RequestCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: URLSessionTask?
+    private var cancelled = false
+
+    func start(_ task: URLSessionTask) {
+        lock.lock()
+        self.task = task
+        let shouldCancel = cancelled
+        if !shouldCancel { task.resume() }
+        lock.unlock()
+        if shouldCancel { task.cancel() }
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let task = self.task
+        lock.unlock()
+        task?.cancel()
+    }
+}
+
 public final class URLSessionHTTPTransport: NSObject, HTTPTransport, URLSessionDataDelegate, @unchecked Sendable {
     private final class PendingTask {
         var response: HTTPURLResponse?
@@ -80,14 +103,20 @@ public final class URLSessionHTTPTransport: NSObject, HTTPTransport, URLSessionD
 
     public func send(_ request: URLRequest) async throws -> HTTPResponse {
         let task = session.dataTask(with: request)
-        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<HTTPResponse, Error>) in
-            lock.lock()
-            pending[task.taskIdentifier] = PendingTask(
-                continuation: continuation,
-                maximumResponseBytes: maximumResponseBytes
-            )
-            lock.unlock()
-            task.resume()
+        let cancellation = RequestCancellation()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<HTTPResponse, Error>) in
+                lock.lock()
+                pending[task.taskIdentifier] = PendingTask(
+                    continuation: continuation,
+                    maximumResponseBytes: maximumResponseBytes
+                )
+                lock.unlock()
+                cancellation.start(task)
+            }
+        } onCancel: {
+            cancellation.cancel()
         }
     }
 
@@ -156,6 +185,10 @@ public final class URLSessionHTTPTransport: NSObject, HTTPTransport, URLSessionD
             return
         }
         if let error {
+            if (error as? URLError)?.code == .cancelled {
+                state.continuation.resume(throwing: CancellationError())
+                return
+            }
             state.continuation.resume(throwing: map(error))
             return
         }

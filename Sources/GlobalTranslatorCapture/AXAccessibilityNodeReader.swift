@@ -74,7 +74,9 @@ public final class AXAccessibilityNodeReader: AccessibilityNodeReading, @uncheck
         case "AXStaticText": return .staticText
         case "AXButton": return .button
         case "AXTextField", "AXTextArea", "AXComboBox": return .textField
-        case "AXGroup", "AXWindow", "AXSplitGroup", "AXScrollArea": return .group
+        case "AXImage": return .image
+        case "AXPage": return .page
+        case "AXGroup", "AXWindow", "AXSplitGroup", "AXScrollArea", "AXWebArea", "AXLayoutArea": return .group
         default: return .other
         }
     }

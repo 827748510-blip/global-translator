@@ -14,6 +14,7 @@ public actor TranslationCoordinator {
     private let clock: any MonotonicClock
     private let eventSink: EngineEventSink?
     private let cropPreparer: CloudCropPreparer
+    private let permissions: any PermissionControlling
     private let revisionGate = RevisionGate()
 
     private var selectedKind: BackendKind?
@@ -30,7 +31,8 @@ public actor TranslationCoordinator {
         targetLanguage: String = "zh-Hans",
         clock: any MonotonicClock = SystemMonotonicClock(),
         eventSink: EngineEventSink? = nil,
-        cropPreparer: CloudCropPreparer = CloudCropPreparer()
+        cropPreparer: CloudCropPreparer = CloudCropPreparer(),
+        permissions: any PermissionControlling = SystemPermissionController()
     ) {
         var backendMap: [BackendKind: any TranslationBackend] = [:]
         for backend in backends where backendMap[backend.kind] == nil {
@@ -44,6 +46,7 @@ public actor TranslationCoordinator {
         self.targetLanguage = targetLanguage
         self.eventSink = eventSink
         self.cropPreparer = cropPreparer
+        self.permissions = permissions
     }
 
     public var state: EngineState {
@@ -61,8 +64,13 @@ public actor TranslationCoordinator {
 
     public func clearCache() async {
         configurationGeneration &+= 1
+        await cancelPendingRequests()
         await cache.removeAll()
         await circuitBreaker.reset()
+    }
+
+    public func cancelPendingRequests() async {
+        for backend in backends.values { await backend.cancelOutstandingRequests() }
     }
 
     nonisolated func invalidate(revision: UInt64) {
@@ -76,6 +84,7 @@ public actor TranslationCoordinator {
         visionFallbackEnabled: Bool
     ) async throws -> EngineOutput {
         try Task.checkCancellation()
+        try validateCapturePermission(snapshot)
         let model = modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !model.isEmpty else {
             setState(.backendError)
@@ -133,7 +142,10 @@ public actor TranslationCoordinator {
             }
         }
 
-        let batches = batcher.makeBatches(from: pendingEntries, windowRevision: revision)
+        let requestBatcher = kind == .local
+            ? TranslationBatcher(maximumItems: min(6, batcher.maximumItems), maximumSourceCharacters: batcher.maximumSourceCharacters)
+            : batcher
+        let batches = requestBatcher.makeBatches(from: pendingEntries, windowRevision: revision)
         let vision = makeVisionImages(
             snapshot: snapshot,
             backendKind: kind,
@@ -159,6 +171,7 @@ public actor TranslationCoordinator {
             let batchImages = batch.request.items.compactMap { vision.imagesByID[$0.id] }
             let result: TranslationResult
             do {
+                try validateCapturePermission(snapshot)
                 result = try await send(
                     batch.request,
                     to: backend,
@@ -166,7 +179,10 @@ public actor TranslationCoordinator {
                     allowVision: vision.available && !batchImages.isEmpty
                 )
                 try ensureCurrent(revision: revision, generation: generation)
+                try validateCapturePermission(snapshot)
                 try validateTranslationResult(result, expectedRequest: batch.request)
+            } catch let error as CaptureError {
+                throw error
             } catch let error as TranslationCoordinatorError {
                 throw error
             } catch {
@@ -203,6 +219,7 @@ public actor TranslationCoordinator {
         }
 
         try ensureCurrent(revision: revision, generation: generation)
+        try validateCapturePermission(snapshot)
         let rendered: [RenderedTranslation] = plan.orderedRegions.compactMap { region in
             guard let text = textByRegionID[region.id] else { return nil }
             return RenderedTranslation(region: region, text: text)
@@ -230,12 +247,27 @@ public actor TranslationCoordinator {
         return EngineOutput(windowRevision: revision, translations: rendered, metrics: metrics)
     }
 
+    private func validateCapturePermission(_ snapshot: CaptureSnapshot) throws {
+        do {
+            try permissions.snapshot.validateCapture(source: snapshot.source)
+        } catch let error as CaptureError {
+            if case .protected = error {
+                setState(.listening)
+            } else {
+                setState(.missingPermission)
+            }
+            emit(.captureBlocked(reason: error, windowRevision: snapshot.descriptor.revision))
+            throw error
+        }
+    }
+
     private func switchSelection(kind: BackendKind, modelIdentifier: String) async {
         let changed = selectedKind != kind || selectedModelIdentifier != modelIdentifier
         selectedKind = kind
         selectedModelIdentifier = modelIdentifier
         guard changed else { return }
         configurationGeneration &+= 1
+        await cancelPendingRequests()
         await cache.removeAll()
         await circuitBreaker.reset()
     }

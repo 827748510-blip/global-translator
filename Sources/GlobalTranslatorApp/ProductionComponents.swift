@@ -43,6 +43,7 @@ extension ApplicationControllerComponents {
                 }
                 return RealtimeTranslationScheduler(
                     coordinator: concrete,
+                    debounceInterval: 0,
                     outputHandler: output,
                     stateHandler: state
                 )

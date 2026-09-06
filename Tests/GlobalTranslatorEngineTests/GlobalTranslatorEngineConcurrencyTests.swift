@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import GlobalTranslatorCapture
 @testable import GlobalTranslatorCore
 @testable import GlobalTranslatorEngine
 
@@ -7,7 +8,7 @@ extension GlobalTranslatorEngineTests {
     @Test
     func lateOlderRevisionCannotProduceOutput() async throws {
         let backend = LateBackend()
-        let coordinator = TranslationCoordinator(backends: [backend])
+        let coordinator = TranslationCoordinator(backends: [backend], permissions: SystemPermissionController(snapshotProvider: { .allGranted }))
         let first = Task {
             try await coordinator.translate(
                 snapshot: makeSnapshot(regions: [makeRegion(text: "first")], revision: 1),
@@ -39,7 +40,7 @@ extension GlobalTranslatorEngineTests {
     func staleDelayedResultCannotPopulateCache() async throws {
         let backend = LateBackend()
         let cache = TranslationCache()
-        let coordinator = TranslationCoordinator(backends: [backend], cache: cache)
+        let coordinator = TranslationCoordinator(backends: [backend], cache: cache, permissions: SystemPermissionController(snapshotProvider: { .allGranted }))
         let first = Task {
             try await coordinator.translate(
                 snapshot: makeSnapshot(regions: [makeRegion(text: "same")], revision: 1),
@@ -71,7 +72,7 @@ extension GlobalTranslatorEngineTests {
                 Translation(segmentId: request.items[0].id, simplifiedChineseText: "好")
             ])
         }
-        let coordinator = TranslationCoordinator(backends: [backend])
+        let coordinator = TranslationCoordinator(backends: [backend], permissions: SystemPermissionController(snapshotProvider: { .allGranted }))
         let collector = OutputCollector()
         let scheduler = RealtimeTranslationScheduler(coordinator: coordinator) { output in
             collector.append(output)
@@ -89,7 +90,7 @@ extension GlobalTranslatorEngineTests {
         let clock = TestMonotonicClock()
         let sleeper = AdvancingSleeper(clock: clock)
         let backend = TimestampedBackend(clock: clock)
-        let coordinator = TranslationCoordinator(backends: [backend], clock: clock)
+        let coordinator = TranslationCoordinator(backends: [backend], clock: clock, permissions: SystemPermissionController(snapshotProvider: { .allGranted }))
         let scheduler = RealtimeTranslationScheduler(
             coordinator: coordinator,
             clock: clock,
