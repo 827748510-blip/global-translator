@@ -30,10 +30,11 @@ actor RecordingConfigurationStore: ConfigurationStoring {
 final class RecordingCredentialStore: CredentialStoring, @unchecked Sendable {
     private(set) var value: String?
     private(set) var savedValues: [String] = []
+    private(set) var readCount = 0
 
     init(value: String?) { self.value = value }
     func save(apiKey: String) throws { value = apiKey; savedValues.append(apiKey) }
-    func read() throws -> String? { value }
+    func read() throws -> String? { readCount += 1; return value }
     func delete() throws { value = nil }
 }
 
@@ -112,6 +113,22 @@ actor CompletionProbe {
     func markCompleted() { completed = true }
 }
 
+actor DelayedEchoTransport: HTTPTransport {
+    private(set) var calls = 0
+    private struct Payload: Decodable { let messages: [Message] }
+    private struct Message: Decodable { let content: String }
+    private struct Item: Decodable { let segmentId: UUID }
+    func send(_ request: URLRequest) async throws -> HTTPResponse {
+        calls += 1
+        let payload = try JSONDecoder().decode(Payload.self, from: request.httpBody ?? Data())
+        let items = try JSONDecoder().decode([Item].self, from: Data((payload.messages.last?.content ?? "[]").utf8))
+        try await Task.sleep(for: .milliseconds(150))
+        let translated = try JSONSerialization.data(withJSONObject: ["translations": items.map { ["segmentId": $0.segmentId.uuidString, "text": "你好"] }])
+        let response = try JSONSerialization.data(withJSONObject: ["choices": [["message": ["content": String(decoding: translated, as: UTF8.self)]]]])
+        return HTTPResponse(statusCode: 200, headers: [:], body: response)
+    }
+}
+
 struct StubBackend: TranslationBackend, Sendable {
     let kind: BackendKind
     func healthCheck() async -> BackendHealth { BackendHealth(status: .healthy, message: "ok") }
@@ -157,6 +174,11 @@ final class FakeWindowMonitor: ActiveWindowMonitoring {
     private(set) var startCount = 0
     private(set) var stopCount = 0
     var callback: ActiveWindowCallback?
+    private(set) var visualUpdatesEnabled = false
+    private(set) var visualUpdateCalls = 0
+    private(set) var captureRefreshRequests = 0
+    func retryCurrentWindowCapture() { captureRefreshRequests += 1 }
+    func setVisualUpdatesEnabled(_ enabled: Bool) { visualUpdatesEnabled = enabled; visualUpdateCalls += 1 }
     func setCallback(_ callback: @escaping ActiveWindowCallback) { self.callback = callback }
     func start() { startCount += 1 }
     func stop() { stopCount += 1 }
@@ -164,8 +186,17 @@ final class FakeWindowMonitor: ActiveWindowMonitoring {
 }
 
 struct FakeCapturePipeline: CapturePipelining, Sendable {
+    var source: CaptureSource = .accessibility
     func capture(_ descriptor: ActiveWindowDescriptor) async throws -> CaptureSnapshot {
-        CaptureSnapshot(window: CapturedWindow(descriptor: descriptor, regions: [], source: .accessibility))
+        CaptureSnapshot(window: CapturedWindow(descriptor: descriptor, regions: [], source: source))
+    }
+}
+
+actor RecordingCaptureRevisions: CapturePipelining {
+    private(set) var revisions: [UInt64] = []
+    func capture(_ descriptor: ActiveWindowDescriptor) async throws -> CaptureSnapshot {
+        revisions.append(descriptor.revision)
+        return CaptureSnapshot(window: CapturedWindow(descriptor: descriptor, regions: [], source: .accessibility))
     }
 }
 

@@ -7,6 +7,18 @@ import Testing
 
 struct GlobalTranslatorEngineTests {
     @Test
+    func localBatchesBoundMetadataOverheadWithoutDroppingRegions() async throws {
+        let regions = (0..<13).map { makeRegion(text: "Visible label \($0)", y: CGFloat(100 + $0 * 25)) }
+        let backend = RecordingBackend(kind: .local) { request, _ in
+            TranslationResult(windowRevision: request.windowRevision, translations: request.items.map { Translation(segmentId: $0.id, simplifiedChineseText: "译文") })
+        }
+        let coordinator = TranslationCoordinator(backends: [backend], permissions: SystemPermissionController(snapshotProvider: { .allGranted }))
+        let output = try await coordinator.translate(snapshot: makeSnapshot(regions: regions, revision: 1), backend: .local, modelIdentifier: "test", visionFallbackEnabled: false)
+        #expect(output.translations.count == 13)
+        #expect(await backend.requests.map { $0.items.count } == [6, 6, 1])
+    }
+
+    @Test
     func batchesFilteredTextAndRemapsDuplicateRegions() async throws {
         let firstID = UUID()
         let secondID = UUID()
@@ -30,7 +42,7 @@ struct GlobalTranslatorEngineTests {
                 Translation(segmentId: request.items[0].id, simplifiedChineseText: "你好")
             ])
         }
-        let coordinator = TranslationCoordinator(backends: [backend])
+        let coordinator = TranslationCoordinator(backends: [backend], permissions: SystemPermissionController(snapshotProvider: { .allGranted }))
         let output = try await coordinator.translate(
             snapshot: snapshot,
             backend: .local,
@@ -78,7 +90,7 @@ struct GlobalTranslatorEngineTests {
                 Translation(segmentId: request.items[0].id, simplifiedChineseText: "你好")
             ])
         }
-        let coordinator = TranslationCoordinator(backends: [backend])
+        let coordinator = TranslationCoordinator(backends: [backend], permissions: SystemPermissionController(snapshotProvider: { .allGranted }))
         _ = try await coordinator.translate(snapshot: makeSnapshot(regions: [makeRegion(text: "hello")], revision: 1), backend: .local, modelIdentifier: "m", visionFallbackEnabled: false)
         let currentID = UUID()
         let output = try await coordinator.translate(snapshot: makeSnapshot(regions: [makeRegion(id: currentID, text: " hello ")], revision: 2), backend: .local, modelIdentifier: "m", visionFallbackEnabled: false)
@@ -101,7 +113,7 @@ struct GlobalTranslatorEngineTests {
                 Translation(segmentId: request.items[0].id, simplifiedChineseText: "云端")
             ])
         }
-        let coordinator = TranslationCoordinator(backends: [local, cloud])
+        let coordinator = TranslationCoordinator(backends: [local, cloud], permissions: SystemPermissionController(snapshotProvider: { .allGranted }))
         _ = try await coordinator.translate(snapshot: makeSnapshot(regions: [makeRegion(text: "hello")], revision: 1), backend: .local, modelIdentifier: "local", visionFallbackEnabled: false)
         await coordinator.selectBackend(kind: .deepSeekCloud, modelIdentifier: "cloud")
         let currentID = UUID()
@@ -145,7 +157,7 @@ struct GlobalTranslatorEngineTests {
     @Test
     func rateLimitDoesNotRetryOrUseAnotherBackend() async throws {
         let backend = ThrowingBackend(kind: .local, error: .rateLimited(retryAfter: 9))
-        let coordinator = TranslationCoordinator(backends: [backend])
+        let coordinator = TranslationCoordinator(backends: [backend], permissions: SystemPermissionController(snapshotProvider: { .allGranted }))
         do {
             _ = try await coordinator.translate(
                 snapshot: makeSnapshot(regions: [makeRegion(text: "hello")], revision: 1),
@@ -165,7 +177,7 @@ struct GlobalTranslatorEngineTests {
         let clock = TestMonotonicClock()
         let breaker = CircuitBreaker(clock: clock)
         let backend = ThrowingBackend(kind: .local, error: .rateLimited(retryAfter: 9))
-        let coordinator = TranslationCoordinator(backends: [backend], circuitBreaker: breaker, clock: clock)
+        let coordinator = TranslationCoordinator(backends: [backend], circuitBreaker: breaker, clock: clock, permissions: SystemPermissionController(snapshotProvider: { .allGranted }))
         let snapshot = makeSnapshot(regions: [makeRegion(text: "hello")], revision: 1)
         do {
             _ = try await coordinator.translate(snapshot: snapshot, backend: .local, modelIdentifier: "m", visionFallbackEnabled: false)

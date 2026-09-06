@@ -97,6 +97,7 @@ public enum EngineEvent: Codable, Equatable, Sendable {
     case batchCompleted(itemCount: Int)
     case completed(metrics: EngineMetrics)
     case failed(status: EngineFailureStatus)
+    case captureBlocked(reason: CaptureError, windowRevision: UInt64)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -106,6 +107,7 @@ public enum EngineEvent: Codable, Equatable, Sendable {
         case itemCount
         case metrics
         case status
+        case reason
     }
 
     private enum EventType: String, Codable {
@@ -114,6 +116,7 @@ public enum EngineEvent: Codable, Equatable, Sendable {
         case batchCompleted
         case completed
         case failed
+        case captureBlocked
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -135,6 +138,10 @@ public enum EngineEvent: Codable, Equatable, Sendable {
         case .failed(let status):
             try container.encode(EventType.failed, forKey: .type)
             try container.encode(status, forKey: .status)
+        case .captureBlocked(let reason, let revision):
+            try container.encode(EventType.captureBlocked, forKey: .type)
+            try container.encode(reason, forKey: .reason)
+            try container.encode(revision, forKey: .windowRevision)
         }
     }
 
@@ -154,6 +161,11 @@ public enum EngineEvent: Codable, Equatable, Sendable {
             self = .completed(metrics: try container.decode(EngineMetrics.self, forKey: .metrics))
         case .failed:
             self = .failed(status: try container.decode(EngineFailureStatus.self, forKey: .status))
+        case .captureBlocked:
+            self = .captureBlocked(
+                reason: try container.decode(CaptureError.self, forKey: .reason),
+                windowRevision: try container.decode(UInt64.self, forKey: .windowRevision)
+            )
         }
     }
 }

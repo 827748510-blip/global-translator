@@ -5,6 +5,15 @@ import Testing
 
 struct RuntimeContractsTests {
     @Test
+    func shutdownNotificationRunsAfterPIDAndSocketCleanup() throws {
+        let paths = RuntimePaths(root: URL(fileURLWithPath: "/private/tmp/gt-clean-\(UUID().uuidString)"))
+        let hook = CleanupObservationHook(paths: paths)
+        let worker = try RuntimeWorker(paths: paths, hook: hook)
+        try worker.start()
+        worker.stop()
+        #expect(hook.artifactsAbsentWhenNotified)
+    }
+    @Test
     func productionPathsMatchApplicationSupportAndLogsContract() {
         let home = URL(fileURLWithPath: "/Users/example")
         let paths = RuntimePaths(homeDirectory: home)
@@ -258,6 +267,43 @@ struct RuntimeContractsTests {
     }
 
     @Test
+    func controlServerWaitsForARequestAfterAcceptingConnection() throws {
+        let paths = RuntimePaths(root: URL(fileURLWithPath: "/private/tmp/gtd-\(UUID().uuidString)"))
+        try paths.prepareDirectories()
+        let server = UnixControlServer(socketURL: paths.socketURL) { _ in
+            ControlResponse(running: false, state: .stopped, pid: 0)
+        }
+        try server.start()
+        defer { server.stop() }
+        let client = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        #expect(client >= 0)
+        defer { Darwin.close(client) }
+        var noSignal: Int32 = 1
+        _ = setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
+        var timeout = timeval(tv_sec: 1, tv_usec: 0)
+        _ = setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(paths.socketURL.path.utf8) + [0]
+        try #require(bytes.count <= MemoryLayout.size(ofValue: address.sun_path))
+        withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: bytes) }
+        let connected = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(client, $0, socklen_t(MemoryLayout<sa_family_t>.size + bytes.count))
+            }
+        }
+        try #require(connected == 0)
+        usleep(50_000)
+        let payload = try JSONEncoder().encode(ControlRequest(action: .status))
+        let sent = payload.withUnsafeBytes { Darwin.send(client, $0.baseAddress, $0.count, 0) }
+        #expect(sent == payload.count)
+        _ = Darwin.shutdown(client, SHUT_WR)
+        var response = [UInt8](repeating: 0, count: 4096)
+        let received = Darwin.recv(client, &response, response.count, 0)
+        #expect(received > 0)
+    }
+
+    @Test
     func managerStopReturnsConfirmedStoppedState() throws {
         let root = URL(fileURLWithPath: "/tmp/gt-stop-final-\(UUID().uuidString)")
         let paths = try RuntimePaths(validatingRoot: root)
@@ -340,6 +386,17 @@ private final class LockedCounter: @unchecked Sendable {
         lock.lock()
         count += 1
         lock.unlock()
+    }
+}
+
+private final class CleanupObservationHook: RuntimeWorkerHook, @unchecked Sendable {
+    let paths: RuntimePaths
+    private(set) var artifactsAbsentWhenNotified = false
+    init(paths: RuntimePaths) { self.paths = paths }
+    func workerDidStart() {}
+    func workerWillStop() {
+        artifactsAbsentWhenNotified = !FileManager.default.fileExists(atPath: paths.pidURL.path)
+            && !FileManager.default.fileExists(atPath: paths.socketURL.path)
     }
 }
 

@@ -66,11 +66,11 @@ public struct LiveTranslationBackendFactory: TranslationBackendFactory, Sendable
         case .deepSeekCloud:
             return DeepSeekBackend(transport: transport, credentialStore: credentials)
         case .local:
-            return try LocalOpenAIBackend(
+            return CoalescingTranslationBackend(base: try LocalOpenAIBackend(
                 baseURL: configuration.localBaseURL,
                 model: configuration.localModel,
                 transport: transport
-            )
+            ))
         }
     }
 
@@ -97,6 +97,13 @@ public protocol ActiveWindowMonitoring: AnyObject {
     func setCallback(_ callback: @escaping ActiveWindowCallback)
     func start()
     func stop()
+    func setVisualUpdatesEnabled(_ enabled: Bool)
+    func retryCurrentWindowCapture()
+}
+
+public extension ActiveWindowMonitoring {
+    func setVisualUpdatesEnabled(_ enabled: Bool) {}
+    func retryCurrentWindowCapture() {}
 }
 
 @MainActor
@@ -122,6 +129,8 @@ public final class ActiveWindowMonitorAdapter: ActiveWindowMonitoring {
     }
 
     public var current: ActiveWindowDescriptor? { monitor.current }
+    public func setVisualUpdatesEnabled(_ enabled: Bool) { monitor.setVisualUpdatesEnabled(enabled) }
+    public func retryCurrentWindowCapture() { monitor.retryCurrentWindowCapture() }
     public func setCallback(_ callback: @escaping ActiveWindowCallback) { holder.callback = callback }
     public func start() { monitor.start() }
     public func stop() { monitor.stop() }
@@ -152,6 +161,7 @@ extension OverlayPanelController: OverlayControlling {}
 public protocol TranslationCoordinating: Sendable {
     func selectBackend(kind: BackendKind, modelIdentifier: String) async
     func clearCache() async
+    func cancelPendingRequests() async
     func translate(
         snapshot: CaptureSnapshot,
         backend: BackendKind,
@@ -161,6 +171,10 @@ public protocol TranslationCoordinating: Sendable {
 }
 
 extension TranslationCoordinator: TranslationCoordinating {}
+
+public extension TranslationCoordinating {
+    func cancelPendingRequests() async {}
+}
 
 @MainActor
 public protocol TranslationScheduling: AnyObject {

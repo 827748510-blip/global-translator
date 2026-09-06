@@ -5,6 +5,100 @@ import Testing
 import GlobalTranslatorCore
 
 struct CapturePipelineTests {
+    @Test(arguments: [CGFloat(0), CGFloat(1)])
+    func clippedOffscreenTextDoesNotRenderAtViewportEdge(height: CGFloat) {
+        let collector = AccessibilityTextCollector(reader: FakeAccessibilityReader(root: .group(children: [
+            .staticText("Scrolled out of view", frame: CGRect(x: 100, y: 600, width: 300, height: height)),
+            .staticText("Visible destination", frame: CGRect(x: 100, y: 200, width: 300, height: 29))
+        ])))
+        let regions = collector.collect(from: testWindow(frame: CGRect(x: 0, y: 0, width: 1000, height: 800)))
+        #expect(regions.map(\.sourceText) == ["Visible destination"])
+    }
+
+    @Test
+    func smallImageWithAVisibleLabelKeepsItsText() {
+        let collector = AccessibilityTextCollector(reader: FakeAccessibilityReader(root: .group(children: [
+            AccessibilityNode(role: .image, description: "Read Before Closing.txt", frame: CGRect(x: 300, y: 300, width: 120, height: 100))
+        ])))
+        let regions = collector.collect(from: testWindow(frame: CGRect(x: 0, y: 0, width: 1000, height: 800)))
+        #expect(regions.contains { $0.sourceText == "Read Before Closing.txt" })
+    }
+
+    @Test
+    func untranslatedChromeDoesNotConsumeTheDocumentRegionBudget() {
+        let descriptor = testWindow(frame: CGRect(x: 0, y: 0, width: 1000, height: 800))
+        let controls = (0..<30).map { index in AccessibilityNode.staticText("中文菜单", frame: CGRect(x: 10, y: 10 + index * 20, width: 80, height: 18)) }
+        let collector = AccessibilityTextCollector(reader: FakeAccessibilityReader(root: .group(children: controls + [.staticText("Read Before Closing", frame: CGRect(x: 300, y: 300, width: 200, height: 30))])))
+        let result = collector.collect(from: descriptor)
+        #expect(result.contains { $0.sourceText == "Read Before Closing" })
+        #expect(result.count <= 24)
+    }
+
+    @Test
+    func toolbarOnlyAccessibilityDoesNotHideMissingDocumentText() async throws {
+        let descriptor = testWindow(frame: CGRect(x: 0, y: 0, width: 1000, height: 800))
+        let collector = AccessibilityTextCollector(reader: FakeAccessibilityReader(root: .group(children: [
+            .button("Share", frame: CGRect(x: 20, y: 750, width: 60, height: 25)),
+            .staticText("Document title", frame: CGRect(x: 300, y: 750, width: 250, height: 25))
+        ])))
+        #expect(await collector.collectResult(from: descriptor) == .unavailable(.accessibilityUnavailable))
+    }
+
+    @Test(arguments: ["image", "page", "group"])
+    func largeImageWithOnlyToolbarTextRequiresOCR(rawRole: String) async throws {
+        let imageRole = try #require(AccessibilityRole(rawValue: rawRole))
+        let descriptor = testWindow(frame: CGRect(x: 0, y: 0, width: 1000, height: 800))
+        let collector = AccessibilityTextCollector(reader: FakeAccessibilityReader(root: .group(children: [
+            .button("Share", frame: CGRect(x: 10, y: 750, width: 60, height: 30)),
+            AccessibilityNode(role: imageRole, frame: CGRect(x: 20, y: 20, width: 960, height: 700))
+        ])))
+        let screenshot = CountingScreenshotProvider(image: makeTestImage())
+        let pipeline = CapturePipeline(
+            permissions: FakePermissionController(snapshot: .allGranted),
+            accessibility: collector,
+            screenshot: screenshot,
+            ocr: FakeOCRService(regions: [VisionTextObservation(text: "Image body", boundingBox: CGRect(x: 0.1, y: 0.2, width: 0.5, height: 0.1), confidence: 0.9)])
+        )
+        let snapshot = try await pipeline.capture(descriptor)
+        #expect(snapshot.source == .visionOCR)
+        #expect(snapshot.regions.map(\.sourceText) == ["Image body"])
+        #expect(screenshot.callCount == 1)
+    }
+
+    @Test
+    func smallImageIconDoesNotForceScreenshot() async throws {
+        let imageRole = try #require(AccessibilityRole(rawValue: "image"))
+        let descriptor = testWindow(frame: CGRect(x: 0, y: 0, width: 1000, height: 800))
+        let collector = AccessibilityTextCollector(reader: FakeAccessibilityReader(root: .group(children: [
+            .staticText("Readable body", frame: CGRect(x: 100, y: 400, width: 400, height: 30)),
+            AccessibilityNode(role: imageRole, frame: CGRect(x: 20, y: 20, width: 32, height: 32))
+        ])))
+        #expect(await collector.collectResult(from: descriptor).regions.map(\.sourceText) == ["Readable body"])
+    }
+
+    @Test
+    func largeImageWithAccessibleLiveTextKeepsAXPath() async throws {
+        let descriptor = testWindow(frame: CGRect(x: 0, y: 0, width: 1000, height: 800))
+        let collector = AccessibilityTextCollector(reader: FakeAccessibilityReader(root: .group(children: [
+            AccessibilityNode(role: .image, frame: CGRect(x: 20, y: 20, width: 960, height: 700), children: [
+                .staticText("Live Text body", frame: CGRect(x: 100, y: 400, width: 400, height: 30))
+            ])
+        ])))
+        #expect(await collector.collectResult(from: descriptor).regions.map(\.sourceText) == ["Live Text body"])
+    }
+
+    @Test
+    func imageLiveTextOutsideItsImageRequiresOCR() async {
+        let descriptor = testWindow(frame: CGRect(x: 0, y: 0, width: 1000, height: 800))
+        let collector = AccessibilityTextCollector(reader: FakeAccessibilityReader(root: .group(children: [
+            AccessibilityNode(role: .image, frame: CGRect(x: 20, y: 20, width: 960, height: 700), children: [
+                .staticText("First line", frame: CGRect(x: 100, y: 400, width: 400, height: 30)),
+                .textField("Mispositioned line", frame: CGRect(x: 100, y: 900, width: 400, height: 30))
+            ])
+        ])))
+        #expect(await collector.collectResult(from: descriptor) == .unavailable(.accessibilityUnavailable))
+    }
+
     @Test
     func permissionSnapshotIsCodableAndPrivacyURLsAreExposedWithoutOpening() throws {
         let snapshot = PermissionSnapshot(

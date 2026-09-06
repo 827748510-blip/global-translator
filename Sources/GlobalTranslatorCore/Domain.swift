@@ -177,6 +177,11 @@ public protocol TranslationBackend: Sendable {
     var kind: BackendKind { get }
     func healthCheck() async -> BackendHealth
     func translate(_ request: TranslationRequest) async throws -> TranslationResult
+    func cancelOutstandingRequests() async
+}
+
+public extension TranslationBackend {
+    func cancelOutstandingRequests() async {}
 }
 
 public struct VisionTranslationImage: Equatable, Sendable {

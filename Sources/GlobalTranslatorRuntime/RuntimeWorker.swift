@@ -116,13 +116,13 @@ public final class RuntimeWorker: @unchecked Sendable {
             source.cancel()
         }
         server.stop()
-        hook.workerWillStop()
         logger.log("runtime worker stopped", event: "worker_stopped")
         pidLock.release()
         stateLock.lock()
         state = .stopped
         stateLock.unlock()
         stopped.signal()
+        hook.workerWillStop()
     }
 
     public var isRunning: Bool {

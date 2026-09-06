@@ -130,7 +130,7 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
                 ChatPrompt(role: "system", content: TranslationInstructions.system),
                 ChatPrompt(role: "user", content: content)
             ],
-            responseFormat: ChatResponseFormat(type: "json_object")
+            responseFormat: ChatResponseFormat(jsonSchema: ChatJSONSchema(schema: TranslationSchema.object(segmentIDs: request.items.map(\.id))))
         )
         do {
             let encoder = JSONEncoder()
@@ -177,5 +177,17 @@ private struct ChatPrompt: Codable {
 }
 
 private struct ChatResponseFormat: Encodable {
-    let type: String
+    let type = "json_schema"
+    let jsonSchema: ChatJSONSchema
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case jsonSchema = "json_schema"
+    }
+}
+
+private struct ChatJSONSchema: Encodable {
+    let name = "translation_result"
+    let strict = true
+    let schema: JSONSchemaObject
 }

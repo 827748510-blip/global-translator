@@ -81,6 +81,13 @@ public final class RealtimeTranslationScheduler {
                 outputHandler(output)
                 stateHandler?(await coordinator.state)
             } catch is CancellationError {
+            } catch let error as CaptureError {
+                guard let self, self.submissionToken == token, !Task.isCancelled else { return }
+                if case .protected = error {
+                    stateHandler?(.listening)
+                } else {
+                    stateHandler?(.missingPermission)
+                }
             } catch let error as TranslationCoordinatorError {
                 guard let self else { return }
                 guard self.submissionToken == token, !Task.isCancelled else { return }

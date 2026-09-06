@@ -86,6 +86,7 @@ public struct ActiveWindowDescriptor: Codable, Equatable, Sendable {
     public let windowID: CGWindowID?
     public let frame: CGRect
     public let revision: UInt64
+    public let invalidatesOverlay: Bool
 
     public var processID: Int32 { pid }
     public var bundleID: String { bundleIdentifier }
@@ -95,16 +96,18 @@ public struct ActiveWindowDescriptor: Codable, Equatable, Sendable {
         bundleIdentifier: String,
         windowID: CGWindowID? = nil,
         frame: CGRect,
-        revision: UInt64
+        revision: UInt64,
+        invalidatesOverlay: Bool = true
     ) {
         self.pid = pid
         self.bundleIdentifier = bundleIdentifier
         self.windowID = windowID
         self.frame = frame
         self.revision = revision
+        self.invalidatesOverlay = invalidatesOverlay
     }
 
-    private enum CodingKeys: String, CodingKey { case pid, bundleIdentifier, windowID, frame, revision }
+    private enum CodingKeys: String, CodingKey { case pid, bundleIdentifier, windowID, frame, revision, invalidatesOverlay }
     private enum FrameKeys: String, CodingKey { case x, y, width, height }
 
     public init(from decoder: Decoder) throws {
@@ -120,11 +123,13 @@ public struct ActiveWindowDescriptor: Codable, Equatable, Sendable {
             height: try frame.decode(CGFloat.self, forKey: .height)
         )
         revision = try container.decode(UInt64.self, forKey: .revision)
+        invalidatesOverlay = try container.decodeIfPresent(Bool.self, forKey: .invalidatesOverlay) ?? true
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(pid, forKey: .pid)
+        try container.encode(invalidatesOverlay, forKey: .invalidatesOverlay)
         try container.encode(bundleIdentifier, forKey: .bundleIdentifier)
         try container.encodeIfPresent(windowID, forKey: .windowID)
         var frame = container.nestedContainer(keyedBy: FrameKeys.self, forKey: .frame)

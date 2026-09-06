@@ -100,6 +100,10 @@ extension ApplicationController {
         disableAutomaticTranslation()
         configuration.backend = kind
         viewModel.selectedBackend = kind
+        if kind == .deepSeekCloud {
+            let storedKey = try? components.credentialStore.read()
+            viewModel.keyConfigured = !(storedKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        }
         viewModel.backendReady = false
         viewModel.connectionTest = .idle
         viewModel.availableModels = []

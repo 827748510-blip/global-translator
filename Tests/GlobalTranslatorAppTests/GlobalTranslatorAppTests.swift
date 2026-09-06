@@ -32,6 +32,172 @@ struct ConfigurationPersistenceTests {
 @MainActor
 struct ApplicationControllerTests {
     @Test
+    func redundantRootNotificationKeepsValidatedOverlayVisible() async throws {
+        let monitor = FakeWindowMonitor()
+        let overlay = FakeOverlay()
+        let schedulerBox = SchedulerBox()
+        let controller = ApplicationController(paths: try RuntimePaths(validatingRoot: temporaryRoot()), components: makeComponents(monitor: monitor, overlay: overlay, capture: SingleRegionCapturePipeline(), schedulerBox: schedulerBox))
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        controller.session?.start()
+        let frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+        monitor.emit(ActiveWindowDescriptor(pid: 42, bundleIdentifier: "qa", frame: frame, revision: 1))
+        try await waitForCapture { schedulerBox.value?.submitCount == 1 }
+        let region = TextRegion(id: UUID(), sourceText: "hello", screenFrame: CGRect(x: 20, y: 20, width: 80, height: 20), confidence: 1, source: .accessibility, windowRevision: 1)
+        schedulerBox.emit(EngineOutput(windowRevision: 1, translations: [RenderedTranslation(region: region, text: "你好")], metrics: EngineMetrics(inputRegionCount: 1, eligibleRegionCount: 1, cacheHitCount: 0, batchCount: 1, translatedRegionCount: 1, durationMilliseconds: 1, status: .success)))
+        let hides = overlay.hideCount
+        monitor.emit(ActiveWindowDescriptor(pid: 42, bundleIdentifier: "qa", frame: frame, revision: 2, invalidatesOverlay: false))
+        #expect(overlay.hideCount == hides)
+        await controller.stop()
+    }
+
+    @Test
+    func productionSchedulerDoesNotDebounceAfterCaptureAlreadyDebounced() throws {
+        let components = ApplicationControllerComponents.production(paths: RuntimePaths(root: temporaryRoot()))
+        let coordinator = TranslationCoordinator(backends: [])
+        let scheduler = try #require(components.schedulerFactory(coordinator, { _ in }, { _ in }) as? RealtimeTranslationScheduler)
+        #expect(scheduler.debounceInterval == 0)
+    }
+
+    @Test
+    func completedLocalGenerationSurvivesAGapBetweenDisplayTasks() async throws {
+        let transport = DelayedEchoTransport()
+        let factory = LiveTranslationBackendFactory(transport: transport)
+        let backend = try factory.makeBackend(kind: .local, configuration: AppConfiguration(backend: .local, localModel: "test"), credentials: RecordingCredentialStore(value: nil))
+        let first = TranslationRequest(windowRevision: 1, items: [TranslationItem(id: UUID(), sourceText: "hello")])
+        let firstTask = Task { try? await backend.translate(first) }
+        for _ in 0..<200 where await transport.calls == 0 { await Task.yield() }
+        firstTask.cancel()
+        _ = await firstTask.value
+        let second = TranslationRequest(windowRevision: 2, items: [TranslationItem(id: UUID(), sourceText: "hello")])
+        let result = try await backend.translate(second)
+        #expect(await transport.calls == 1)
+        #expect(result.translations.first?.segmentId == second.items.first?.id)
+    }
+
+    @Test
+    func identicalLocalRequestsReuseGenerationAcrossDisplayCancellation() async throws {
+        let transport = DelayedEchoTransport()
+        let factory = LiveTranslationBackendFactory(transport: transport)
+        let backend = try factory.makeBackend(kind: .local, configuration: AppConfiguration(backend: .local, localModel: "test"), credentials: RecordingCredentialStore(value: nil))
+        let first = TranslationRequest(windowRevision: 1, items: [TranslationItem(id: UUID(), sourceText: "hello")])
+        let second = TranslationRequest(windowRevision: 2, items: [TranslationItem(id: UUID(), sourceText: "hello")])
+        let firstTask = Task { try? await backend.translate(first) }
+        for _ in 0..<200 where await transport.calls == 0 { await Task.yield() }
+        let secondTask = Task { try await backend.translate(second) }
+        firstTask.cancel()
+        let result = try await secondTask.value
+        _ = await firstTask.value
+        #expect(await transport.calls == 1)
+        #expect(result.windowRevision == 2)
+        #expect(result.translations.first?.segmentId == second.items.first?.id)
+    }
+
+    @Test(arguments: [CaptureError.unsupported, CaptureError.permissionRequired(.screenCapture)])
+    func transientWindowCaptureFailureRequestsRefreshButPermissionsDoNot(error: CaptureError) async throws {
+        let monitor = FakeWindowMonitor()
+        let controller = ApplicationController(paths: try RuntimePaths(validatingRoot: temporaryRoot()), components: makeComponents(monitor: monitor, capture: CaptureErrorPipeline(error: error)))
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        controller.session?.start()
+        monitor.emit(ActiveWindowDescriptor(pid: 42, bundleIdentifier: "qa", frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 1))
+        try await waitForCapture { controller.viewModel.status == .error || controller.viewModel.status == .missingPermission }
+        #expect(monitor.captureRefreshRequests == (error == .unsupported ? 1 : 0))
+        await controller.stop()
+    }
+
+    @Test
+    func captureWaitsForLayoutToSettleBeforeReading() async throws {
+        let monitor = FakeWindowMonitor()
+        let capture = RecordingCaptureRevisions()
+        let controller = ApplicationController(paths: try RuntimePaths(validatingRoot: temporaryRoot()), components: makeComponents(monitor: monitor, capture: capture))
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        controller.session?.start()
+        monitor.emit(ActiveWindowDescriptor(pid: 42, bundleIdentifier: "qa", frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 1))
+        try await Task.sleep(for: .milliseconds(20))
+        monitor.emit(ActiveWindowDescriptor(pid: 42, bundleIdentifier: "qa", frame: CGRect(x: 100, y: 0, width: 800, height: 600), revision: 2))
+        try await Task.sleep(for: .milliseconds(180))
+        #expect(await capture.revisions == [2])
+        await controller.stop()
+    }
+
+    @Test(arguments: [CaptureSource.accessibility, .visionOCR])
+    func visualChangeMonitoringTracksBothAXAndOCRWindows(source: CaptureSource) async throws {
+        let monitor = FakeWindowMonitor()
+        let controller = ApplicationController(paths: try RuntimePaths(validatingRoot: temporaryRoot()), components: makeComponents(monitor: monitor, capture: FakeCapturePipeline(source: source)))
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        controller.session?.start()
+        monitor.emit(ActiveWindowDescriptor(pid: 42, bundleIdentifier: "qa", frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 1))
+        try await waitForCapture { monitor.visualUpdateCalls > 0 }
+        #expect(monitor.visualUpdatesEnabled)
+        await controller.stop()
+    }
+
+    @Test(arguments: [true, false])
+    func protectedCaptureRecoversWithoutAXNotificationUnlessStopped(stopBeforeRecovery: Bool) async throws {
+        let permission = FakePermissionController(snapshot: .allGranted)
+        let monitor = FakeWindowMonitor()
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(permission: permission, monitor: monitor, capture: CaptureErrorPipeline(error: .protected(.secureInput)))
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        controller.session?.start()
+        let initialStarts = monitor.startCount
+        permission.update(PermissionSnapshot(accessibilityTrusted: true, screenCaptureAuthorized: true, secureInputEnabled: true, sessionLocked: false))
+        monitor.emit(ActiveWindowDescriptor(pid: 42, bundleIdentifier: "qa", frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 1))
+        try await Task.sleep(for: .milliseconds(450))
+        #expect(monitor.startCount == initialStarts)
+        if stopBeforeRecovery { controller.session?.stop() }
+        permission.update(.allGranted)
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(monitor.startCount == initialStarts + (stopBeforeRecovery ? 0 : 1))
+        await controller.stop()
+    }
+
+    @Test(arguments: [true, false])
+    func lateTranslationCannotRenderDuringSecureInputOrLock(secureInput: Bool) async throws {
+        let permission = FakePermissionController(snapshot: .allGranted)
+        let monitor = FakeWindowMonitor()
+        let overlay = FakeOverlay()
+        let schedulerBox = SchedulerBox()
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(permission: permission, monitor: monitor, overlay: overlay, schedulerBox: schedulerBox)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        controller.session?.start()
+        monitor.emit(ActiveWindowDescriptor(pid: 42, bundleIdentifier: "qa", frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 1))
+        permission.update(PermissionSnapshot(accessibilityTrusted: true, screenCaptureAuthorized: true, secureInputEnabled: secureInput, sessionLocked: !secureInput))
+        let region = TextRegion(id: UUID(), sourceText: "Test", screenFrame: CGRect(x: 20, y: 20, width: 80, height: 20), confidence: 1, source: .accessibility, windowRevision: 1)
+        schedulerBox.emit(EngineOutput(windowRevision: 1, translations: [RenderedTranslation(region: region, text: "测试")], metrics: EngineMetrics(inputRegionCount: 1, eligibleRegionCount: 1, cacheHitCount: 0, batchCount: 1, translatedRegionCount: 1, durationMilliseconds: 1, status: .success)))
+        #expect(overlay.lastTranslations.isEmpty)
+        await controller.stop()
+    }
+
+    @Test
+    func localStartupDoesNotReadCloudKeychain() async throws {
+        let gate = HealthCheckGate()
+        let credentials = RecordingCredentialStore(value: "stored-key")
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: RecordingConfigurationStore(configuration: AppConfiguration(backend: .local, localModel: "local-test")),
+                credentials: credentials,
+                backendFactory: GatedBackendFactory(gate: gate)
+            )
+        )
+        try await controller.start()
+        #expect(credentials.readCount == 0)
+        await gate.release(BackendHealth(status: .healthy, message: "ok"))
+        await controller.stop()
+    }
+
+    @Test
     func startReturnsBeforeBackendHealthCheckFinishes() async throws {
         let gate = HealthCheckGate()
         let factory = GatedBackendFactory(gate: gate)
@@ -456,6 +622,7 @@ struct ApplicationControllerTests {
         ))
         for _ in 0..<20 { await Task.yield() }
 
+        try await waitForCapture { schedulerBox.value?.submitCount == 1 }
         #expect(schedulerBox.value?.submitCount == 1)
         #expect(controller.viewModel.status == .translating)
         await controller.stop()
@@ -562,17 +729,19 @@ struct ApplicationControllerTests {
         ))
         for _ in 0..<20 { await Task.yield() }
 
+        try await waitForCapture { controller.viewModel.status == .error }
         #expect(controller.viewModel.status == .error)
         #expect(logger.records.allSatisfy { !$0.1.values.contains { $0.contains("secret") } })
     }
 
-    private func makeComponents(
+    func makeComponents(
         store: RecordingConfigurationStore = RecordingConfigurationStore(),
         credentials: RecordingCredentialStore = RecordingCredentialStore(value: nil),
         permission: FakePermissionController = FakePermissionController(snapshot: .allGranted),
         backendFactory: any TranslationBackendFactory = StubBackendFactory(health: BackendHealth(status: .healthy, message: "ok")),
         monitor: FakeWindowMonitor = FakeWindowMonitor(),
         overlay: FakeOverlay = FakeOverlay(),
+        overlayFactory: OverlayFactory? = nil,
         coordinator: FakeCoordinator = FakeCoordinator(),
         capture: any CapturePipelining = FakeCapturePipeline(),
         schedulerBox: SchedulerBox? = nil,
@@ -588,7 +757,7 @@ struct ApplicationControllerTests {
             monitorFactory: { _ in monitor },
             capturePipelineFactory: { _ in capture },
             statusItemFactory: { _ in statusItem },
-            overlayFactory: { overlay },
+            overlayFactory: overlayFactory ?? { overlay },
             coordinatorFactory: { _, eventSink in
                 engineEventBox?.set(eventSink)
                 return coordinator
@@ -602,11 +771,17 @@ struct ApplicationControllerTests {
         )
     }
 
-    private func temporaryRoot() -> URL {
+    func temporaryRoot() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("gt-app-\(UUID().uuidString)", isDirectory: true)
     }
 
-    private func waitForStartupHealthCheck(_ controller: ApplicationController) async {
+    func waitForCapture(_ condition: () -> Bool) async throws {
+        for _ in 0..<200 where !condition() {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    func waitForStartupHealthCheck(_ controller: ApplicationController) async {
         for _ in 0..<1_000 {
             if controller.backendRefreshTask == nil { return }
             await Task.yield()

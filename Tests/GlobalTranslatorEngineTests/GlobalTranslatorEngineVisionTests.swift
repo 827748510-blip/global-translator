@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import GlobalTranslatorCapture
 @testable import GlobalTranslatorCore
 @testable import GlobalTranslatorEngine
 
@@ -128,7 +129,7 @@ extension GlobalTranslatorEngineTests {
         let image = makeEngineTestImage()
         let visionID = UUID()
         let visionBackend = VisionRecordingBackend(kind: .deepSeekCloud)
-        let visionCoordinator = TranslationCoordinator(backends: [visionBackend])
+        let visionCoordinator = TranslationCoordinator(backends: [visionBackend], permissions: SystemPermissionController(snapshotProvider: { .allGranted }))
         let visionOutput = try await visionCoordinator.translate(
             snapshot: makeSnapshot(
                 regions: [makeRegion(id: visionID, text: "hello", confidence: 0.1)],
@@ -147,7 +148,7 @@ extension GlobalTranslatorEngineTests {
         #expect(await visionBackend.visionRequests[0].first?.pngData.prefix(8) == Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]))
 
         let local = VisionRecordingBackend(kind: .local)
-        let localCoordinator = TranslationCoordinator(backends: [local])
+        let localCoordinator = TranslationCoordinator(backends: [local], permissions: SystemPermissionController(snapshotProvider: { .allGranted }))
         _ = try await localCoordinator.translate(
             snapshot: makeSnapshot(
                 regions: [makeRegion(text: "hello", confidence: 0.1)],
@@ -168,7 +169,7 @@ extension GlobalTranslatorEngineTests {
         let firstID = UUID()
         let secondID = UUID()
         let backend = VisionRecordingBackend(kind: .deepSeekCloud)
-        let coordinator = TranslationCoordinator(backends: [backend])
+        let coordinator = TranslationCoordinator(backends: [backend], permissions: SystemPermissionController(snapshotProvider: { .allGranted }))
         _ = try await coordinator.translate(
             snapshot: makeSnapshot(
                 regions: [

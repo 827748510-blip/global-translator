@@ -116,6 +116,24 @@ struct GlobalTranslatorCoreTests {
     }
 
     @Test
+    func deepSeekAcceptsReasoningOutputAlongsideSingleMessage() async throws {
+        let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let response = #"{"output":[{"type":"reasoning","content":[{"type":"reasoning_text","text":""}]},{"type":"message","content":[{"type":"output_text","text":"{\"translations\":[{\"segmentId\":\"00000000-0000-0000-0000-000000000001\",\"text\":\"你好\"}]}"}]}]}"#
+        let backend = DeepSeekBackend(
+            transport: FakeTransport(responses: [
+                HTTPResponse(statusCode: 200, headers: [:], body: Data(response.utf8))
+            ]),
+            credentialStore: FakeCredentialStore(value: "key")
+        )
+
+        let result = try await backend.translate(
+            TranslationRequest(windowRevision: 8, items: [TranslationItem(id: id, sourceText: "hello")])
+        )
+
+        #expect(result.translations.first?.simplifiedChineseText == "你好")
+    }
+
+    @Test
     func cloudRejectsDuplicateOrMissingResultIdsAndMapsRateLimit() async throws {
         let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         let duplicateText = #"{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"translations\":[{\"segmentId\":\"00000000-0000-0000-0000-000000000001\",\"text\":\"一\"},{\"segmentId\":\"00000000-0000-0000-0000-000000000001\",\"text\":\"二\"}]}"}]}]}"#
@@ -144,7 +162,7 @@ struct GlobalTranslatorCoreTests {
     }
 
     @Test
-    func localChecksModelAndSendsJsonObjectPayload() async throws {
+    func localChecksModelAndEnforcesTranslationObjectSchema() async throws {
         let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         let output = #"{"choices":[{"message":{"role":"assistant","content":"{\"translations\":[{\"segmentId\":\"00000000-0000-0000-0000-000000000001\",\"text\":\"你好\"}]}"}}]}"#
         let transport = FakeTransport(responses: [
@@ -160,7 +178,22 @@ struct GlobalTranslatorCoreTests {
         let object = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
         #expect(object["stream"] as? Bool == false)
         #expect(object["temperature"] as? Double == 0)
-        #expect(object["response_format"] as? [String: String] == ["type": "json_object"])
+        let format = try #require(object["response_format"] as? [String: Any])
+        #expect(format["type"] as? String == "json_schema")
+        let jsonSchema = try #require(format["json_schema"] as? [String: Any])
+        #expect(jsonSchema["strict"] as? Bool == true)
+        let schema = try #require(jsonSchema["schema"] as? [String: Any])
+        #expect(schema["type"] as? String == "object")
+        #expect(schema["required"] as? [String] == ["translations"])
+        #expect(schema["additionalProperties"] as? Bool == false)
+        let properties = try #require(schema["properties"] as? [String: Any])
+        let translations = try #require(properties["translations"] as? [String: Any])
+        #expect(translations["minItems"] as? Int == 1)
+        #expect(translations["maxItems"] as? Int == 1)
+        let item = try #require(translations["items"] as? [String: Any])
+        let itemProperties = try #require(item["properties"] as? [String: Any])
+        let segment = try #require(itemProperties["segmentId"] as? [String: Any])
+        #expect(segment["enum"] as? [String] == [id.uuidString])
 
         let unavailableTransport = FakeTransport(responses: [HTTPResponse(statusCode: 200, headers: [:], body: Data(#"{"data":[]}"#.utf8))])
         let unavailableBackend = try LocalOpenAIBackend(baseURL: URL(string: "http://127.0.0.1:11434/v1")!, model: "missing", transport: unavailableTransport)

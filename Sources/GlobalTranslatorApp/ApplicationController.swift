@@ -114,8 +114,10 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             ExcludedApplication(bundleIdentifier: $0, displayName: $0)
         }
         viewModel.permissionSnapshot = components.permissionController.snapshot
-        let storedKey = try? components.credentialStore.read()
-        viewModel.keyConfigured = !(storedKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        if configuration.backend == .deepSeekCloud {
+            let storedKey = try? components.credentialStore.read()
+            viewModel.keyConfigured = !(storedKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        }
     }
 
     func makeSession() {
@@ -128,6 +130,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             monitor: monitor,
             capture: capture,
             overlay: overlay,
+            permissions: components.permissionController,
             coordinatorFactory: components.coordinatorFactory,
             schedulerFactory: components.schedulerFactory,
             logger: components.logger,
@@ -147,6 +150,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         session?.stop()
         session = nil
         callbackBox = nil
+        overlay = components.overlayFactory()
         makeSession()
     }
 
@@ -246,7 +250,14 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         viewModel.status = status
         switch status {
         case .missingPermission:
-            viewModel.healthMessage = "需要辅助功能或屏幕录制权限"
+            let permission = components.permissionController.snapshot
+            if permission.accessibilityTrusted && !permission.screenCaptureAuthorized {
+                viewModel.healthMessage = "当前内容需要屏幕录制权限，请授权后重试"
+            } else if permission.screenCaptureAuthorized && !permission.accessibilityTrusted {
+                viewModel.healthMessage = "当前内容需要辅助功能权限，请授权后重试"
+            } else {
+                viewModel.healthMessage = "需要辅助功能或屏幕录制权限"
+            }
         case .error where viewModel.healthMessage == nil:
             viewModel.healthMessage = UIFeedback.genericErrorMessage
         case .off, .listening, .translating, .error:

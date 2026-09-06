@@ -59,6 +59,8 @@ public final class GlobalTranslatorApplicationRunner: NSObject {
                 }
             }
         }
+        stopTimer?.invalidate()
+        stopTimer = nil
         if let controllerStartupTask {
             do {
                 try await controllerStartupTask.value

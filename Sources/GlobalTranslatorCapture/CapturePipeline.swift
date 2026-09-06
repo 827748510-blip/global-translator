@@ -56,14 +56,20 @@ public final class CapturePipeline: @unchecked Sendable {
     public func capture(_ descriptor: ActiveWindowDescriptor) async throws -> CaptureSnapshot {
         try validate(descriptor)
         let permission = permissions.snapshot
-        if permission.secureInputEnabled { throw CaptureError.protected(.secureInput) }
-        if permission.sessionLocked { throw CaptureError.protected(.sessionLocked) }
+        try permission.validateCapture()
 
         try Task.checkCancellation()
-        let accessibilityResult = await accessibility.collectResult(from: descriptor)
+        let accessibilityResult = permission.accessibilityTrusted
+            ? await accessibility.collectResult(from: descriptor)
+            : .unavailable(.permissionRequired(.accessibility))
         try Task.checkCancellation()
+        try permissions.snapshot.validateCapture()
         switch accessibilityResult {
         case .regions(let regions) where !regions.isEmpty:
+            try permissions.snapshot.validateCapture(source: .accessibility)
+            if regions.contains(where: { TextFilter.shouldTranslate($0.sourceText) && $0.sourceText.count > 4_000 }) {
+                break
+            }
             return CaptureSnapshot(window: CapturedWindow(
                 descriptor: descriptor,
                 regions: Array(regions.prefix(24)),
@@ -75,14 +81,13 @@ public final class CapturePipeline: @unchecked Sendable {
             break
         }
 
-        guard permission.screenCaptureAuthorized else {
-            throw CaptureError.permissionRequired(.screenCapture)
-        }
+        try permissions.snapshot.validateCapture(source: .visionOCR)
         let image: CGImage
         do {
             try Task.checkCancellation()
             image = try await screenshot.capture(window: descriptor)
             try Task.checkCancellation()
+            try permissions.snapshot.validateCapture(source: .visionOCR)
         } catch let error as CaptureError {
             throw error
         } catch is CancellationError {
@@ -107,6 +112,7 @@ public final class CapturePipeline: @unchecked Sendable {
             try Task.checkCancellation()
             observations = try await ocr.recognize(image: image, window: descriptor, revision: descriptor.revision)
             try Task.checkCancellation()
+            try permissions.snapshot.validateCapture(source: .visionOCR)
         } catch let error as CaptureError {
             throw error
         } catch is CancellationError {
