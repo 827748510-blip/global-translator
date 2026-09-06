@@ -6,7 +6,7 @@ import ScreenCaptureKit
 final class WindowVisualUpdates: NSObject, SCStreamOutput, @unchecked Sendable {
     private let lock = NSLock()
     private var generation: UInt64 = 0
-    private var previous: [UInt16]?
+    private var sampleHistory = VisualSampleHistory()
     private var activeStreamID: ObjectIdentifier?
     private let changed: @MainActor @Sendable () -> Void
     @MainActor private var stream: SCStream?
@@ -53,7 +53,7 @@ final class WindowVisualUpdates: NSObject, SCStreamOutput, @unchecked Sendable {
 
     @MainActor
     func stop() {
-        lock.withLock { generation &+= 1; previous = nil; activeStreamID = nil }
+        lock.withLock { generation &+= 1; sampleHistory.reset(); activeStreamID = nil }
         windowKey = nil
         let old = stream
         stream = nil
@@ -92,11 +92,7 @@ final class WindowVisualUpdates: NSObject, SCStreamOutput, @unchecked Sendable {
         }
         let didChange = lock.withLock {
             guard generation == token else { return false }
-            let changed = previous.map { old in
-                old.count != samples.count || zip(old, samples).lazy.filter { $0 != $1 }.prefix(3).count >= 3
-            } ?? true
-            if changed { previous = samples }
-            return changed
+            return sampleHistory.observe(samples)
         }
         if didChange {
             Task { @MainActor [weak self] in

@@ -81,7 +81,7 @@ swift test -Xswiftc -warnings-as-errors
 swift build -c release -Xswiftc -warnings-as-errors
 ```
 
-当前严格并发验证通过 196 个测试、19 个测试套件；已使用真实 DeepSeek 和本机 Ollama 验证翻译链路。跨 App 交互证据及尚未达到的性能目标见 [当前真实验收记录](docs/real-acceptance-current.md)，本机启动方式见 [本地模型配置](docs/local-model-setup.md)。Release 产物为 arm64 Mach-O，未生成安装包，也不捆绑模型权重。
+当前严格并发验证通过 199 个测试、20 个测试套件；已使用真实 DeepSeek 和本机 Ollama 验证翻译链路。跨 App 交互证据及尚未达到的性能目标见 [当前真实验收记录](docs/real-acceptance-current.md)，本机启动方式见 [本地模型配置](docs/local-model-setup.md)。Release 产物为 arm64 Mach-O，未生成安装包，也不捆绑模型权重。
 
 ## 本轮可用性修复
 
