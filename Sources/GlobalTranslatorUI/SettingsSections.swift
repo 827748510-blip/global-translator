@@ -256,8 +256,13 @@ struct PermissionsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: GTSpacing.xSmall) {
-            Text("系统权限")
-                .font(GTType.sectionTitle)
+            HStack {
+                Text("系统权限")
+                    .font(GTType.sectionTitle)
+                Spacer()
+                Button("重新检查", action: viewModel.refreshPermissions)
+                    .accessibilityLabel("重新检查系统权限")
+            }
             PermissionRow(
                 title: "辅助功能",
                 granted: viewModel.permissionSnapshot.accessibilityTrusted,
@@ -270,6 +275,13 @@ struct PermissionsSection: View {
                 kind: .screenCapture,
                 viewModel: viewModel
             )
+            if !viewModel.permissionSnapshot.accessibilityTrusted
+                || !viewModel.permissionSnapshot.screenCaptureAuthorized {
+                Text("授权后返回此窗口会自动检查。若更新应用后仍显示未授权，请在系统设置中重新授权当前版本，再退出并重新打开应用。")
+                    .font(GTType.secondary)
+                    .foregroundStyle(GTColor.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }
@@ -305,22 +317,22 @@ private struct PermissionRow: View {
     }
 }
 
-// MARK: - Exclusions
+// MARK: - Translated applications
 
-struct ExclusionsSection: View {
+struct TranslatedApplicationsSection: View {
     @ObservedObject var viewModel: SettingsViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: GTSpacing.xSmall) {
-            Text("排除的应用")
+            Text("要翻译的应用")
                 .font(GTType.sectionTitle)
 
-            if viewModel.excludedApplications.isEmpty {
-                Text("未添加排除应用")
+            if viewModel.translatedApplications.isEmpty {
+                Text("未选择要翻译的应用")
                     .font(GTType.secondary)
                     .foregroundStyle(GTColor.secondaryText)
             } else {
-                ForEach(viewModel.excludedApplications) { app in
+                ForEach(viewModel.translatedApplications) { app in
                     HStack(spacing: GTSpacing.xSmall) {
                         VStack(alignment: .leading, spacing: 0) {
                             Text(app.displayName)
@@ -334,7 +346,7 @@ struct ExclusionsSection: View {
                         }
                         Spacer()
                         Button(action: {
-                            viewModel.removeExclusion(bundleIdentifier: app.bundleIdentifier)
+                            viewModel.removeTranslationApplication(bundleIdentifier: app.bundleIdentifier)
                         }) {
                             Image(systemName: "minus.circle")
                                 .accessibilityHidden(true)
@@ -346,11 +358,16 @@ struct ExclusionsSection: View {
                 }
             }
 
-            Button("排除当前应用") {
-                viewModel.addCurrentAppExclusion()
+            Text("只有所选应用会被采集并翻译；未选择时不翻译任何应用。修改立即生效。")
+                .font(GTType.secondary)
+                .foregroundStyle(GTColor.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button("选择应用…") {
+                viewModel.chooseTranslatedApplications()
             }
             .buttonStyle(.bordered)
-            .accessibilityHint("将前台应用加入排除列表，不再对其翻译")
+            .accessibilityHint("选择一个或多个要翻译的应用，可按住 Command 多选")
         }
     }
 }

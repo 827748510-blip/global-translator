@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 import GlobalTranslatorCapture
 import GlobalTranslatorCore
 import GlobalTranslatorUI
@@ -208,6 +209,41 @@ extension ApplicationController {
         scheduleBackendRefresh()
     }
 
+    public func refreshPermissions() {
+        guard started else { return }
+        let previous = viewModel.permissionSnapshot
+        let snapshot = components.permissionController.snapshot
+        viewModel.permissionSnapshot = snapshot
+        let grantsChanged = previous.accessibilityTrusted != snapshot.accessibilityTrusted
+            || previous.screenCaptureAuthorized != snapshot.screenCaptureAuthorized
+        guard !configurationLoadFailed else { return }
+        guard snapshot.accessibilityTrusted || snapshot.screenCaptureAuthorized else {
+            if viewModel.isAutomaticTranslationEnabled || automaticEnablePending {
+                automaticRequestToken &+= 1
+                automaticEnableTask?.cancel()
+                automaticEnableTask = nil
+                automaticEnablePending = false
+                viewModel.isAutomaticTranslationEnabled = false
+                session?.stop()
+                applyStatus(.missingPermission)
+            }
+            return
+        }
+        if grantsChanged, viewModel.backendReady {
+            viewModel.healthMessage = "权限状态已更新"
+            if viewModel.isAutomaticTranslationEnabled {
+                session?.stop()
+                session?.start()
+            }
+        }
+        if configuration.autoTranslateEnabled,
+           !viewModel.isAutomaticTranslationEnabled,
+           !automaticEnablePending,
+           viewModel.canEnableAutomaticTranslation {
+            maybeStartPersistedSession()
+        }
+    }
+
     public func requestPermission(_ kind: PermissionKind) {
         switch kind {
         case .accessibility:
@@ -215,6 +251,11 @@ extension ApplicationController {
         case .screenCapture:
             _ = components.permissionController.requestScreenCapturePermission()
         }
+        refreshPermissions()
+        schedulePermissionRefresh(kind)
+    }
+
+    private func schedulePermissionRefresh(_ kind: PermissionKind) {
         permissionRefreshToken &+= 1
         permissionRefreshTask?.cancel()
         let refreshToken = permissionRefreshToken
@@ -230,8 +271,8 @@ extension ApplicationController {
                       self.started,
                       self.permissionRefreshToken == refreshToken,
                       !Task.isCancelled else { return }
-                let snapshot = self.components.permissionController.snapshot
-                self.viewModel.permissionSnapshot = snapshot
+                self.refreshPermissions()
+                let snapshot = self.viewModel.permissionSnapshot
                 let granted = kind == .accessibility
                     ? snapshot.accessibilityTrusted
                     : snapshot.screenCaptureAuthorized
@@ -251,33 +292,92 @@ extension ApplicationController {
         let urls = components.permissionController.privacyURLs
         guard urls.indices.contains(index) else { return }
         NSWorkspace.shared.open(urls[index])
+        schedulePermissionRefresh(kind)
     }
 
-    public func addCurrentAppExclusion() {
+    public func addCurrentAppTranslation() {
         guard let application = NSWorkspace.shared.frontmostApplication,
               let bundleID = application.bundleIdentifier,
-              !bundleID.isEmpty,
               application.processIdentifier != getpid(),
               bundleID != Bundle.main.bundleIdentifier else { return }
-        guard !configuration.excludedBundleIDs.contains(bundleID) else { return }
-        configuration.excludedBundleIDs.append(bundleID)
-        viewModel.excludedApplications.append(
-            ExcludedApplication(bundleIdentifier: bundleID, displayName: application.localizedName ?? bundleID)
-        )
-        let previousSession = session
-        disableAutomaticTranslation()
-        Task { await previousSession?.clearCache() }
-        rebuildSession()
-        queueSave()
+        addApplications([TranslatedApplication(bundleIdentifier: bundleID, displayName: application.localizedName ?? bundleID)])
     }
 
-    public func removeExclusion(bundleIdentifier: String) {
-        configuration.excludedBundleIDs.removeAll { $0 == bundleIdentifier }
-        viewModel.excludedApplications.removeAll { $0.bundleIdentifier == bundleIdentifier }
-        let previousSession = session
-        disableAutomaticTranslation()
-        Task { await previousSession?.clearCache() }
+    public func chooseTranslatedApplications() {
+        guard started, applicationPicker == nil else { return }
+        let panel = NSOpenPanel()
+        panel.title = "选择要翻译的应用"
+        panel.message = "只有所选应用会被采集并翻译；未选择时不翻译任何应用。可按住 Command 多选。"
+        panel.prompt = "翻译所选应用"
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = true
+        panel.treatsFilePackagesAsDirectories = false
+        panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        applicationPicker = panel
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self, panel] response in
+            guard let self else { return }
+            self.applicationPicker = nil
+            guard self.started, response == .OK else { return }
+            let applications = panel.urls.compactMap { url -> TranslatedApplication? in
+                guard url.pathExtension.lowercased() == "app", let bundle = Bundle(url: url),
+                      let id = bundle.bundleIdentifier else { return nil }
+                return TranslatedApplication(bundleIdentifier: id,
+                    displayName: FileManager.default.displayName(atPath: url.path))
+            }
+            self.addApplications(applications)
+        }
+        if let window = NSApplication.shared.keyWindow {
+            panel.beginSheetModal(for: window, completionHandler: completion)
+        } else {
+            panel.begin(completionHandler: completion)
+        }
+    }
+
+    func addApplications(_ applications: [TranslatedApplication]) {
+        guard started else { return }
+        var identifiers = Set(configuration.translatedBundleIDs)
+        let additions = applications.filter {
+            Self.isSafeBundleIdentifier($0.bundleIdentifier)
+                && $0.bundleIdentifier != Bundle.main.bundleIdentifier
+                && $0.bundleIdentifier != "com.maodashu.global-translator"
+                && identifiers.insert($0.bundleIdentifier).inserted
+        }
+        guard !additions.isEmpty else { return }
+        configuration.translatedBundleIDs.append(contentsOf: additions.map(\.bundleIdentifier))
+        viewModel.translatedApplications.append(contentsOf: additions)
+        applyTranslationApplicationChanges()
+    }
+
+    public func removeTranslationApplication(bundleIdentifier: String) {
+        guard started, configuration.translatedBundleIDs.contains(bundleIdentifier) else { return }
+        configuration.translatedBundleIDs.removeAll { $0 == bundleIdentifier }
+        viewModel.translatedApplications.removeAll { $0.bundleIdentifier == bundleIdentifier }
+        applyTranslationApplicationChanges()
+    }
+
+    private func applyTranslationApplicationChanges() {
+        let shouldResume = configuration.autoTranslateEnabled || automaticEnablePending
+        automaticRequestToken &+= 1
+        automaticEnableTask?.cancel()
+        automaticEnableTask = nil
+        automaticEnablePending = false
+        backendHealthToken &+= 1
+        backendRefreshTask?.cancel()
+        backendRefreshTask = nil
         rebuildSession()
+        configuration.autoTranslateEnabled = shouldResume
+        viewModel.isAutomaticTranslationEnabled = false
+        if viewModel.backendReady, let backend = try? components.backendFactory.makeBackend(
+            kind: configuration.backend, configuration: configuration, credentials: components.credentialStore
+        ) {
+            session?.configure(backends: [backend], backend: configuration.backend,
+                               model: modelIdentifier, visionFallbackEnabled: configuration.visionFallbackEnabled)
+            if shouldResume { maybeStartPersistedSession() }
+        } else {
+            scheduleBackendRefresh(startPersistedSession: shouldResume)
+        }
         queueSave()
     }
 
@@ -290,6 +390,7 @@ extension ApplicationController {
     }
 
     public func quit() {
+        components.logger.event("application_quit_requested", fields: [:])
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.stop()

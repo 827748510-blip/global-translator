@@ -22,7 +22,7 @@ public final class OverlayPanel: NSPanel {
         backgroundColor = .clear
         hasShadow = false
         ignoresMouseEvents = true
-        // Float above normal windows but below menu/status chrome.
+        // Hovering raises the panel without activating it or capturing input.
         level = .floating
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         isReleasedWhenClosed = false
@@ -139,6 +139,8 @@ public final class OverlayPanelController {
     /// Last text rendered into each panel's hosting view; also the test seam
     /// for verifying root-content updates without introspecting SwiftUI.
     private var panelContents: [UUID: String] = [:]
+    private var sourceFrames: [UUID: CGRect] = [:]
+    private var hoverTask: Task<Void, Never>?
     private var invalidatedThroughRevision: UInt64?
     private let visibleFramesProvider: () -> [CGRect]
 
@@ -160,6 +162,38 @@ public final class OverlayPanelController {
         self.visibleFramesProvider = visibleFramesProvider
     }
 
+    deinit { hoverTask?.cancel() }
+
+    func panelLevel(for id: UUID) -> NSWindow.Level? { panels[id]?.level }
+
+    func updateHover(at point: CGPoint) {
+        for (id, panel) in panels {
+            let area = panel.frame.union(sourceFrames[id] ?? panel.frame).insetBy(dx: -4, dy: -4)
+            let level: NSWindow.Level = area.contains(point) ? .screenSaver : .floating
+            if panel.level != level {
+                panel.level = level
+                if level == .screenSaver { panel.orderFrontRegardless() }
+            }
+        }
+    }
+
+    private func trackHover() {
+        guard !panels.isEmpty else {
+            hoverTask?.cancel()
+            hoverTask = nil
+            return
+        }
+        updateHover(at: NSEvent.mouseLocation)
+        guard hoverTask == nil else { return }
+        hoverTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                guard let self, !self.panels.isEmpty else { return }
+                self.updateHover(at: NSEvent.mouseLocation)
+            }
+        }
+    }
+
     /// Replaces the overlay set with the given translations for `revision`.
     /// Older revisions are ignored so stale translations never appear.
     public func update(translations: [RenderedTranslation], revision: UInt64) {
@@ -179,6 +213,7 @@ public final class OverlayPanelController {
             ) else { continue }
 
             seen.insert(translation.id)
+            sourceFrames[translation.id] = translation.region.screenFrame
             let contentSize = OverlayLayout.contentSize(forText: translation.text)
             let frame = OverlayLayout.placementFrame(
                 originalFrame: translation.region.screenFrame,
@@ -187,7 +222,7 @@ public final class OverlayPanelController {
             )
 
             if let panel = panels[translation.id] {
-                panel.setFrame(frame, display: true)
+                if panel.frame != frame { panel.setFrame(frame, display: true) }
                 if panelContents[translation.id] != translation.text {
                     // Reuse the panel but refresh the rendered translation.
                     (panel.contentView as? NSHostingView<OverlayView>)?.rootView = OverlayView(rendered: translation)
@@ -199,7 +234,7 @@ public final class OverlayPanelController {
                 panels[translation.id] = panel
                 panelContents[translation.id] = translation.text
             }
-            panels[translation.id]?.orderFrontRegardless()
+            if let panel = panels[translation.id], !panel.isVisible { panel.orderFrontRegardless() }
         }
 
         // Collect stale IDs first; never mutate `panels` while iterating it.
@@ -208,7 +243,9 @@ public final class OverlayPanelController {
             panels[id]?.orderOut(nil)
             panels.removeValue(forKey: id)
             panelContents.removeValue(forKey: id)
+            sourceFrames.removeValue(forKey: id)
         }
+        trackHover()
     }
 
     /// Hides and drops every panel immediately and invalidates in-flight work:
@@ -221,5 +258,8 @@ public final class OverlayPanelController {
         }
         panels.removeAll()
         panelContents.removeAll()
+        sourceFrames.removeAll()
+        hoverTask?.cancel()
+        hoverTask = nil
     }
 }

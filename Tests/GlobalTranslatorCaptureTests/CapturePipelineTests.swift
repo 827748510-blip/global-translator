@@ -5,9 +5,66 @@ import Testing
 import GlobalTranslatorCore
 
 struct CapturePipelineTests {
+    @Test
+    func emptyWebAreaWithSidebarLabelsRequiresOCR() async throws {
+        let collector = AccessibilityTextCollector(
+            translatedBundleIdentifiers: ["com.example.foreign"],
+            reader: FakeAccessibilityReader(root: .group(children: [
+            .staticText("Bookmarks", frame: CGRect(x: 20, y: 200, width: 100, height: 30)),
+            AccessibilityNode(role: .webArea, frame: CGRect(x: 200, y: 0, width: 800, height: 700), children: [
+                AccessibilityNode(role: .group)
+            ])
+        ])))
+        #expect(await collector.collectResult(from: testWindow(frame: CGRect(x: 0, y: 0, width: 1000, height: 800))) == .unavailable(.accessibilityUnavailable))
+    }
+
+    @Test
+    func webContentIsSelectedInsteadOfBrowserChrome() {
+        let collector = AccessibilityTextCollector(
+            translatedBundleIdentifiers: ["com.example.foreign"],
+            reader: FakeAccessibilityReader(root: .group(children: [
+            .staticText("Bookmarks", frame: CGRect(x: 20, y: 200, width: 100, height: 30)),
+            AccessibilityNode(role: .webArea, frame: CGRect(x: 200, y: 0, width: 800, height: 700), children: [
+                .staticText("Read the article", frame: CGRect(x: 250, y: 400, width: 400, height: 30))
+            ])
+        ])))
+        let regions = collector.collect(from: testWindow(frame: CGRect(x: 0, y: 0, width: 1000, height: 800)))
+        #expect(regions.map(\.sourceText) == ["Read the article"])
+    }
+
+    @Test
+    func hiddenContainerCannotLeakItsVisibleLookingChildren() {
+        let collector = AccessibilityTextCollector(
+            translatedBundleIdentifiers: ["com.example.foreign"],
+            reader: FakeAccessibilityReader(root: .group(children: [
+            AccessibilityNode(role: .group, children: [
+                .staticText("Hidden tab content", frame: CGRect(x: 200, y: 200, width: 300, height: 30))
+            ], isOffscreen: true),
+            .staticText("Visible page", frame: CGRect(x: 200, y: 300, width: 300, height: 30))
+        ])))
+        #expect(collector.collect(from: testWindow()).map(\.sourceText) == ["Visible page"])
+    }
+
+    @Test
+    func readableBodyGetsBudgetBeforeManyActionButtons() {
+        let controls = (0..<30).map { index in
+            AccessibilityNode.button("Action \(index)", frame: CGRect(x: 10, y: 20 + index * 20, width: 80, height: 18))
+        }
+        let collector = AccessibilityTextCollector(
+            translatedBundleIdentifiers: ["com.example.foreign"],
+            reader: FakeAccessibilityReader(root: .group(children: controls + [
+            .staticText("Translate the visible article text", frame: CGRect(x: 250, y: 350, width: 500, height: 35))
+        ])))
+        let result = collector.collect(from: testWindow(frame: CGRect(x: 0, y: 0, width: 1000, height: 800)))
+        #expect(result.first?.sourceText == "Translate the visible article text")
+        #expect(result.count <= 24)
+    }
+
     @Test(arguments: [CGFloat(0), CGFloat(1)])
     func clippedOffscreenTextDoesNotRenderAtViewportEdge(height: CGFloat) {
-        let collector = AccessibilityTextCollector(reader: FakeAccessibilityReader(root: .group(children: [
+        let collector = AccessibilityTextCollector(
+            translatedBundleIdentifiers: ["com.example.foreign"],
+            reader: FakeAccessibilityReader(root: .group(children: [
             .staticText("Scrolled out of view", frame: CGRect(x: 100, y: 600, width: 300, height: height)),
             .staticText("Visible destination", frame: CGRect(x: 100, y: 200, width: 300, height: 29))
         ])))
@@ -17,7 +74,9 @@ struct CapturePipelineTests {
 
     @Test
     func smallImageWithAVisibleLabelKeepsItsText() {
-        let collector = AccessibilityTextCollector(reader: FakeAccessibilityReader(root: .group(children: [
+        let collector = AccessibilityTextCollector(
+            translatedBundleIdentifiers: ["com.example.foreign"],
+            reader: FakeAccessibilityReader(root: .group(children: [
             AccessibilityNode(role: .image, description: "Read Before Closing.txt", frame: CGRect(x: 300, y: 300, width: 120, height: 100))
         ])))
         let regions = collector.collect(from: testWindow(frame: CGRect(x: 0, y: 0, width: 1000, height: 800)))
@@ -28,7 +87,9 @@ struct CapturePipelineTests {
     func untranslatedChromeDoesNotConsumeTheDocumentRegionBudget() {
         let descriptor = testWindow(frame: CGRect(x: 0, y: 0, width: 1000, height: 800))
         let controls = (0..<30).map { index in AccessibilityNode.staticText("中文菜单", frame: CGRect(x: 10, y: 10 + index * 20, width: 80, height: 18)) }
-        let collector = AccessibilityTextCollector(reader: FakeAccessibilityReader(root: .group(children: controls + [.staticText("Read Before Closing", frame: CGRect(x: 300, y: 300, width: 200, height: 30))])))
+        let collector = AccessibilityTextCollector(
+            translatedBundleIdentifiers: ["com.example.foreign"],
+            reader: FakeAccessibilityReader(root: .group(children: controls + [.staticText("Read Before Closing", frame: CGRect(x: 300, y: 300, width: 200, height: 30))])))
         let result = collector.collect(from: descriptor)
         #expect(result.contains { $0.sourceText == "Read Before Closing" })
         #expect(result.count <= 24)
@@ -37,7 +98,9 @@ struct CapturePipelineTests {
     @Test
     func toolbarOnlyAccessibilityDoesNotHideMissingDocumentText() async throws {
         let descriptor = testWindow(frame: CGRect(x: 0, y: 0, width: 1000, height: 800))
-        let collector = AccessibilityTextCollector(reader: FakeAccessibilityReader(root: .group(children: [
+        let collector = AccessibilityTextCollector(
+            translatedBundleIdentifiers: ["com.example.foreign"],
+            reader: FakeAccessibilityReader(root: .group(children: [
             .button("Share", frame: CGRect(x: 20, y: 750, width: 60, height: 25)),
             .staticText("Document title", frame: CGRect(x: 300, y: 750, width: 250, height: 25))
         ])))
@@ -48,12 +111,15 @@ struct CapturePipelineTests {
     func largeImageWithOnlyToolbarTextRequiresOCR(rawRole: String) async throws {
         let imageRole = try #require(AccessibilityRole(rawValue: rawRole))
         let descriptor = testWindow(frame: CGRect(x: 0, y: 0, width: 1000, height: 800))
-        let collector = AccessibilityTextCollector(reader: FakeAccessibilityReader(root: .group(children: [
+        let collector = AccessibilityTextCollector(
+            translatedBundleIdentifiers: ["com.example.foreign"],
+            reader: FakeAccessibilityReader(root: .group(children: [
             .button("Share", frame: CGRect(x: 10, y: 750, width: 60, height: 30)),
             AccessibilityNode(role: imageRole, frame: CGRect(x: 20, y: 20, width: 960, height: 700))
         ])))
         let screenshot = CountingScreenshotProvider(image: makeTestImage())
         let pipeline = CapturePipeline(
+            translatedBundleIdentifiers: ["com.example.foreign"],
             permissions: FakePermissionController(snapshot: .allGranted),
             accessibility: collector,
             screenshot: screenshot,
@@ -69,7 +135,9 @@ struct CapturePipelineTests {
     func smallImageIconDoesNotForceScreenshot() async throws {
         let imageRole = try #require(AccessibilityRole(rawValue: "image"))
         let descriptor = testWindow(frame: CGRect(x: 0, y: 0, width: 1000, height: 800))
-        let collector = AccessibilityTextCollector(reader: FakeAccessibilityReader(root: .group(children: [
+        let collector = AccessibilityTextCollector(
+            translatedBundleIdentifiers: ["com.example.foreign"],
+            reader: FakeAccessibilityReader(root: .group(children: [
             .staticText("Readable body", frame: CGRect(x: 100, y: 400, width: 400, height: 30)),
             AccessibilityNode(role: imageRole, frame: CGRect(x: 20, y: 20, width: 32, height: 32))
         ])))
@@ -79,7 +147,9 @@ struct CapturePipelineTests {
     @Test
     func largeImageWithAccessibleLiveTextKeepsAXPath() async throws {
         let descriptor = testWindow(frame: CGRect(x: 0, y: 0, width: 1000, height: 800))
-        let collector = AccessibilityTextCollector(reader: FakeAccessibilityReader(root: .group(children: [
+        let collector = AccessibilityTextCollector(
+            translatedBundleIdentifiers: ["com.example.foreign"],
+            reader: FakeAccessibilityReader(root: .group(children: [
             AccessibilityNode(role: .image, frame: CGRect(x: 20, y: 20, width: 960, height: 700), children: [
                 .staticText("Live Text body", frame: CGRect(x: 100, y: 400, width: 400, height: 30))
             ])
@@ -90,7 +160,9 @@ struct CapturePipelineTests {
     @Test
     func imageLiveTextOutsideItsImageRequiresOCR() async {
         let descriptor = testWindow(frame: CGRect(x: 0, y: 0, width: 1000, height: 800))
-        let collector = AccessibilityTextCollector(reader: FakeAccessibilityReader(root: .group(children: [
+        let collector = AccessibilityTextCollector(
+            translatedBundleIdentifiers: ["com.example.foreign"],
+            reader: FakeAccessibilityReader(root: .group(children: [
             AccessibilityNode(role: .image, frame: CGRect(x: 20, y: 20, width: 960, height: 700), children: [
                 .staticText("First line", frame: CGRect(x: 100, y: 400, width: 400, height: 30)),
                 .textField("Mispositioned line", frame: CGRect(x: 100, y: 900, width: 400, height: 30))
@@ -131,6 +203,7 @@ struct CapturePipelineTests {
             )
         ]))
         let pipeline = CapturePipeline(
+            translatedBundleIdentifiers: ["com.example.foreign"],
             permissions: FakePermissionController(snapshot: .allGranted),
             accessibility: collector,
             screenshot: screenshot,
@@ -153,6 +226,7 @@ struct CapturePipelineTests {
             VisionTextObservation(text: "OCR", boundingBox: CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.2), confidence: 0.9)
         ])
         let pipeline = CapturePipeline(
+            translatedBundleIdentifiers: ["com.example.foreign"],
             permissions: FakePermissionController(snapshot: .allGranted),
             accessibility: FakeAccessibilityCollector(result: .empty),
             screenshot: screenshot,
@@ -171,6 +245,7 @@ struct CapturePipelineTests {
     func screenshotIsBlockedWhenPermissionIsMissing() async {
         let screenshot = CountingScreenshotProvider(image: nil)
         let pipeline = CapturePipeline(
+            translatedBundleIdentifiers: ["com.example.foreign"],
             permissions: FakePermissionController(snapshot: PermissionSnapshot(
                 accessibilityTrusted: true,
                 screenCaptureAuthorized: false,
@@ -200,6 +275,7 @@ struct CapturePipelineTests {
             PermissionSnapshot(accessibilityTrusted: true, screenCaptureAuthorized: true, secureInputEnabled: false, sessionLocked: true)
         ] {
             let pipeline = CapturePipeline(
+            translatedBundleIdentifiers: ["com.example.foreign"],
                 permissions: FakePermissionController(snapshot: snapshot),
                 accessibility: FakeAccessibilityCollector(result: .empty),
                 screenshot: CountingScreenshotProvider(image: nil),
@@ -217,16 +293,16 @@ struct CapturePipelineTests {
     }
 
     @Test
-    func selfAndExcludedApplicationsAreRejectedBeforeAccessibilityOrScreenshot() async {
+    func selfAndUnselectedApplicationsAreRejectedBeforeAccessibilityOrScreenshot() async {
         let collector = FakeAccessibilityCollector(result: .empty)
         let screenshot = CountingScreenshotProvider(image: nil)
         let pipeline = CapturePipeline(
+            translatedBundleIdentifiers: ["com.example.foreign"],
             permissions: FakePermissionController(snapshot: .allGranted),
             accessibility: collector,
             screenshot: screenshot,
             ocr: FakeOCRService(regions: []),
-            ownBundleIdentifier: "com.example.self",
-            excludedBundleIdentifiers: ["com.example.excluded"]
+            ownBundleIdentifier: "com.example.self"
         )
 
         for bundleIdentifier in ["com.example.self", "com.example.excluded"] {
@@ -238,12 +314,34 @@ struct CapturePipelineTests {
             )
             do {
                 _ = try await pipeline.capture(descriptor)
-                Issue.record("excluded application should fail closed")
+                Issue.record("unselected application should fail closed")
             } catch let error as CaptureError {
                 #expect(error == (bundleIdentifier == "com.example.self" ? .selfApplication : .excludedApplication(bundleIdentifier)))
             } catch {
                 Issue.record("unexpected error: \(error)")
             }
+        }
+        #expect(screenshot.callCount == 0)
+    }
+
+    @Test
+    func emptyAllowListRejectsEveryForeignApplication() async {
+        let collector = FakeAccessibilityCollector(result: .empty)
+        let screenshot = CountingScreenshotProvider(image: nil)
+        let pipeline = CapturePipeline(
+            translatedBundleIdentifiers: [],
+            permissions: FakePermissionController(snapshot: .allGranted),
+            accessibility: collector,
+            screenshot: screenshot,
+            ocr: FakeOCRService(regions: [])
+        )
+        do {
+            _ = try await pipeline.capture(testWindow())
+            Issue.record("empty allow list must translate nothing")
+        } catch let error as CaptureError {
+            #expect(error == .excludedApplication("com.example.foreign"))
+        } catch {
+            Issue.record("unexpected error: \(error)")
         }
         #expect(screenshot.callCount == 0)
     }
@@ -263,7 +361,9 @@ struct CapturePipelineTests {
                 )
             } + [AccessibilityNode.staticText("off", frame: CGRect(x: 0, y: 0, width: 12, height: 12))]
         )
-        let collector = AccessibilityTextCollector(reader: FakeAccessibilityReader(root: root))
+        let collector = AccessibilityTextCollector(
+            translatedBundleIdentifiers: ["com.example.foreign"],
+            reader: FakeAccessibilityReader(root: root))
 
         let regions = collector.collect(from: descriptor)
 
@@ -294,6 +394,7 @@ struct CapturePipelineTests {
             VisionTextObservation(text: "one", boundingBox: CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.2), confidence: 0.9)
         ])
         let pipeline = CapturePipeline(
+            translatedBundleIdentifiers: ["com.example.foreign"],
             permissions: FakePermissionController(snapshot: .allGranted),
             accessibility: FakeAccessibilityCollector(result: .empty),
             screenshot: screenshot,
@@ -312,6 +413,7 @@ struct CapturePipelineTests {
         let screenshot = BlockingScreenshotProvider()
         let ocr = FakeOCRService(regions: [])
         let pipeline = CapturePipeline(
+            translatedBundleIdentifiers: ["com.example.foreign"],
             permissions: FakePermissionController(snapshot: .allGranted),
             accessibility: FakeAccessibilityCollector(result: .empty),
             screenshot: screenshot,
@@ -361,7 +463,7 @@ struct CapturePipelineTests {
         let monitor = await MainActor.run {
             ActiveWindowMonitor(
                 ownBundleIdentifier: "com.example.self",
-                excludedBundleIdentifiers: ["com.example.excluded"],
+                translatedBundleIdentifiers: ["com.example.foreign"],
                 callback: { descriptor in recorder.record(descriptor) }
             )
         }

@@ -4,6 +4,11 @@ import Foundation
 public protocol RuntimeWorkerHook: Sendable {
     func workerDidStart()
     func workerWillStop()
+    func workerDidRequestSettings()
+}
+
+public extension RuntimeWorkerHook {
+    func workerDidRequestSettings() {}
 }
 
 public struct NoopRuntimeWorkerHook: RuntimeWorkerHook, Sendable {
@@ -69,6 +74,10 @@ public final class RuntimeWorker: @unchecked Sendable {
         }
 
         do {
+            // Desktop and foreground launches bypass RuntimeManager.start().
+            // Recover only after acquiring the single-instance lock, so a
+            // concurrent worker cannot lose the socket it is about to serve.
+            try recoverAbandonedControlSocket(at: paths.socketURL)
             try server.start()
             stateLock.lock()
             state = .running
@@ -152,6 +161,9 @@ public final class RuntimeWorker: @unchecked Sendable {
     private func handle(_ request: ControlRequest) -> ControlResponse {
         switch request.action {
         case .status:
+            return statusResponse
+        case .showSettings:
+            hook.workerDidRequestSettings()
             return statusResponse
         case .stop:
             let response = ControlResponse(running: true, state: .stopping, pid: pidLock.pid ?? 0)

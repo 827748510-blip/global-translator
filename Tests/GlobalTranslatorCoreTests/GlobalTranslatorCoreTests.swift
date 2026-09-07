@@ -11,7 +11,7 @@ struct GlobalTranslatorCoreTests {
         #expect(!configuration.visionFallbackEnabled)
         #expect(configuration.localBaseURL.absoluteString == "http://127.0.0.1:11434/v1")
         #expect(configuration.localModel.isEmpty)
-        #expect(configuration.excludedBundleIDs.isEmpty)
+        #expect(configuration.translatedBundleIDs.isEmpty)
 
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = ConfigStore(url: path)
@@ -20,6 +20,19 @@ struct GlobalTranslatorCoreTests {
         let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue
         #expect(mode == 0o600)
         #expect(try await store.load() == configuration)
+    }
+
+    @Test
+    func legacyExclusionListNeverBecomesTranslationAllowList() throws {
+        let legacyJSON = Data(#"{"autoTranslateEnabled":true,"backend":"local","localBaseURL":"http:\/\/127.0.0.1:11434\/v1","localModel":"m","excludedBundleIDs":["com.example.blocked"]}"#.utf8)
+        let decoded = try JSONDecoder().decode(AppConfiguration.self, from: legacyJSON)
+        #expect(decoded.translatedBundleIDs.isEmpty)
+        #expect(decoded.autoTranslateEnabled)
+
+        let allowJSON = Data(#"{"translatedBundleIDs":["com.google.Chrome"]}"#.utf8)
+        let allow = try JSONDecoder().decode(AppConfiguration.self, from: allowJSON)
+        #expect(allow.translatedBundleIDs == ["com.google.Chrome"])
+        #expect(!allow.autoTranslateEnabled)
     }
 
     @Test

@@ -68,16 +68,21 @@ private final class SpyActions: SettingsActions {
     func requestPermission(_ kind: PermissionKind) {
         permissionRequests.append(kind)
     }
+    var permissionRefreshCount = 0
+    func refreshPermissions() { permissionRefreshCount += 1 }
 
     func openSystemSettings(_ kind: PermissionKind) {
         openedSystemSettings.append(kind)
     }
 
-    func addCurrentAppExclusion() {
+    var chooseApplicationsCallCount = 0
+    func chooseTranslatedApplications() { chooseApplicationsCallCount += 1 }
+
+    func addCurrentAppTranslation() {
         addExclusionCallCount += 1
     }
 
-    func removeExclusion(bundleIdentifier: String) {
+    func removeTranslationApplication(bundleIdentifier: String) {
         removedExclusions.append(bundleIdentifier)
     }
 
@@ -487,16 +492,20 @@ struct SettingsViewModelTests {
         viewModel.requestPermission(.accessibility)
         viewModel.requestPermission(.screenCapture)
         viewModel.openSystemSettings(.screenCapture)
+        viewModel.refreshPermissions()
         #expect(actions.permissionRequests == [.accessibility, .screenCapture])
         #expect(actions.openedSystemSettings == [.screenCapture])
+        #expect(actions.permissionRefreshCount == 1)
     }
 
     @Test
     func exclusionActionsForward() {
         let (viewModel, actions) = makeViewModel()
-        viewModel.addCurrentAppExclusion()
-        viewModel.removeExclusion(bundleIdentifier: "com.example.app")
+        viewModel.addCurrentAppTranslation()
+        viewModel.chooseTranslatedApplications()
+        viewModel.removeTranslationApplication(bundleIdentifier: "com.example.app")
         #expect(actions.addExclusionCallCount == 1)
+        #expect(actions.chooseApplicationsCallCount == 1)
         #expect(actions.removedExclusions == ["com.example.app"])
     }
 

@@ -5,6 +5,55 @@ import Testing
 
 struct RuntimeContractsTests {
     @Test
+    func directWorkerStartRecoversAbandonedSocketAfterAcquiringPIDLock() throws {
+        let paths = RuntimePaths(root: URL(fileURLWithPath: "/private/tmp/gt-direct-recovery-\(UUID().uuidString)"))
+        try paths.prepareDirectories()
+        let abandoned = try bindSocketLeavingPath(paths.socketURL.path)
+        Darwin.close(abandoned)
+        let worker = try RuntimeWorker(paths: paths)
+        try worker.start()
+        defer { worker.stop() }
+        let response = try UnixControlClient(socketURL: paths.socketURL).request(.status)
+        #expect(response.running)
+        #expect(response.pid == getpid())
+        worker.stop()
+        #expect(!FileManager.default.fileExists(atPath: paths.socketURL.path))
+        #expect(!FileManager.default.fileExists(atPath: paths.pidURL.path))
+    }
+
+    @Test
+    func directWorkerStartPreservesLiveSocketEvenWithoutPIDFile() throws {
+        let paths = RuntimePaths(root: URL(fileURLWithPath: "/private/tmp/gt-live-recovery-\(UUID().uuidString)"))
+        let expected = ControlResponse(running: true, state: .running, pid: 42)
+        let server = UnixControlServer(socketURL: paths.socketURL) { _ in expected }
+        try server.start()
+        defer { server.stop() }
+        let worker = try RuntimeWorker(paths: paths)
+        for _ in 0..<10 {
+            #expect(throws: RuntimeError.socketInUse) { try worker.start() }
+        }
+        #expect(try UnixControlClient(socketURL: paths.socketURL).request(.status) == expected)
+    }
+
+    @Test(arguments: [false, true])
+    func directWorkerRecoveryPreservesNonSocketFiles(symlink: Bool) throws {
+        let paths = RuntimePaths(root: URL(fileURLWithPath: "/private/tmp/gt-file-recovery-\(UUID().uuidString)"))
+        try paths.prepareDirectories()
+        let marker = Data("keep this file".utf8)
+        let target = paths.rootDirectory.appendingPathComponent("marker")
+        try marker.write(to: target)
+        if symlink {
+            try FileManager.default.createSymbolicLink(at: paths.socketURL, withDestinationURL: target)
+        } else {
+            try marker.write(to: paths.socketURL)
+        }
+        let worker = try RuntimeWorker(paths: paths)
+        #expect(throws: RuntimeError.socketInUse) { try worker.start() }
+        #expect(try Data(contentsOf: paths.socketURL) == marker)
+        #expect(try Data(contentsOf: target) == marker)
+    }
+
+    @Test
     func shutdownNotificationRunsAfterPIDAndSocketCleanup() throws {
         let paths = RuntimePaths(root: URL(fileURLWithPath: "/private/tmp/gt-clean-\(UUID().uuidString)"))
         let hook = CleanupObservationHook(paths: paths)
@@ -59,6 +108,8 @@ struct RuntimeContractsTests {
     func parserAcceptsRequiredCommandsAndRejectsInvalidChineseUsage() throws {
         #expect(try CLIParser.parse(["doctor"]) == .doctor)
         #expect(try CLIParser.parse(["start"]) == .start)
+        #expect(try CLIParser.parse(["settings"]) == .settings)
+        #expect(throws: CLIParseError.self) { try CLIParser.parse(["settings", "extra"]) }
         #expect(try CLIParser.parse(["status"]) == .status)
         #expect(try CLIParser.parse(["logs"]) == .logs(follow: false))
         #expect(try CLIParser.parse(["logs", "--follow"]) == .logs(follow: true))
@@ -159,6 +210,43 @@ struct RuntimeContractsTests {
         )
         #expect(Set(object.keys) == Set(["running", "state", "pid"]))
         #expect(object["pid"] as? Int == 123)
+    }
+
+    @Test
+    func settingsCommandReachesExistingWorkerWithoutRestartingIt() throws {
+        let paths = RuntimePaths(root: URL(fileURLWithPath: "/private/tmp/gt-settings-\(UUID().uuidString)"))
+        let hook = SettingsRequestHook()
+        let worker = try RuntimeWorker(paths: paths, hook: hook)
+        try worker.start()
+        defer { worker.stop() }
+        let manager = RuntimeManager(paths: paths)
+        let first = try manager.showSettings()
+        let second = try manager.showSettings()
+        #expect(first.pid == getpid())
+        #expect(second == first)
+        #expect(hook.settingsCount == 2)
+        #expect(worker.isRunning)
+    }
+
+    @Test
+    func settingsRequestFailsWhenWorkerIsAbsent() throws {
+        let paths = RuntimePaths(root: URL(fileURLWithPath: "/private/tmp/gt-no-settings-\(UUID().uuidString)"))
+        #expect(throws: RuntimeError.notReady) {
+            try RuntimeManager(paths: paths, readinessTimeout: 0.1).showSettings()
+        }
+    }
+
+    @Test
+    func settingsRequestWaitsForConcurrentStartup() throws {
+        let paths = RuntimePaths(root: URL(fileURLWithPath: "/private/tmp/gt-start-settings-\(UUID().uuidString)"))
+        let ready = ControlResponse(running: true, state: .running, pid: 123)
+        let client = SequencedControlClient(results: [
+            .failure(TransientControlFailure()),
+            .success(ControlResponse(running: true, state: .starting, pid: 123)),
+            .success(ready)
+        ])
+        let manager = RuntimeManager(paths: paths, controlClientFactory: { _ in client })
+        #expect(try manager.showSettings() == ready)
     }
 
     @Test
@@ -420,6 +508,15 @@ private final class CountingHook: RuntimeWorkerHook, @unchecked Sendable {
 }
 
 private struct TransientControlFailure: Error, Sendable {}
+
+private final class SettingsRequestHook: RuntimeWorkerHook, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var settingsCount: Int { lock.withLock { count } }
+    func workerDidStart() {}
+    func workerWillStop() {}
+    func workerDidRequestSettings() { lock.withLock { count += 1 } }
+}
 
 private final class SequencedControlClient: RuntimeControlClient, @unchecked Sendable {
     private let lock = NSLock()

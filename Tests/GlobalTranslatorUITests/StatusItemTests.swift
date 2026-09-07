@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import GlobalTranslatorUI
 import GlobalTranslatorEngine
@@ -16,9 +18,11 @@ private final class StatusItemTestActions: SettingsActions {
     func setVisionFallback(_ enabled: Bool) {}
     func setLocalConfiguration(baseURL: String, model: String) {}
     func requestPermission(_ kind: PermissionKind) {}
+    func refreshPermissions() {}
     func openSystemSettings(_ kind: PermissionKind) {}
-    func addCurrentAppExclusion() {}
-    func removeExclusion(bundleIdentifier: String) {}
+    func addCurrentAppTranslation() {}
+    func chooseTranslatedApplications() {}
+    func removeTranslationApplication(bundleIdentifier: String) {}
     func clearCache() async throws {}
     func openLogs() {}
     func quit() {}
@@ -46,6 +50,98 @@ struct StatusItemTests {
         #expect(controller.requestsStatusItemVisibility)
 
         controller.stop()
+    }
+
+    @Test @MainActor
+    func dropdownPanelCanAppearOverFullscreenSpaces() {
+        let viewModel = SettingsViewModel(actions: StatusItemTestActions())
+        let controller = StatusItemController(viewModel: viewModel)
+
+        // The dropdown must join fullscreen spaces so it opens even when the
+        // frontmost browser is fullscreen.
+        #expect(controller.dropdownIsFullscreenCapable)
+
+        controller.stop()
+    }
+
+    @Test @MainActor
+    func dropdownPanelIsWhiteNonActivatingAndKeyCapable() {
+        let panel = DropdownPanel(content: NSViewController())
+
+        #expect(panel.styleMask.contains(.borderless))
+        #expect(panel.styleMask.contains(.nonactivatingPanel))
+        #expect(panel.canBecomeKey)
+        #expect(!panel.canBecomeMain)
+        #expect(panel.level == .floating)
+        // Rounded corners are drawn by the content; the window is transparent.
+        #expect(!panel.isOpaque)
+        #expect(panel.backgroundColor == .clear)
+        #expect(panel.appearance?.name == NSAppearance(named: .aqua)?.name)
+
+        panel.orderOut(nil)
+    }
+
+    @Test @MainActor
+    func panelRegistersOutsideClickMonitorsWhileVisible() {
+        let panel = DropdownPanel(content: NSViewController())
+
+        #expect(panel.outsideClickMonitorCount == 0)
+        panel.present(anchorTopLeft: CGPoint(x: 100, y: 300), size: CGSize(width: 380, height: 240))
+        #expect(panel.outsideClickMonitorCount >= 1)
+
+        panel.dismiss(animated: false)
+        #expect(panel.outsideClickMonitorCount == 0)
+        panel.orderOut(nil)
+    }
+
+    @Test
+    func dropdownLayoutCentersUnderIconAndClampsToScreen() {
+        let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        // Icon near the middle: panel centers under it.
+        #expect(DropdownLayout.panelOriginX(iconMidX: 700, panelWidth: 380, visibleFrame: screen) == 510.0)
+        // Icon at the far right: panel clamps inside the right edge.
+        #expect(DropdownLayout.panelOriginX(iconMidX: 1430, panelWidth: 380, visibleFrame: screen) == 1052.0)
+        // Icon at the far left: panel clamps inside the left edge.
+        #expect(DropdownLayout.panelOriginX(iconMidX: 10, panelWidth: 380, visibleFrame: screen) == 8.0)
+        // Negative-coordinate secondary display keeps the panel on screen.
+        let secondary = CGRect(x: -1920, y: 0, width: 1920, height: 1080)
+        #expect(DropdownLayout.panelOriginX(iconMidX: -1900, panelWidth: 380, visibleFrame: secondary) == -1912.0)
+        #expect(DropdownLayout.panelOriginX(iconMidX: -10, panelWidth: 380, visibleFrame: secondary) == -388.0)
+        // Narrower than the panel: origin pins to the left margin.
+        let tiny = CGRect(x: 0, y: 0, width: 100, height: 600)
+        #expect(DropdownLayout.panelOriginX(iconMidX: 50, panelWidth: 380, visibleFrame: tiny) == 8.0)
+    }
+
+    @Test
+    func toggleDecisionCoversOpenCloseAndFlickerGuard() {
+        // Closed with no recent dismissal: clicking opens.
+        #expect(DropdownToggleLogic.toggleAction(isShown: false, secondsSinceDismiss: nil) == .show)
+        // Closed but the dismissal is old: clicking opens again.
+        #expect(DropdownToggleLogic.toggleAction(isShown: false, secondsSinceDismiss: 5) == .show)
+        // Open: clicking closes.
+        #expect(DropdownToggleLogic.toggleAction(isShown: true, secondsSinceDismiss: nil) == .close)
+        // The click just dismissed the transient panel: do not reopen.
+        #expect(DropdownToggleLogic.toggleAction(isShown: false, secondsSinceDismiss: 0.05) == .stayClosed)
+        #expect(DropdownToggleLogic.toggleAction(isShown: false, secondsSinceDismiss: 0.19) == .stayClosed)
+        // Just past the suppression window clicking opens again.
+        #expect(DropdownToggleLogic.toggleAction(isShown: false, secondsSinceDismiss: 0.21) == .show)
+    }
+
+    @Test @MainActor
+    func stopMarksControllerInactive() {
+        let viewModel = SettingsViewModel(actions: StatusItemTestActions())
+        let controller = StatusItemController(viewModel: viewModel)
+
+        #expect(!controller.isStopped)
+        controller.stop()
+
+        // Further requests after stopping must be ignored.
+        controller.toggleDropdown(nil)
+        controller.showSettings()
+        #expect(!controller.isDropdownShown)
+
+        controller.stop()
+        #expect(controller.isStopped)
     }
 
     @Test

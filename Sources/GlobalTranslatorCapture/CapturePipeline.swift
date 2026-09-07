@@ -7,7 +7,7 @@ public final class CapturePipeline: @unchecked Sendable {
     public let screenshot: any ScreenCaptureProviding
     public let ocr: any VisionOCRProviding
     public let fingerprintStore: InMemoryFingerprintStore
-    public let excludedBundleIdentifiers: Set<String>
+    public let translatedBundleIdentifiers: Set<String>
     public let ownBundleIdentifier: String?
     public let maximumPreviousSnapshots: Int
 
@@ -18,28 +18,28 @@ public final class CapturePipeline: @unchecked Sendable {
 
     public convenience init(
         ownBundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        excludedBundleIdentifiers: Set<String> = [],
+        translatedBundleIdentifiers: Set<String> = [],
         maximumPreviousSnapshots: Int = 128
     ) {
         self.init(
+            translatedBundleIdentifiers: translatedBundleIdentifiers,
             permissions: SystemPermissionController(),
-            accessibility: AccessibilityTextCollector(),
+            accessibility: AccessibilityTextCollector(translatedBundleIdentifiers: translatedBundleIdentifiers),
             screenshot: ScreenCaptureKitWindowCapturer(),
             ocr: VisionOCRService(),
             ownBundleIdentifier: ownBundleIdentifier,
-            excludedBundleIdentifiers: excludedBundleIdentifiers,
             maximumPreviousSnapshots: maximumPreviousSnapshots
         )
     }
 
     public init(
+        translatedBundleIdentifiers: Set<String>,
         permissions: any PermissionControlling,
         accessibility: any AccessibilityCollecting,
         screenshot: any ScreenCaptureProviding,
         ocr: any VisionOCRProviding,
         fingerprintStore: InMemoryFingerprintStore = InMemoryFingerprintStore(),
         ownBundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        excludedBundleIdentifiers: Set<String> = [],
         maximumPreviousSnapshots: Int = 128
     ) {
         self.permissions = permissions
@@ -48,7 +48,7 @@ public final class CapturePipeline: @unchecked Sendable {
         self.ocr = ocr
         self.fingerprintStore = fingerprintStore
         self.ownBundleIdentifier = ownBundleIdentifier
-        self.excludedBundleIdentifiers = excludedBundleIdentifiers
+        self.translatedBundleIdentifiers = translatedBundleIdentifiers
         self.maximumPreviousSnapshots = min(max(maximumPreviousSnapshots, 0), 128)
         cropPreparer = CloudCropPreparer()
     }
@@ -144,7 +144,9 @@ public final class CapturePipeline: @unchecked Sendable {
         if descriptor.pid == getpid() || descriptor.bundleIdentifier == ownBundleIdentifier {
             throw CaptureError.selfApplication
         }
-        if excludedBundleIdentifiers.contains(descriptor.bundleIdentifier) {
+        // Fail closed before any accessibility, screenshot, or OCR work:
+        // applications outside the user-selected allow list translate nothing.
+        guard translatedBundleIdentifiers.contains(descriptor.bundleIdentifier) else {
             throw CaptureError.excludedApplication(descriptor.bundleIdentifier)
         }
     }

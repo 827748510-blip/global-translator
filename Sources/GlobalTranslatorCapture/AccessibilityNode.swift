@@ -7,6 +7,7 @@ public enum AccessibilityRole: String, Codable, Equatable, Sendable {
     case textField
     case image
     case page
+    case webArea
     case group
     case other
 }

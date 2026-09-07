@@ -8,7 +8,7 @@ public typealias ActiveWindowCallback = @MainActor @Sendable (ActiveWindowDescri
 @MainActor
 public final class ActiveWindowMonitor {
     public let ownBundleIdentifier: String?
-    public let excludedBundleIdentifiers: Set<String>
+    public let translatedBundleIdentifiers: Set<String>
     public let callback: ActiveWindowCallback
     public private(set) var current: ActiveWindowDescriptor?
 
@@ -29,7 +29,7 @@ public final class ActiveWindowMonitor {
     private var descriptorRetryCount = 0
     private var captureRetryTask: Task<Void, Never>?
     private var visualTask: Task<Void, Never>?
-    private lazy var visualUpdates = WindowVisualUpdates { [weak self] in self?.refreshFromWorkspace() }
+    private lazy var visualUpdates = WindowVisualUpdates { [weak self] in self?.handleVisualChange() }
     let permissions: any PermissionControlling
     var frontmostApplicationProvider: () -> (pid: Int32, bundleIdentifier: String)? = {
         guard let app = NSWorkspace.shared.frontmostApplication, let bundleIdentifier = app.bundleIdentifier else { return nil }
@@ -46,24 +46,24 @@ public final class ActiveWindowMonitor {
 
     public init(
         ownBundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        excludedBundleIdentifiers: Set<String> = [],
+        translatedBundleIdentifiers: Set<String> = [],
         permissions: any PermissionControlling = SystemPermissionController(),
         callback: @escaping ActiveWindowCallback = { _ in }
     ) {
         self.ownBundleIdentifier = ownBundleIdentifier
-        self.excludedBundleIdentifiers = excludedBundleIdentifiers
+        self.translatedBundleIdentifiers = translatedBundleIdentifiers
         self.permissions = permissions
         self.callback = callback
     }
 
     public convenience init(
         ownBundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        excludedBundleIdentifiers: Set<String> = [],
+        translatedBundleIdentifiers: Set<String> = [],
         onChange: @escaping ActiveWindowCallback
     ) {
         self.init(
             ownBundleIdentifier: ownBundleIdentifier,
-            excludedBundleIdentifiers: excludedBundleIdentifiers,
+            translatedBundleIdentifiers: translatedBundleIdentifiers,
             callback: onChange
         )
     }
@@ -114,6 +114,10 @@ public final class ActiveWindowMonitor {
         scheduleWindowRetry(forMissingDescriptor: false)
     }
 
+    func handleVisualChange() {
+        refreshFromWorkspace(invalidatesOverlay: false)
+    }
+
     private func scheduleWindowRetry(forMissingDescriptor: Bool) {
         guard running, captureRetryTask == nil else { return }
         do { try permissions.snapshot.validateCapture() } catch { return }
@@ -134,7 +138,7 @@ public final class ActiveWindowMonitor {
     }
 
     public func handleApplicationSwitchForTesting(bundleIdentifier: String) {
-        if isExcluded(bundleIdentifier) {
+        if !isTranslatable(bundleIdentifier) {
             removeAXObserver()
             clearCurrent()
         }
@@ -171,7 +175,7 @@ public final class ActiveWindowMonitor {
             return
         }
         let bundleIdentifier = application.bundleIdentifier
-        guard !isExcluded(bundleIdentifier), application.pid != getpid() else {
+        guard isTranslatable(bundleIdentifier), application.pid != getpid() else {
             removeAXObserver()
             clearCurrent()
             return
@@ -228,11 +232,15 @@ public final class ActiveWindowMonitor {
     }
 
     private func isAllowed(_ descriptor: ActiveWindowDescriptor) -> Bool {
-        !isExcluded(descriptor.bundleIdentifier) && descriptor.pid != getpid()
+        isTranslatable(descriptor.bundleIdentifier) && descriptor.pid != getpid()
     }
 
-    private func isExcluded(_ bundleIdentifier: String) -> Bool {
-        bundleIdentifier == ownBundleIdentifier || excludedBundleIdentifiers.contains(bundleIdentifier)
+    /// Only explicitly selected applications may be watched and captured; an
+    /// empty allow list translates nothing. The tool itself never qualifies.
+    private func isTranslatable(_ bundleIdentifier: String) -> Bool {
+        bundleIdentifier != ownBundleIdentifier
+            && bundleIdentifier != "com.maodashu.global-translator"
+            && translatedBundleIdentifiers.contains(bundleIdentifier)
     }
 
 }

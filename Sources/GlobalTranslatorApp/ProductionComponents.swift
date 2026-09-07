@@ -20,16 +20,16 @@ extension ApplicationControllerComponents {
             credentialStore: MacOSKeychainStore(),
             permissionController: SystemPermissionController(),
             backendFactory: LiveTranslationBackendFactory(),
-            monitorFactory: { excluded in
+            monitorFactory: { allowed in
                 ActiveWindowMonitorAdapter(
                     ownBundleIdentifier: Bundle.main.bundleIdentifier,
-                    excludedBundleIdentifiers: excluded
+                    translatedBundleIdentifiers: allowed
                 )
             },
-            capturePipelineFactory: { excluded in
+            capturePipelineFactory: { allowed in
                 CapturePipeline(
                     ownBundleIdentifier: Bundle.main.bundleIdentifier,
-                    excludedBundleIdentifiers: excluded
+                    translatedBundleIdentifiers: allowed
                 )
             },
             statusItemFactory: { viewModel in StatusItemController(viewModel: viewModel) },
@@ -48,7 +48,8 @@ extension ApplicationControllerComponents {
                     stateHandler: state
                 )
             },
-            logger: logger
+            logger: logger,
+            inPageFactory: { CDPInPageTranslator() }
         )
     }
 }

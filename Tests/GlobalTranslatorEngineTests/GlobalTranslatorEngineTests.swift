@@ -15,7 +15,8 @@ struct GlobalTranslatorEngineTests {
         let coordinator = TranslationCoordinator(backends: [backend], permissions: SystemPermissionController(snapshotProvider: { .allGranted }))
         let output = try await coordinator.translate(snapshot: makeSnapshot(regions: regions, revision: 1), backend: .local, modelIdentifier: "test", visionFallbackEnabled: false)
         #expect(output.translations.count == 13)
-        #expect(await backend.requests.map { $0.items.count } == [6, 6, 1])
+        // Local models translate more reliably with small batches.
+        #expect(await backend.requests.map { $0.items.count } == [3, 3, 3, 3, 1])
     }
 
     @Test
@@ -76,11 +77,12 @@ struct GlobalTranslatorEngineTests {
         let exact = [
             makeRegion(text: String(repeating: "a", count: 2_000), x: 0, y: 100),
             makeRegion(text: String(repeating: "b", count: 2_000), x: 1, y: 100),
-            makeRegion(text: String(repeating: "c", count: 1), x: 2, y: 100)
+            makeRegion(text: "語", x: 2, y: 100)
         ]
         let exactBatches = batcher.makeBatches(from: exact, windowRevision: 1)
         #expect(exactBatches.count == 2)
         #expect(exactBatches[0].sourceCharacterCount == 4_000)
+        #expect(exactBatches[1].sourceCharacterCount == 1)
     }
 
     @Test

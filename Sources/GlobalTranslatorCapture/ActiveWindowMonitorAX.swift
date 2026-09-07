@@ -143,9 +143,8 @@ extension ActiveWindowMonitor {
         let monitor = Unmanaged<ActiveWindowMonitor>.fromOpaque(refcon).takeUnretainedValue()
         var role: CFTypeRef?
         AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
-        let isRoot = (role as? String) == "AXWindow" || (role as? String) == "AXApplication"
         let isMetadata = notification == kAXValueChangedNotification as CFString || notification == kAXTitleChangedNotification as CFString
-        let invalidates = !(isRoot && isMetadata)
+        let invalidates = !isMetadata
         let isImageValue = (role as? String) == "AXImage" && notification == kAXValueChangedNotification as CFString
         let source = NotificationAXElement(value: element)
         Task { @MainActor [weak monitor] in

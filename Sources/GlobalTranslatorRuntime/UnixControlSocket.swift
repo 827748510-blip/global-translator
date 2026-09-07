@@ -3,6 +3,42 @@ import Foundation
 
 private let controlMaximumBytes = 4_096
 
+/// Refuses live endpoints and non-socket files. RuntimeWorker calls this with
+/// its PID lock held, before binding the new listener.
+func recoverAbandonedControlSocket(at url: URL) throws {
+    var original = stat()
+    guard Darwin.lstat(url.path, &original) == 0 else {
+        if errno == ENOENT { return }
+        throw RuntimeError.ioFailure
+    }
+    guard (original.st_mode & S_IFMT) == S_IFSOCK, original.st_uid == geteuid() else {
+        throw RuntimeError.socketInUse
+    }
+    let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+    guard descriptor >= 0 else { throw RuntimeError.ioFailure }
+    defer { Darwin.close(descriptor) }
+    guard Darwin.fcntl(descriptor, F_SETFL, O_NONBLOCK) == 0 else { throw RuntimeError.ioFailure }
+    var address = try makeUnixAddress(path: url.path)
+    let result = withUnsafePointer(to: &address.0) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            Darwin.connect(descriptor, $0, address.1)
+        }
+    }
+    let connectionError = errno
+    if result < 0, connectionError == ENOENT { return }
+    guard result < 0, connectionError == ECONNREFUSED else { throw RuntimeError.socketInUse }
+
+    var current = stat()
+    guard Darwin.lstat(url.path, &current) == 0 else {
+        if errno == ENOENT { return }
+        throw RuntimeError.ioFailure
+    }
+    guard current.st_dev == original.st_dev, current.st_ino == original.st_ino else {
+        throw RuntimeError.socketInUse
+    }
+    guard Darwin.unlink(url.path) == 0 else { throw RuntimeError.ioFailure }
+}
+
 public protocol RuntimeControlClient: Sendable {
     func request(_ action: ControlAction) throws -> ControlResponse
 }
@@ -227,7 +263,7 @@ public final class UnixControlServer: @unchecked Sendable {
                     descriptor,
                     baseAddress.advanced(by: offset),
                     data.count - offset,
-                    0
+                    MSG_NOSIGNAL
                 )
                 if written <= 0 {
                     if errno == EINTR {
@@ -352,7 +388,7 @@ private func sendAll(_ data: Data, descriptor: Int32) throws {
             return
         }
         while offset < data.count {
-            let written = Darwin.send(descriptor, baseAddress.advanced(by: offset), data.count - offset, 0)
+            let written = Darwin.send(descriptor, baseAddress.advanced(by: offset), data.count - offset, MSG_NOSIGNAL)
             if written > 0 {
                 offset += written
             } else if errno != EINTR {

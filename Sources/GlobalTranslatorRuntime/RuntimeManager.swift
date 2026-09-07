@@ -35,6 +35,18 @@ public final class RuntimeManager: @unchecked Sendable {
         }
     }
 
+    public func showSettings() throws -> ControlResponse {
+        let client = controlClientFactory(0.2)
+        let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(readinessTimeout * 1_000_000_000)
+        repeat {
+            if let response = try? client.request(.showSettings), response.running, response.state == .running {
+                return response
+            }
+            usleep(25_000)
+        } while DispatchTime.now().uptimeNanoseconds < deadline
+        throw RuntimeError.notReady
+    }
+
     public func start() throws -> StartOutcome {
         try paths.prepareDirectories()
         let client = controlClientFactory(0.2)
@@ -169,14 +181,10 @@ public final class RuntimeManager: @unchecked Sendable {
            PIDFileLock.isProcessAlive(existingPID) {
             throw RuntimeError.socketInUse
         }
-        guard paths.isContained(paths.socketURL), isSocketPath(paths.socketURL.path) else {
+        guard paths.isContained(paths.socketURL) else {
             throw RuntimeError.socketInUse
         }
-        do {
-            try FileManager.default.removeItem(at: paths.socketURL)
-        } catch {
-            throw RuntimeError.ioFailure
-        }
+        try recoverAbandonedControlSocket(at: paths.socketURL)
     }
 
     private func hasLiveArtifacts() -> Bool {
@@ -188,18 +196,11 @@ public final class RuntimeManager: @unchecked Sendable {
     private static func resolveExecutable() -> URL {
         let argument = CommandLine.arguments.first ?? "global-translator"
         if argument.hasPrefix("/") {
-            return URL(fileURLWithPath: argument).standardizedFileURL
+            return URL(fileURLWithPath: argument).standardizedFileURL.resolvingSymlinksInPath()
         }
         return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(argument)
             .standardizedFileURL
+            .resolvingSymlinksInPath()
     }
-}
-
-private func isSocketPath(_ path: String) -> Bool {
-    var information = stat()
-    guard Darwin.lstat(path, &information) == 0 else {
-        return false
-    }
-    return (information.st_mode & S_IFMT) == S_IFSOCK
 }

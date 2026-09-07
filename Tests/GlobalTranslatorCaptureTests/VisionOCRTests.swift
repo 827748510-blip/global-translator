@@ -5,6 +5,18 @@ import Testing
 
 struct VisionOCRTests {
     @Test
+    func translatedTextGetsBudgetBeforeChineseAndNumericNoise() async throws {
+        let noise = (0..<30).map { index in
+            VisionTextObservation(text: "中文菜单 \(index)", boundingBox: CGRect(x: 0.01, y: 0.01, width: 0.1, height: 0.02), confidence: 0.9)
+        }
+        let text = VisionTextObservation(text: "Please save your changes", boundingBox: CGRect(x: 0.2, y: 0.4, width: 0.6, height: 0.04), confidence: 0.95)
+        let service = VisionOCRService(recognizer: RecordingVisionRecognizer(fast: noise + [text], accurate: []))
+        let result = try await service.recognize(image: try #require(makeTestImage()), window: ActiveWindowDescriptor(pid: 42, bundleIdentifier: "qa", frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 1), revision: 1)
+        #expect(result.first?.text == text.text)
+        #expect(result.count <= 24)
+    }
+
+    @Test
     func fastRecognitionAvoidsAccurateWhenConfidenceIsGood() async throws {
         let recognizer = RecordingVisionRecognizer(fast: [
             VisionTextObservation(text: "  hello  world ", boundingBox: CGRect(x: 0.1, y: 0.1, width: 0.3, height: 0.2), confidence: 0.9)
