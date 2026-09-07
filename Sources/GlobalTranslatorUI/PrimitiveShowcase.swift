@@ -157,9 +157,11 @@ private final class ShowcaseActions: SettingsActions {
     func setVisionFallback(_ enabled: Bool) {}
     func setLocalConfiguration(baseURL: String, model: String) {}
     func requestPermission(_ kind: PermissionKind) {}
+    func refreshPermissions() {}
     func openSystemSettings(_ kind: PermissionKind) {}
-    func addCurrentAppExclusion() {}
-    func removeExclusion(bundleIdentifier: String) {}
+    func addCurrentAppTranslation() {}
+    func chooseTranslatedApplications() {}
+    func removeTranslationApplication(bundleIdentifier: String) {}
     func clearCache() async throws {}
     func openLogs() {}
     func quit() {}

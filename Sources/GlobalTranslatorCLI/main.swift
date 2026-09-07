@@ -7,7 +7,13 @@ import GlobalTranslatorRuntime
 struct GlobalTranslatorCLI {
     static func main() async {
         let arguments = Array(CommandLine.arguments.dropFirst())
+        let desktopLaunch = Bundle.main.bundleURL.pathExtension == "app"
+            && (arguments.isEmpty || (arguments.count == 1 && arguments[0].hasPrefix("-psn_")))
         do {
+            if desktopLaunch {
+                try await GlobalTranslatorApplication.launchDesktop(paths: RuntimePaths.fromEnvironment())
+                return
+            }
             let invocation = try CLIParser.parseInvocation(arguments)
             let paths: RuntimePaths
             if let root = invocation.runtimeRoot {
@@ -20,7 +26,9 @@ struct GlobalTranslatorCLI {
             writeStderr(error.description + "\n")
             exit(2)
         } catch {
-            writeStderr(CLIErrorFormatter.message(for: error) + "\n")
+            let message = CLIErrorFormatter.message(for: error)
+            if desktopLaunch { GlobalTranslatorApplication.showLaunchError(message) }
+            writeStderr(message + "\n")
             exit(1)
         }
     }
@@ -45,6 +53,9 @@ struct GlobalTranslatorCLI {
             let response = manager.status()
             writeStdout(try encodeJSON(response))
             exit(CLIExitCode.status(response))
+        case .settings:
+            _ = try manager.start()
+            writeStdout(try encodeJSON(try manager.showSettings()))
         case let .logs(follow):
             if follow {
                 try followLogs(paths: paths)

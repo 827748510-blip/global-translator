@@ -26,7 +26,9 @@ public final class AXAccessibilityNodeReader: AccessibilityNodeReading, @uncheck
         let deadline = clock() + UInt64(traversalTimeout * 1_000_000_000)
         guard clock() < deadline, let focusedWindow = attributeReader.focusedWindow(for: descriptor.pid) else { return nil }
         var budget = maxNodes
-        return materialize(focusedWindow, budget: &budget, deadline: deadline)
+        let root = materialize(focusedWindow, budget: &budget, deadline: deadline)
+        guard budget > 0, clock() < deadline else { return nil }
+        return root
     }
 
     private func materialize(
@@ -76,7 +78,8 @@ public final class AXAccessibilityNodeReader: AccessibilityNodeReading, @uncheck
         case "AXTextField", "AXTextArea", "AXComboBox": return .textField
         case "AXImage": return .image
         case "AXPage": return .page
-        case "AXGroup", "AXWindow", "AXSplitGroup", "AXScrollArea", "AXWebArea", "AXLayoutArea": return .group
+        case "AXWebArea": return .webArea
+        case "AXGroup", "AXWindow", "AXSplitGroup", "AXScrollArea", "AXLayoutArea": return .group
         default: return .other
         }
     }

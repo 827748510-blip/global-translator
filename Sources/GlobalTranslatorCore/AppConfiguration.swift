@@ -6,7 +6,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     public var visionFallbackEnabled: Bool
     public var localBaseURL: URL
     public var localModel: String
-    public var excludedBundleIDs: [String]
+    public var translatedBundleIDs: [String]
 
     public init(
         autoTranslateEnabled: Bool = false,
@@ -14,14 +14,14 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         visionFallbackEnabled: Bool = false,
         localBaseURL: URL = Self.defaultLocalBaseURL,
         localModel: String = "",
-        excludedBundleIDs: [String] = []
+        translatedBundleIDs: [String] = []
     ) {
         self.autoTranslateEnabled = autoTranslateEnabled
         self.backend = backend
         self.visionFallbackEnabled = visionFallbackEnabled
         self.localBaseURL = localBaseURL
         self.localModel = localModel
-        self.excludedBundleIDs = excludedBundleIDs
+        self.translatedBundleIDs = translatedBundleIDs
     }
 
     public static let defaultLocalBaseURL = URL(string: "http://127.0.0.1:11434/v1")!
@@ -32,7 +32,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         case visionFallbackEnabled
         case localBaseURL
         case localModel
-        case excludedBundleIDs
+        case translatedBundleIDs
     }
 
     public init(from decoder: Decoder) throws {
@@ -42,6 +42,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         visionFallbackEnabled = try container.decodeIfPresent(Bool.self, forKey: .visionFallbackEnabled) ?? false
         localBaseURL = try container.decodeIfPresent(URL.self, forKey: .localBaseURL) ?? Self.defaultLocalBaseURL
         localModel = try container.decodeIfPresent(String.self, forKey: .localModel) ?? ""
-        excludedBundleIDs = try container.decodeIfPresent([String].self, forKey: .excludedBundleIDs) ?? []
+        // Legacy `excludedBundleIDs` was a deny list and must never be
+        // reinterpreted as the translation allow list: missing field means
+        // "translate nothing" until the user picks applications.
+        translatedBundleIDs = try container.decodeIfPresent([String].self, forKey: .translatedBundleIDs) ?? []
     }
 }

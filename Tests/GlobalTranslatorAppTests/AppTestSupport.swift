@@ -264,6 +264,59 @@ actor StaleFailureCapturePipeline: CapturePipelining {
     }
 }
 
+final class FakeInPageTranslator: InPageTranslating, @unchecked Sendable {
+    let available: Bool
+    var extractError: Error?
+    private var appliedStorage: [[InPageReplacement]] = []
+    private(set) var extractCount = 0
+    private let textID = UUID()
+
+    init(available: Bool) {
+        self.available = available
+    }
+
+    func isApplicable(bundleIdentifier: String) async -> Bool {
+        available
+    }
+
+    func extract(windowRevision: UInt64) async throws -> [InPageText] {
+        extractCount += 1
+        if let extractError { throw extractError }
+        return [InPageText(nodeID: "n1", id: textID, text: "Reliable browser translation keeps the original page readable")]
+    }
+
+    func apply(_ replacements: [InPageReplacement]) async throws {
+        appliedStorage.append(replacements)
+    }
+
+    var applied: [[InPageReplacement]] {
+        appliedStorage
+    }
+}
+
+actor TranslatingCoordinator: TranslationCoordinating {
+    func selectBackend(kind: BackendKind, modelIdentifier: String) async {}
+    func clearCache() async {}
+    func cancelPendingRequests() async {}
+    func translate(
+        snapshot: CaptureSnapshot,
+        backend: BackendKind,
+        modelIdentifier: String,
+        visionFallbackEnabled: Bool
+    ) async throws -> EngineOutput {
+        let translations = snapshot.regions.map { region in
+            RenderedTranslation(region: region, text: "你好 " + region.sourceText)
+        }
+        return EngineOutput(
+            windowRevision: snapshot.descriptor.revision,
+            translations: translations,
+            metrics: EngineMetrics(inputRegionCount: translations.count, eligibleRegionCount: translations.count,
+                cacheHitCount: 0, batchCount: 1, translatedRegionCount: translations.count,
+                durationMilliseconds: 1, status: .success)
+        )
+    }
+}
+
 final class EngineEventBox: @unchecked Sendable {
     private let lock = NSLock()
     private var sink: EngineEventSink?
@@ -290,6 +343,8 @@ final class SchedulerBox {
 
 @MainActor
 final class FakeStatusItem: StatusItemControlling {
+    var showSettingsCount = 0
+    func showSettings() { showSettingsCount += 1 }
     private(set) var statuses: [MenuBarStatus] = []
     private(set) var stopCount = 0
     func applyStatus(_ status: MenuBarStatus) { statuses.append(status) }

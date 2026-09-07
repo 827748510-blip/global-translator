@@ -1,6 +1,6 @@
 # Global Translator
 
-macOS 14+ 的终端启动式全局翻译工具。产物是 Apple Silicon 独立 Mach-O 可执行文件，不生成 `.app`、DMG 或 pkg；启动后处理当前活动窗口，通过 Accessibility 优先提取文本，必要时使用 Vision OCR，并用鼠标穿透的透明覆盖层显示简体中文。授予屏幕录制权限且自动翻译开启时，ScreenCaptureKit 对当前窗口持续进行最高 4 帧/秒、256×256 的本地变化检测，包括 Accessibility 能读取文字的窗口；检测帧不保存、不上传。这是用户于 2026-09-06 批准的滚动识别约束变更，不再承诺 AX 成功时完全不捕获画面。
+macOS 14+ 的全局翻译工具，提供可双击的 `Global Translator.app`、独立设置窗口、菜单栏图标及命令行入口。启动后处理当前活动窗口，通过 Accessibility 优先提取文本，必要时使用 Vision OCR，并用鼠标穿透的透明覆盖层显示简体中文。授予屏幕录制权限且自动翻译开启时，ScreenCaptureKit 对当前窗口持续进行最高 4 帧/秒、256×256 的本地变化检测，包括 Accessibility 能读取文字的窗口；检测帧不保存、不上传。
 
 ## 环境要求
 
@@ -13,16 +13,23 @@ macOS 14+ 的终端启动式全局翻译工具。产物是 Apple Silicon 独立 
 ## 构建与安装
 
 ```bash
-swift build -c release
-mkdir -p ~/.local/bin
-install -m 0755 .build/release/global-translator ~/.local/bin/global-translator
+bash scripts/package-app.sh
 ```
 
-确保 `~/.local/bin` 已加入 `PATH`，然后使用：
+产物位于 `.build/desktop/Global Translator.app`，包含蓝色“译”字图标及本机 ad-hoc 签名（未公证）。首次安装可将它复制到 `~/Applications/`，并让 `~/.local/bin/global-translator` 链接到包内的 `Contents/MacOS/global-translator`；升级前先停止旧进程并备份已有应用及命令行入口。CLI 链接与 `.app` 使用同一份可执行文件，配置路径保持不变。
+
+双击应用或点击 Dock 中的蓝色“译”字图标即可打开设置，菜单栏图标也打开同一个窗口。关闭窗口后继续翻译；使用“退出全局翻译”或 `⌘Q` 完全退出。再次打开只唤起已有进程。更换为 `.app` 身份后，macOS 可能要求在设置窗口中重新授予辅助功能／屏幕录制权限。
+
+1.1.1 修复退出后残留通信文件导致的 Finder 双击无反应；启动会恢复失效的 socket，其他启动失败会弹出错误提示。实机验证见 [Finder 启动修复记录](docs/finder-launch-fix-2026-09-07.md)。
+
+1.1.2 增加返回应用时自动刷新权限及“重新检查”按钮。当前本机构建使用 ad-hoc 签名，更新后旧版授权可能不再匹配新版；遇到系统已开启但应用仍显示未授权时，需要为当前版本重新授权并重启。诊断证据见 [权限刷新记录](docs/permission-refresh-2026-09-07.md)。
+
+确保 `~/.local/bin` 已加入 `PATH`，然后也可使用：
 
 ```bash
 global-translator doctor
 global-translator start
+global-translator settings
 global-translator status
 global-translator logs --follow
 global-translator stop
@@ -71,7 +78,7 @@ global-translator run --foreground
 - `GlobalTranslatorCapture`：活动窗口、Accessibility、ScreenCaptureKit、Vision OCR
 - `GlobalTranslatorCore`：配置、Keychain、HTTP 与双后端适配
 - `GlobalTranslatorEngine`：过滤、批处理、缓存、调度、熔断与旧结果淘汰
-- `GlobalTranslatorUI`：状态项、设置弹窗和透明覆盖层
+- `GlobalTranslatorUI`：状态项、独立设置窗口和透明覆盖层
 - `GlobalTranslatorApp`：生命周期与模块装配
 
 ## 验证
@@ -81,7 +88,7 @@ swift test -Xswiftc -warnings-as-errors
 swift build -c release -Xswiftc -warnings-as-errors
 ```
 
-当前严格并发验证通过 199 个测试、20 个测试套件；已使用真实 DeepSeek 和本机 Ollama 验证翻译链路。跨 App 交互证据及尚未达到的性能目标见 [当前真实验收记录](docs/real-acceptance-current.md)，本机启动方式见 [本地模型配置](docs/local-model-setup.md)。Release 产物为 arm64 Mach-O，未生成安装包，也不捆绑模型权重。
+已使用真实 DeepSeek 和本机 Ollama 验证翻译链路。跨 App 交互证据及尚未达到的性能目标见 [当前真实验收记录](docs/real-acceptance-current.md)，本机启动方式见 [本地模型配置](docs/local-model-setup.md)。新版应用的构建和实机结果见 [桌面应用验收记录](docs/desktop-app-2026-09-07.md)。应用不捆绑模型权重。
 
 ## 本轮可用性修复
 
@@ -93,4 +100,4 @@ swift build -c release -Xswiftc -warnings-as-errors
 
 macOS 26 在当前机器上把裸可执行文件的 `NSStatusItem` 交给 ControlCenter 以 `.ephemeral`、`neverClip: false` 方式托管。菜单栏空间不足或系统布局裁剪时，`NSStatusItem.isVisible` 仍可能为 `true`，但图标像素不显示；公开 AppKit API没有强制优先级或 `neverClip` 选项。
 
-代码仍使用标准方形 `NSStatusItem`、稳定 autosave 名称和 `NSPopover`，且 VoiceOver 可发现并能唤起弹窗。若必须在任何菜单栏布局下保证图标可见，只能释放菜单栏空间，或另行放宽“禁止 App Bundle/禁止备用配置入口”的产品约束。详见 [ADR-001](docs/decisions/001-bare-executable-status-item.md)。
+新版使用标准 `.app` 身份、方形 `NSStatusItem` 和稳定 autosave 名称。菜单栏仍由 macOS 排布，空间不足时请通过 Dock、双击应用或 `global-translator settings` 打开设置。用户已批准 `.app` 与独立窗口，[ADR-001](docs/decisions/001-bare-executable-status-item.md) 中的旧产品约束已被 [ADR-002](docs/decisions/002-desktop-settings-entry.md) 取代。

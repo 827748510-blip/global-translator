@@ -12,6 +12,7 @@ public enum RuntimeState: String, Codable, Equatable, Sendable {
 public enum ControlAction: String, Codable, Equatable, Sendable {
     case status
     case stop
+    case showSettings
 }
 
 public struct ControlRequest: Codable, Equatable, Sendable {

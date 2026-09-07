@@ -6,6 +6,25 @@ import Testing
 @MainActor
 struct WindowReadinessTests {
     @Test
+    func visualChangeRequestsRevalidationWithoutDeclaringTextInvalid() async throws {
+        let callbacks = CallbackRecorder()
+        let monitor = ActiveWindowMonitor(
+            translatedBundleIdentifiers: ["qa.editor"],
+            permissions: FakePermissionController(snapshot: .allGranted),
+            callback: { callbacks.record($0) }
+        )
+        monitor.frontmostApplicationProvider = { (42, "qa.editor") }
+        monitor.windowDescriptorProvider = { pid, bundleIdentifier, invalidates in
+            ActiveWindowDescriptor(pid: pid, bundleIdentifier: bundleIdentifier, windowID: 17, frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 0, invalidatesOverlay: invalidates)
+        }
+        monitor.start()
+        monitor.handleVisualChange()
+        try await waitForLookup { callbacks.values().compactMap { $0 }.count == 2 }
+        #expect(callbacks.values().compactMap { $0 }.last?.invalidatesOverlay == false)
+        monitor.stop()
+    }
+
+    @Test
     func screenOnlyPermissionCanDescribeTheFrontmostNormalWindow() {
         let permission = FakePermissionController(snapshot: PermissionSnapshot(accessibilityTrusted: false, screenCaptureAuthorized: true, secureInputEnabled: false, sessionLocked: false))
         let monitor = ActiveWindowMonitor(permissions: permission)
@@ -108,7 +127,7 @@ struct WindowReadinessTests {
 
     private func makeMonitor(probe: WindowLookupProbe, permissions: (any PermissionControlling)? = nil) -> ActiveWindowMonitor {
         let monitor = ActiveWindowMonitor(
-            excludedBundleIdentifiers: ["qa.excluded"],
+            translatedBundleIdentifiers: ["qa.editor"],
             permissions: permissions ?? probe.permissions
         )
         monitor.frontmostApplicationProvider = {

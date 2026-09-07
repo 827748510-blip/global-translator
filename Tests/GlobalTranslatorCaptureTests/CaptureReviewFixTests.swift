@@ -37,6 +37,7 @@ struct CaptureReviewFixTests {
             coordinateSpace: .quartzTopLeft
         )
         let collector = AccessibilityTextCollector(
+            translatedBundleIdentifiers: ["foreign"],
             reader: FakeAccessibilityReader(root: .group(children: [node])),
             primaryDisplayFrame: primary
         )
@@ -76,6 +77,7 @@ struct CaptureReviewFixTests {
             revision: 1
         )
         let pipeline = CapturePipeline(
+            translatedBundleIdentifiers: ["foreign"],
             permissions: FakePermissionController(snapshot: .allGranted),
             accessibility: FakeAccessibilityCollector(result: .empty),
             screenshot: CountingScreenshotProvider(image: image),
@@ -105,7 +107,7 @@ struct CaptureReviewFixTests {
         let monitor = await MainActor.run {
             ActiveWindowMonitor(
                 ownBundleIdentifier: "com.example.self",
-                excludedBundleIdentifiers: ["com.example.excluded"],
+                translatedBundleIdentifiers: ["foreign"],
                 callback: { descriptor in recorder.record(descriptor) }
             )
         }

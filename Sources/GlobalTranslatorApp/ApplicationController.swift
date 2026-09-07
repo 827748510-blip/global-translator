@@ -11,6 +11,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
     public let paths: RuntimePaths
     public internal(set) var configuration = AppConfiguration()
     public private(set) var started = false
+    private var settingsRequested = false
     public private(set) lazy var viewModel = SettingsViewModel(actions: self)
 
     public var configurationStore: any ConfigurationStoring { components.configurationStore }
@@ -32,6 +33,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
     var backendRefreshTask: Task<Void, Never>?
     var automaticEnableTask: Task<Void, Never>?
     var permissionRefreshTask: Task<Void, Never>?
+    var applicationPicker: NSOpenPanel?
 
     public init(
         paths: RuntimePaths,
@@ -58,7 +60,11 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             let loaded = try await persistence.load()
             guard Self.isUsable(loaded) else { throw ConfigStoreError.invalidData }
             configuration = loaded
-            configuration.excludedBundleIDs = loaded.excludedBundleIDs.filter(Self.isSafeBundleIdentifier)
+            var seen = Set<String>()
+            configuration.translatedBundleIDs = loaded.translatedBundleIDs.filter {
+                Self.isSafeBundleIdentifier($0) && $0 != Bundle.main.bundleIdentifier
+                    && $0 != "com.maodashu.global-translator" && seen.insert($0).inserted
+            }
         } catch {
             configurationLoadFailed = true
             configuration = AppConfiguration()
@@ -66,6 +72,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             components.logger.event("config_invalid", fields: ["status": "defaults"])
         }
         pushConfigurationState()
+        if settingsRequested { statusItem?.showSettings() }
         makeSession()
         if configurationLoadFailed {
             viewModel.backendReady = false
@@ -76,9 +83,18 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         scheduleBackendRefresh(startPersistedSession: true)
     }
 
+    public func showSettings() {
+        settingsRequested = true
+        refreshPermissions()
+        statusItem?.showSettings()
+    }
+
     public func stop() async {
         guard started else { return }
         started = false
+        settingsRequested = false
+        applicationPicker?.cancel(nil)
+        applicationPicker = nil
         backendHealthToken &+= 1
         automaticRequestToken &+= 1
         permissionRefreshToken &+= 1
@@ -110,8 +126,10 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         viewModel.visionFallbackEnabled = configuration.visionFallbackEnabled
         viewModel.localBaseURL = configuration.localBaseURL.absoluteString
         viewModel.localModel = configuration.localModel
-        viewModel.excludedApplications = configuration.excludedBundleIDs.map {
-            ExcludedApplication(bundleIdentifier: $0, displayName: $0)
+        viewModel.translatedApplications = configuration.translatedBundleIDs.map { id in
+            let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id)
+            return TranslatedApplication(bundleIdentifier: id,
+                displayName: url.map { FileManager.default.displayName(atPath: $0.path) } ?? id)
         }
         viewModel.permissionSnapshot = components.permissionController.snapshot
         if configuration.backend == .deepSeekCloud {
@@ -122,10 +140,10 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
 
     func makeSession() {
         guard session == nil, let overlay else { return }
-        let excluded = Set(configuration.excludedBundleIDs)
+        let allowed = Set(configuration.translatedBundleIDs)
         let box = WindowCallbackBox()
-        let monitor = components.monitorFactory(excluded)
-        let capture = components.capturePipelineFactory(excluded)
+        let monitor = components.monitorFactory(allowed)
+        let capture = components.capturePipelineFactory(allowed)
         let session = TranslationSession(
             monitor: monitor,
             capture: capture,
@@ -134,7 +152,9 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             coordinatorFactory: components.coordinatorFactory,
             schedulerFactory: components.schedulerFactory,
             logger: components.logger,
-            statusHandler: { [weak self] status in self?.applyStatus(status) }
+            statusHandler: { [weak self] status in self?.applyStatus(status) },
+            inPage: components.inPageFactory(),
+            translatedBundleIdentifiers: allowed
         )
         monitor.setCallback { [weak box] descriptor in
             box?.callback?(descriptor)
@@ -275,7 +295,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         return true
     }
 
-    private static func isSafeBundleIdentifier(_ value: String) -> Bool {
+    static func isSafeBundleIdentifier(_ value: String) -> Bool {
         let bytes = Array(value.utf8)
         guard !bytes.isEmpty, bytes.count <= 255 else { return false }
         return bytes.allSatisfy { byte in

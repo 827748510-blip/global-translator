@@ -5,6 +5,18 @@ import Testing
 
 struct AXAccessibilityReaderTests {
     @Test
+    func incompleteTreeDoesNotReturnOnlyTheFirstControls() throws {
+        let reader = AXAccessibilityNodeReader(
+            attributeReader: RecordingAXAttributeReader(role: "AXGroup", subrole: nil),
+            maxNodes: 2,
+            clock: { 0 }
+        )
+        let descriptor = ActiveWindowDescriptor(pid: 123, bundleIdentifier: "qa.browser",
+            frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 1)
+        #expect(try reader.readRoot(for: descriptor) == nil)
+    }
+
+    @Test
     func secureTextFieldIsDetectedBeforeSensitiveAttributesOrChildren() throws {
         let reader = RecordingAXAttributeReader()
         let materializer = AXAccessibilityNodeReader(

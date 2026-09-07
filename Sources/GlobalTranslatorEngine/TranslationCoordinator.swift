@@ -143,7 +143,7 @@ public actor TranslationCoordinator {
         }
 
         let requestBatcher = kind == .local
-            ? TranslationBatcher(maximumItems: min(6, batcher.maximumItems), maximumSourceCharacters: batcher.maximumSourceCharacters)
+            ? TranslationBatcher(maximumItems: min(3, batcher.maximumItems), maximumSourceCharacters: batcher.maximumSourceCharacters)
             : batcher
         let batches = requestBatcher.makeBatches(from: pendingEntries, windowRevision: revision)
         let vision = makeVisionImages(

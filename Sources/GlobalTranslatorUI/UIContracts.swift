@@ -154,8 +154,8 @@ extension BackendHealthStatus {
     }
 }
 
-/// One excluded application entry in the popover list.
-public struct ExcludedApplication: Identifiable, Equatable, Sendable {
+/// One application explicitly allowed for translation.
+public struct TranslatedApplication: Identifiable, Equatable, Sendable {
     public let bundleIdentifier: String
     public let displayName: String
 
@@ -181,10 +181,14 @@ public protocol SettingsActions: AnyObject {
     func setVisionFallback(_ enabled: Bool)
     func setLocalConfiguration(baseURL: String, model: String)
     func requestPermission(_ kind: PermissionKind)
+    func refreshPermissions()
     func openSystemSettings(_ kind: PermissionKind)
-    /// Adds the currently active application to the exclusion list (integration seam).
-    func addCurrentAppExclusion()
-    func removeExclusion(bundleIdentifier: String)
+    /// Adds the currently active application to the translation allow list.
+    func addCurrentAppTranslation()
+    /// Opens a native application picker and adds every selected app to the
+    /// translation allow list. Only listed applications are ever translated.
+    func chooseTranslatedApplications()
+    func removeTranslationApplication(bundleIdentifier: String)
     func clearCache() async throws
     func openLogs()
     func quit()

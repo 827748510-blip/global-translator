@@ -143,6 +143,25 @@ struct OverlayPanelControllerTests {
     }
 
     @Test
+    func hoverRaisesOnlyTheTargetBubbleWithoutChangingClickThroughPolicy() {
+        let controller = OverlayPanelController(visibleFramesProvider: { self.visibleFrames })
+        let first = makeRegion(frame: CGRect(x: 100, y: 300, width: 200, height: 20))
+        let second = makeRegion(frame: CGRect(x: 700, y: 300, width: 200, height: 20))
+        controller.update(translations: [RenderedTranslation(region: first, text: "悬停译文"),
+                                          RenderedTranslation(region: second, text: "另一条译文")], revision: 1)
+        controller.updateHover(at: CGPoint(x: 150, y: 310))
+        #expect(controller.panelLevel(for: first.id) == .screenSaver)
+        #expect(controller.panelLevel(for: second.id) == .floating)
+        controller.updateHover(at: CGPoint(x: 150, y: 335))
+        #expect(controller.panelLevel(for: first.id) == .screenSaver)
+        controller.updateHover(at: CGPoint(x: 1200, y: 700))
+        #expect(controller.panelLevel(for: first.id) == .floating)
+        controller.hideAll()
+        controller.updateHover(at: CGPoint(x: 150, y: 310))
+        #expect(controller.panelCount == 0)
+    }
+
+    @Test
     func updateCreatesPanelsAndHideAllRemovesThemImmediately() {
         let controller = OverlayPanelController(visibleFramesProvider: { self.visibleFrames })
         let region = makeRegion(frame: CGRect(x: 100, y: 300, width: 200, height: 20))

@@ -117,13 +117,13 @@ public final class ActiveWindowMonitorAdapter: ActiveWindowMonitoring {
 
     public init(
         ownBundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        excludedBundleIdentifiers: Set<String> = []
+        translatedBundleIdentifiers: Set<String> = []
     ) {
         let holder = CallbackHolder()
         self.holder = holder
         monitor = ActiveWindowMonitor(
             ownBundleIdentifier: ownBundleIdentifier,
-            excludedBundleIdentifiers: excludedBundleIdentifiers,
+            translatedBundleIdentifiers: translatedBundleIdentifiers,
             callback: { descriptor in holder.callback?(descriptor) }
         )
     }
@@ -145,6 +145,7 @@ extension CapturePipeline: CapturePipelining {}
 @MainActor
 public protocol StatusItemControlling: AnyObject {
     func applyStatus(_ status: MenuBarStatus)
+    func showSettings()
     func stop()
 }
 
@@ -330,6 +331,8 @@ public struct ApplicationControllerComponents {
     public let coordinatorFactory: CoordinatorFactory
     public let schedulerFactory: SchedulerFactory
     public let logger: any AppRuntimeLogger
+    /// Optional in-page translation channel; nil keeps overlay bubbles only.
+    public let inPageFactory: @MainActor () -> (any InPageTranslating)?
 
     public init(
         configurationStore: any ConfigurationStoring,
@@ -342,7 +345,8 @@ public struct ApplicationControllerComponents {
         overlayFactory: @escaping OverlayFactory,
         coordinatorFactory: @escaping CoordinatorFactory,
         schedulerFactory: @escaping SchedulerFactory,
-        logger: any AppRuntimeLogger
+        logger: any AppRuntimeLogger,
+        inPageFactory: @escaping @MainActor () -> (any InPageTranslating)? = { nil }
     ) {
         self.configurationStore = configurationStore
         self.credentialStore = credentialStore
@@ -355,6 +359,7 @@ public struct ApplicationControllerComponents {
         self.coordinatorFactory = coordinatorFactory
         self.schedulerFactory = schedulerFactory
         self.logger = logger
+        self.inPageFactory = inPageFactory
     }
 
 }

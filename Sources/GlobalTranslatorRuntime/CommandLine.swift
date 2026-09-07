@@ -16,6 +16,7 @@ public struct CLIParseError: Error, Equatable, Sendable, CustomStringConvertible
 public enum CLICommand: Equatable, Sendable {
     case doctor
     case start
+    case settings
     case status
     case logs(follow: Bool)
     case stop
@@ -33,7 +34,7 @@ public struct CLIInvocation: Equatable, Sendable {
 }
 
 public enum CLIParser {
-    public static let usage = "用法：global-translator doctor|start|status|logs [--follow]|stop|run --foreground|run --daemon-child"
+    public static let usage = "用法：global-translator doctor|start|settings|status|logs [--follow]|stop|run --foreground|run --daemon-child"
 
     public static func parse(_ arguments: [String]) throws -> CLICommand {
         try parseInvocation(arguments).command
@@ -69,6 +70,9 @@ public enum CLIParser {
         case "status":
             guard args.isEmpty else { throw CLIParseError() }
             parsed = .status
+        case "settings":
+            guard args.isEmpty else { throw CLIParseError() }
+            parsed = .settings
         case "logs":
             if args.isEmpty {
                 parsed = .logs(follow: false)

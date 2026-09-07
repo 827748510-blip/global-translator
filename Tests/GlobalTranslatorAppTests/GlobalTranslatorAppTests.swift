@@ -359,6 +359,70 @@ struct ApplicationControllerTests {
     }
 
     @Test
+    func returningFromSystemSettingsRefreshesGrantsAndRestoresPersistedTranslation() async throws {
+        let denied = PermissionSnapshot(accessibilityTrusted: false, screenCaptureAuthorized: false,
+                                        secureInputEnabled: false, sessionLocked: false)
+        let permission = FakePermissionController(snapshot: denied)
+        let monitor = FakeWindowMonitor()
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: RecordingConfigurationStore(configuration: AppConfiguration(
+                    autoTranslateEnabled: true, backend: .local, localModel: "local-test")),
+                permission: permission, monitor: monitor
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        #expect(!controller.viewModel.canEnableAutomaticTranslation)
+        // No permission request/poll is active: the user changed Settings later.
+        permission.update(.allGranted)
+        let delegate = DesktopApplicationDelegate(controller: controller, onQuit: {})
+        delegate.applicationDidBecomeActive(Notification(name: NSApplication.didBecomeActiveNotification))
+        #expect(controller.viewModel.permissionSnapshot == .allGranted)
+        #expect(controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(monitor.startCount == 1)
+        controller.refreshPermissions()
+        #expect(monitor.startCount == 1)
+
+        permission.update(denied)
+        controller.refreshPermissions()
+        #expect(!controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(monitor.stopCount >= 1)
+        #expect(controller.configuration.autoTranslateEnabled)
+        await controller.stop()
+    }
+
+    @Test
+    func openingSettingsRefreshesPermissionWithoutOverridingManualOffOrStoppedState() async throws {
+        let denied = PermissionSnapshot(accessibilityTrusted: false, screenCaptureAuthorized: false,
+                                        secureInputEnabled: false, sessionLocked: false)
+        let permission = FakePermissionController(snapshot: denied)
+        let monitor = FakeWindowMonitor()
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: RecordingConfigurationStore(configuration: AppConfiguration(
+                    autoTranslateEnabled: false, backend: .local, localModel: "local-test")),
+                permission: permission, monitor: monitor
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        permission.update(.allGranted)
+        controller.showSettings()
+        #expect(controller.viewModel.permissionSnapshot == .allGranted)
+        #expect(controller.viewModel.canEnableAutomaticTranslation)
+        #expect(!controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(monitor.startCount == 0)
+        await controller.stop()
+        permission.update(denied)
+        controller.refreshPermissions()
+        #expect(controller.viewModel.permissionSnapshot == .allGranted)
+        #expect(monitor.startCount == 0)
+    }
+
+    @Test
     func savingAPIKeyHealthChecksDraftBeforeKeychainWrite() async throws {
         let store = RecordingConfigurationStore()
         let credentials = RecordingCredentialStore(value: nil)
@@ -451,7 +515,7 @@ struct ApplicationControllerTests {
     @Test
     func currentRevisionOutputReachesOverlayAndStaleCaptureDoesNot() async throws {
         let monitor = FakeWindowMonitor()
-        let capture = FakeCapturePipeline()
+        let capture = SingleRegionCapturePipeline()
         let overlay = FakeOverlay()
         let schedulerBox = SchedulerBox()
         let components = makeComponents(
@@ -485,8 +549,8 @@ struct ApplicationControllerTests {
             revision: 11
         )
         monitor.emit(descriptor)
-        await Task.yield()
-        await Task.yield()
+        try await waitForCapture { schedulerBox.value?.submitCount == 1 }
+        #expect(schedulerBox.value?.submitCount == 1)
         let region = TextRegion(
             id: UUID(),
             sourceText: "hello",
@@ -734,6 +798,69 @@ struct ApplicationControllerTests {
         #expect(logger.records.allSatisfy { !$0.1.values.contains { $0.contains("secret") } })
     }
 
+    @Test
+    func settingsRequestedBeforeStartupUsesExistingControllerAndSurvivesReopen() async throws {
+        let statusItem = FakeStatusItem()
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(statusItem: statusItem)
+        )
+        controller.showSettings()
+        #expect(statusItem.showSettingsCount == 0)
+        try await controller.start()
+        #expect(statusItem.showSettingsCount == 1)
+        let model = controller.viewModel
+        controller.showSettings()
+        #expect(statusItem.showSettingsCount == 2)
+        #expect(controller.viewModel === model)
+        var quitCount = 0
+        let delegate = DesktopApplicationDelegate(controller: controller, onQuit: { quitCount += 1 })
+        #expect(!delegate.applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared))
+        let handled = delegate.applicationShouldHandleReopen(NSApplication.shared, hasVisibleWindows: false)
+        #expect(handled)
+        #expect(statusItem.showSettingsCount == 3)
+        #expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateCancel)
+        #expect(quitCount == 1)
+        await controller.stop()
+        #expect(statusItem.stopCount == 1)
+    }
+
+    @Test(arguments: [true, false])
+    func selectedApplicationsPersistAndReconfigureWithoutChangingAutomaticPreference(enabled: Bool) async throws {
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: enabled, backend: .local, localModel: "test"))
+        let monitor = FakeWindowMonitor()
+        let schedulers = SchedulerBox()
+        let controller = ApplicationController(paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, monitor: monitor, capture: SingleRegionCapturePipeline(), schedulerBox: schedulers))
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let originalScheduler = schedulers.value
+        let editor = TranslatedApplication(bundleIdentifier: "qa.editor", displayName: "Editor")
+        controller.addApplications([editor, editor, TranslatedApplication(bundleIdentifier: "qa.chat", displayName: "Chat"),
+            TranslatedApplication(bundleIdentifier: "", displayName: "Invalid"),
+            TranslatedApplication(bundleIdentifier: "bad/id", displayName: "Invalid"),
+            TranslatedApplication(bundleIdentifier: "com.maodashu.global-translator", displayName: "Self")])
+        #expect(controller.configuration.translatedBundleIDs == ["qa.editor", "qa.chat"])
+        #expect(controller.viewModel.translatedApplications.map(\.displayName) == ["Editor", "Chat"])
+        #expect(controller.configuration.autoTranslateEnabled == enabled)
+        #expect(controller.viewModel.isAutomaticTranslationEnabled == enabled)
+        #expect(controller.session?.isRunning == enabled)
+        #expect(schedulers.value !== originalScheduler)
+        controller.removeTranslationApplication(bundleIdentifier: "qa.editor")
+        #expect(controller.configuration.translatedBundleIDs == ["qa.chat"])
+        #expect(controller.session?.isRunning == enabled)
+        if enabled {
+            monitor.emit(ActiveWindowDescriptor(pid: 42, bundleIdentifier: "qa.editor", frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 1))
+            try await waitForCapture { schedulers.value?.submitCount == 1 }
+            #expect(schedulers.value?.submitCount == 1)
+        }
+        try await controller.persistence.flush()
+        #expect(await store.saved.last?.translatedBundleIDs == ["qa.chat"])
+        #expect(await store.saved.last?.autoTranslateEnabled == enabled)
+        await controller.stop()
+    }
+
     func makeComponents(
         store: RecordingConfigurationStore = RecordingConfigurationStore(),
         credentials: RecordingCredentialStore = RecordingCredentialStore(value: nil),
@@ -742,12 +869,13 @@ struct ApplicationControllerTests {
         monitor: FakeWindowMonitor = FakeWindowMonitor(),
         overlay: FakeOverlay = FakeOverlay(),
         overlayFactory: OverlayFactory? = nil,
-        coordinator: FakeCoordinator = FakeCoordinator(),
+        coordinator: any TranslationCoordinating = FakeCoordinator(),
         capture: any CapturePipelining = FakeCapturePipeline(),
         schedulerBox: SchedulerBox? = nil,
         engineEventBox: EngineEventBox? = nil,
         statusItem: FakeStatusItem = FakeStatusItem(),
-        logger: RecordingLogger = RecordingLogger()
+        logger: RecordingLogger = RecordingLogger(),
+        inPage: (any InPageTranslating)? = nil
     ) -> ApplicationControllerComponents {
         ApplicationControllerComponents(
             configurationStore: store,
@@ -767,7 +895,8 @@ struct ApplicationControllerTests {
                 schedulerBox?.value = scheduler
                 return scheduler
             },
-            logger: logger
+            logger: logger,
+            inPageFactory: { inPage }
         )
     }
 
@@ -777,6 +906,17 @@ struct ApplicationControllerTests {
 
     func waitForCapture(_ condition: () -> Bool) async throws {
         for _ in 0..<200 where !condition() {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    func waitForCapture(_ condition: () async -> Bool) async throws {
+        try await waitForCapture(timeout: 1, condition)
+    }
+
+    func waitForCapture(timeout: TimeInterval, _ condition: () async -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !(await condition()) && Date() < deadline {
             try await Task.sleep(for: .milliseconds(5))
         }
     }

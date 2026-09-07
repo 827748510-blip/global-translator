@@ -27,7 +27,7 @@ public final class SettingsViewModel: ObservableObject {
         secureInputEnabled: false,
         sessionLocked: false
     )
-    @Published public var excludedApplications: [ExcludedApplication] = []
+    @Published public var translatedApplications: [TranslatedApplication] = []
     @Published public var healthMessage: String?
 
     /// Whether the currently selected backend has been validated (healthy
@@ -269,6 +269,10 @@ public final class SettingsViewModel: ObservableObject {
 
     // MARK: - Permissions
 
+    public func refreshPermissions() {
+        actions.refreshPermissions()
+    }
+
     public func requestPermission(_ kind: PermissionKind) {
         actions.requestPermission(kind)
     }
@@ -277,15 +281,19 @@ public final class SettingsViewModel: ObservableObject {
         actions.openSystemSettings(kind)
     }
 
-    // MARK: - Exclusions
+    // MARK: - Translated applications
 
-    public func addCurrentAppExclusion() {
-        actions.addCurrentAppExclusion()
+    public func addCurrentAppTranslation() {
+        actions.addCurrentAppTranslation()
     }
 
-    public func removeExclusion(bundleIdentifier: String) {
-        excludedApplications.removeAll { $0.bundleIdentifier == bundleIdentifier }
-        actions.removeExclusion(bundleIdentifier: bundleIdentifier)
+    public func chooseTranslatedApplications() {
+        actions.chooseTranslatedApplications()
+    }
+
+    public func removeTranslationApplication(bundleIdentifier: String) {
+        translatedApplications.removeAll { $0.bundleIdentifier == bundleIdentifier }
+        actions.removeTranslationApplication(bundleIdentifier: bundleIdentifier)
     }
 
     // MARK: - Maintenance

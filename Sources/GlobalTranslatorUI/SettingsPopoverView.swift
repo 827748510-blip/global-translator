@@ -21,6 +21,8 @@ public struct SettingsPopoverView: View {
             VStack(alignment: .leading, spacing: GTSpacing.medium) {
                 SettingsHeaderSection(viewModel: viewModel)
                 Divider()
+                TranslatedApplicationsSection(viewModel: viewModel)
+                Divider()
                 BackendPickerSection(viewModel: viewModel)
 
                 Group {
@@ -37,8 +39,6 @@ public struct SettingsPopoverView: View {
 
                 Divider()
                 PermissionsSection(viewModel: viewModel)
-                Divider()
-                ExclusionsSection(viewModel: viewModel)
                 Divider()
                 SettingsFooterSection(viewModel: viewModel)
             }

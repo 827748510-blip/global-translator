@@ -9,6 +9,7 @@ struct CaptureReadinessTests {
         let state = ReadinessPermissionState()
         let screenshot = CountingScreenshotProvider(image: makeTestImage())
         let pipeline = CapturePipeline(
+            translatedBundleIdentifiers: ["qa.capture"],
             permissions: SystemPermissionController(snapshotProvider: { state.snapshot }),
             accessibility: ReadinessAccessibilityCollector {
                 state.protect(secureInput: secureInput)
@@ -29,6 +30,7 @@ struct CaptureReadinessTests {
         let state = ReadinessPermissionState()
         let fingerprints = InMemoryFingerprintStore()
         let pipeline = CapturePipeline(
+            translatedBundleIdentifiers: ["qa.capture"],
             permissions: SystemPermissionController(snapshotProvider: { state.snapshot }),
             accessibility: FakeAccessibilityCollector(result: .empty),
             screenshot: CountingScreenshotProvider(image: makeTestImage()),
@@ -47,6 +49,7 @@ struct CaptureReadinessTests {
     func oversizedAXValueFallsBackToVisibleOCRInsteadOfEmptyTranslation() async throws {
         let screenshot = CountingScreenshotProvider(image: makeTestImage())
         let pipeline = CapturePipeline(
+            translatedBundleIdentifiers: ["qa.capture"],
             permissions: FakePermissionController(snapshot: .allGranted),
             accessibility: FakeAccessibilityCollector(result: .regions([Self.region(text: String(repeating: "English paragraph. ", count: 300))])),
             screenshot: screenshot,
@@ -62,6 +65,7 @@ struct CaptureReadinessTests {
     func oversizedAXValueWithoutScreenshotPermissionReportsRequiredPermission() async {
         let screenshot = CountingScreenshotProvider(image: nil)
         let pipeline = CapturePipeline(
+            translatedBundleIdentifiers: ["qa.capture"],
             permissions: FakePermissionController(snapshot: PermissionSnapshot(accessibilityTrusted: true, screenCaptureAuthorized: false, secureInputEnabled: false, sessionLocked: false)),
             accessibility: FakeAccessibilityCollector(result: .regions([Self.region(text: String(repeating: "English paragraph. ", count: 300))])),
             screenshot: screenshot,

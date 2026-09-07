@@ -17,6 +17,14 @@ public final class TranslationSession {
     private let schedulerFactory: SchedulerFactory
     private let logger: any AppRuntimeLogger
     private let statusHandler: @MainActor @Sendable (MenuBarStatus) -> Void
+    /// When set (and applicable for the window's application), page text is
+    /// replaced in place instead of drawing overlay bubbles.
+    private let inPage: (any InPageTranslating)?
+    /// Whitelist of applications eligible for translation; the in-page route
+    /// must honor the same gate as the capture pipeline.
+    private let translatedBundleIdentifiers: Set<String>
+    private var inPageInFlight = false
+    private var inPageCooldownUntil = Date.distantPast
     private var coordinator: (any TranslationCoordinating)?
     private var scheduler: (any TranslationScheduling)?
     private var captureTask: Task<Void, Never>?
@@ -26,6 +34,11 @@ public final class TranslationSession {
     private var visionFallbackEnabled = false
     private var activeWindow: ActiveWindowDescriptor?
     private var lastRendered: [RenderedTranslation] = []
+    private var submittedRevision: UInt64?
+    private var submittedRegions: [TextRegion] = []
+    private var confirmedRevision: UInt64?
+    private var confirmedRegions: [TextRegion] = []
+    private var deferredOutput: EngineOutput?
 
     public init(
         monitor: any ActiveWindowMonitoring,
@@ -35,7 +48,9 @@ public final class TranslationSession {
         coordinatorFactory: @escaping CoordinatorFactory,
         schedulerFactory: @escaping SchedulerFactory,
         logger: any AppRuntimeLogger,
-        statusHandler: @escaping @MainActor @Sendable (MenuBarStatus) -> Void
+        statusHandler: @escaping @MainActor @Sendable (MenuBarStatus) -> Void,
+        inPage: (any InPageTranslating)? = nil,
+        translatedBundleIdentifiers: Set<String> = []
     ) {
         self.monitor = monitor
         self.capture = capture
@@ -45,6 +60,8 @@ public final class TranslationSession {
         self.schedulerFactory = schedulerFactory
         self.logger = logger
         self.statusHandler = statusHandler
+        self.inPage = inPage
+        self.translatedBundleIdentifiers = translatedBundleIdentifiers
     }
 
     public func configure(
@@ -60,33 +77,14 @@ public final class TranslationSession {
         let coordinator = coordinatorFactory(backends, makeEventSink())
         self.coordinator = coordinator
         let outputHandler: @MainActor @Sendable (EngineOutput) -> Void = { [weak self] output in
-            guard let self else { return }
-            guard self.isRunning, output.windowRevision == self.activeRevision else {
-                self.logger.event("overlay_discarded", fields: ["status": "stale", "revision": String(output.windowRevision)])
-                return
-            }
-            let permission = self.permissions.snapshot
-            do {
-                try permission.validateCapture()
-                for translation in output.translations {
-                    try permission.validateCapture(source: translation.region.source == .accessibility ? .accessibility : .visionOCR)
-                }
-            } catch let error as CaptureError {
-                self.handle(error)
-                return
-            } catch {
-                self.cancelPendingWork()
-                return
-            }
-            self.overlay.update(translations: output.translations, revision: output.windowRevision)
-            self.lastRendered = output.translations
-            var fields = ["region_count": String(output.translations.count), "revision": String(output.windowRevision)]
-            if let panels = self.overlay as? OverlayPanelController { fields["panel_count"] = String(panels.panelCount) }
-            self.logger.event("overlay_rendered", fields: fields)
-            self.statusHandler(.listening)
+            self?.receive(output)
         }
         let stateHandler: @MainActor @Sendable (EngineState) -> Void = { [weak self] state in
-            self?.statusHandler(MenuBarStatus(engineState: state))
+            guard let self, self.isRunning else { return }
+            if state == .backendError || state == .circuitOpen || state == .missingPermission {
+                self.cancelTranslation()
+            }
+            self.statusHandler(MenuBarStatus(engineState: state))
         }
         scheduler = schedulerFactory(coordinator, outputHandler, stateHandler)
     }
@@ -108,7 +106,9 @@ public final class TranslationSession {
         activeRevision &+= 1
         captureTask?.cancel()
         captureTask = nil
-        scheduler?.cancel()
+        cancelTranslation()
+        confirmedRevision = nil
+        confirmedRegions = []
         monitor.stop()
         overlay.hideAll()
         statusHandler(.off)
@@ -131,63 +131,229 @@ public final class TranslationSession {
             statusHandler(.listening)
             return
         }
-        activeRevision = descriptor.revision
-        let sameGeometry = activeWindow?.pid == descriptor.pid && activeWindow?.windowID == descriptor.windowID && activeWindow?.frame == descriptor.frame
+        let sameWindow = activeWindow?.pid == descriptor.pid && activeWindow?.windowID == descriptor.windowID
+        let sameGeometry = sameWindow && activeWindow?.frame == descriptor.frame
         logger.event("window_update", fields: ["status": descriptor.invalidatesOverlay || !sameGeometry ? "invalidate" : "metadata", "revision": String(descriptor.revision)])
+        activeRevision = descriptor.revision
         activeWindow = descriptor
         captureTask?.cancel()
-        scheduler?.cancel()
         if descriptor.invalidatesOverlay || !sameGeometry {
-            overlay.hideAll()
+            // Visual churn (scrolls, redraws, AX notifications) must NOT kill
+            // an in-flight request: the recapture below confirms whether the
+            // text is unchanged (deferred output re-renders at the new
+            // coordinates) or different (then we cancel and resubmit).
+            confirmedRevision = nil
+            confirmedRegions = []
             lastRendered = []
+            // Existing bubbles stay on screen while the recapture/translation
+            // settles — busy pages invalidate constantly and wiping here made
+            // translations flash away faster than they could render. Only a
+            // genuine window switch clears immediately.
+            if !sameWindow {
+                overlay.hideAll()
+            }
         }
         statusHandler(.listening)
         let expectedRevision = descriptor.revision
         let capture = self.capture
+        let inPage = self.inPage
         captureTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            do {
-                try Task.checkCancellation()
-                try await Task.sleep(for: .milliseconds(120))
-                let snapshot = try await capture.capture(descriptor)
-                try Task.checkCancellation()
-                guard self.isRunning, self.activeRevision == expectedRevision else { return }
-                let permission = self.permissions.snapshot
-                try permission.validateCapture(source: snapshot.source)
-                self.monitor.setVisualUpdatesEnabled(permission.screenCaptureAuthorized)
-                guard !snapshot.regions.isEmpty else {
-                    self.overlay.hideAll()
-                    self.lastRendered = []
+            // Browsers with a reachable in-page channel translate inside the
+            // page (like native browser translation). Once the channel answers
+            // for this bundle identifier it OWNS the window: bubbles never
+            // appear, even while the channel cools down or the page currently
+            // has nothing translatable. Only a genuine channel failure drops
+            // to the bubble pipeline.
+            if let inPage,
+               translatedBundleIdentifiers.contains(descriptor.bundleIdentifier),
+               await inPage.isApplicable(bundleIdentifier: descriptor.bundleIdentifier) {
+                guard Date() >= self.inPageCooldownUntil else { return }
+                guard !self.inPageInFlight else { return }
+                self.inPageInFlight = true
+                defer { self.inPageInFlight = false }
+                switch await self.runInPageTranslation(descriptor: descriptor, inPage: inPage) {
+                case .applied(let count) where count > 0:
                     return
+                case .applied:
+                    // Page already translated / nothing eligible: stay quiet,
+                    // never fall back to bubbles on a healthy channel.
+                    self.inPageCooldownUntil = Date().addingTimeInterval(5)
+                    return
+                case .channelFailed:
+                    self.inPageCooldownUntil = Date().addingTimeInterval(5)
                 }
-                if self.matchesRendered(snapshot.regions) { return }
-                self.overlay.hideAll()
-                self.lastRendered = []
-                statusHandler(.translating)
-                scheduler?.submit(
-                    snapshot: snapshot,
-                    backend: backend,
-                    modelIdentifier: model,
-                    visionFallbackEnabled: visionFallbackEnabled
-                )
-                logger.event("capture_submitted", fields: [
-                    "region_count": String(snapshot.regions.count),
-                    "revision": String(expectedRevision)
-                ])
-            } catch is CancellationError {
-            } catch let error as CaptureError {
-                guard self.isRunning, self.activeRevision == expectedRevision else { return }
-                self.overlay.hideAll()
-                self.lastRendered = []
-                handle(error)
-            } catch {
-                guard self.isRunning, self.activeRevision == expectedRevision else { return }
-                self.overlay.hideAll()
-                self.lastRendered = []
-                logger.event("capture_failed", fields: ["status": "unknown"])
-                statusHandler(.error)
             }
+            await self.runCapturePipeline(descriptor: descriptor, expectedRevision: expectedRevision, capture: capture)
         }
+    }
+
+    private func runCapturePipeline(descriptor: ActiveWindowDescriptor, expectedRevision: UInt64, capture: any CapturePipelining) async {
+        do {
+            try Task.checkCancellation()
+            try await Task.sleep(for: .milliseconds(120))
+            let snapshot = try await capture.capture(descriptor)
+            try Task.checkCancellation()
+            guard self.isRunning, self.activeRevision == expectedRevision else { return }
+            let permission = self.permissions.snapshot
+            try permission.validateCapture(source: snapshot.source)
+            self.monitor.setVisualUpdatesEnabled(permission.screenCaptureAuthorized)
+            let eligible = snapshot.regions.filter { TextFilter.shouldTranslate($0.sourceText) && $0.sourceText.count <= 4000 }
+            self.confirmedRevision = expectedRevision
+            self.confirmedRegions = eligible
+            if self.submittedRevision != nil, self.sameContent(self.submittedRegions, eligible) {
+                if let output = self.deferredOutput { self.receive(output) }
+                return
+            }
+            self.cancelTranslation()
+            let retained = self.reusableTranslations(for: eligible)
+            if self.display(retained, revision: expectedRevision) {
+                self.logger.event("overlay_reused", fields: ["region_count": String(retained.count), "revision": String(expectedRevision)])
+            }
+            guard retained.count < eligible.count else { return }
+            self.submittedRevision = expectedRevision
+            self.submittedRegions = eligible
+            statusHandler(.translating)
+            scheduler?.submit(
+                snapshot: snapshot,
+                backend: backend,
+                modelIdentifier: model,
+                visionFallbackEnabled: visionFallbackEnabled
+            )
+            logger.event("capture_submitted", fields: [
+                "region_count": String(snapshot.regions.count),
+                "revision": String(expectedRevision)
+            ])
+        } catch is CancellationError {
+        } catch let error as CaptureError {
+            guard self.isRunning, self.activeRevision == expectedRevision else { return }
+            self.cancelTranslation()
+            self.confirmedRevision = nil
+            self.confirmedRegions = []
+            self.overlay.hideAll()
+            self.lastRendered = []
+            handle(error)
+        } catch {
+            guard self.isRunning, self.activeRevision == expectedRevision else { return }
+            self.cancelTranslation()
+            self.confirmedRevision = nil
+            self.confirmedRegions = []
+            self.overlay.hideAll()
+            self.lastRendered = []
+            logger.event("capture_failed", fields: ["status": "unknown"])
+            statusHandler(.error)
+        }
+    }
+
+    private func cancelTranslation() {
+        scheduler?.cancel()
+        submittedRevision = nil
+        submittedRegions = []
+        deferredOutput = nil
+    }
+
+    /// Result of an in-page translation attempt. The bubble pipeline is only
+    /// retried on `.channelFailed`; a healthy channel that extracted or
+    /// applied nothing means the page simply has nothing to translate.
+    private enum InPageOutcome {
+        case applied(Int)
+        case channelFailed
+    }
+
+    /// Replaces page text in place: extract -> translate via the shared
+    /// coordinator -> apply. Overlay bubbles are never used on this path.
+    private func runInPageTranslation(descriptor: ActiveWindowDescriptor, inPage: any InPageTranslating) async -> InPageOutcome {
+        do {
+            logger.event("inpage_stage", fields: ["stage": "extract"])
+            let texts = try await inPage.extract(windowRevision: descriptor.revision)
+            logger.event("inpage_stage", fields: ["stage": "extracted", "count": String(texts.count)])
+            guard !texts.isEmpty else { return .applied(0) }
+            overlay.hideAll()
+            lastRendered = []
+            statusHandler(.translating)
+            let regions = texts.map { text in
+                TextRegion(id: text.id, sourceText: text.text, screenFrame: .zero,
+                           confidence: 1, source: .accessibility, windowRevision: descriptor.revision)
+            }
+            let snapshot = CaptureSnapshot(window: CapturedWindow(
+                descriptor: descriptor, regions: regions, source: .accessibility))
+            guard let coordinator else { return .channelFailed }
+            await coordinator.selectBackend(kind: backend, modelIdentifier: model)
+            logger.event("inpage_stage", fields: ["stage": "translating", "count": String(regions.count)])
+            let output = try await coordinator.translate(
+                snapshot: snapshot,
+                backend: backend,
+                modelIdentifier: model,
+                visionFallbackEnabled: visionFallbackEnabled
+            )
+            let nodeByRegion = Dictionary(uniqueKeysWithValues: texts.map { ($0.id, $0.nodeID) })
+            let replacements = output.translations.compactMap { translation -> InPageReplacement? in
+                guard let nodeID = nodeByRegion[translation.region.id], !translation.text.isEmpty else { return nil }
+                return InPageReplacement(nodeID: nodeID, text: translation.text)
+            }
+            try await inPage.apply(replacements)
+            logger.event("inpage_rendered", fields: [
+                "count": String(replacements.count), "revision": String(descriptor.revision)
+            ])
+            statusHandler(.listening)
+            return .applied(replacements.count)
+        } catch is CancellationError {
+            return .applied(0)
+        } catch let error as CustomStringConvertible {
+            logger.event("inpage_failed", fields: ["status": "error", "reason": error.description])
+            statusHandler(.listening)
+            return .channelFailed
+        } catch {
+            logger.event("inpage_failed", fields: ["status": "error"])
+            statusHandler(.listening)
+            return .channelFailed
+        }
+    }
+
+    private func sameContent(_ lhs: [TextRegion], _ rhs: [TextRegion]) -> Bool {
+        lhs.map { "\($0.source.rawValue):\($0.sourceText)" }.sorted()
+            == rhs.map { "\($0.source.rawValue):\($0.sourceText)" }.sorted()
+    }
+
+    private func receive(_ output: EngineOutput) {
+        guard isRunning, output.windowRevision == submittedRevision else {
+            logger.event("overlay_discarded", fields: ["status": "stale", "revision": String(output.windowRevision)])
+            return
+        }
+        do {
+            let permission = permissions.snapshot
+            try permission.validateCapture()
+            for translation in output.translations {
+                try permission.validateCapture(source: translation.region.source == .accessibility ? .accessibility : .visionOCR)
+            }
+        } catch let error as CaptureError {
+            handle(error)
+            return
+        } catch {
+            cancelPendingWork()
+            return
+        }
+        guard confirmedRevision == activeRevision else {
+            deferredOutput = output
+            return
+        }
+        guard sameContent(submittedRegions, confirmedRegions) else { return }
+        var available = output.translations
+        let remapped = confirmedRegions.compactMap { region -> RenderedTranslation? in
+            guard let index = available.firstIndex(where: {
+                $0.region.sourceText == region.sourceText && $0.region.source == region.source
+            }) else { return nil }
+            return RenderedTranslation(region: region, text: available.remove(at: index).text)
+        }
+        let translations = preservingIdentifiers(remapped)
+        let updated = display(translations, revision: activeRevision)
+        submittedRevision = nil
+        submittedRegions = []
+        deferredOutput = nil
+        logger.event(updated ? "overlay_rendered" : "overlay_unchanged", fields: [
+            "region_count": String(translations.count), "revision": String(activeRevision)
+        ])
+        statusHandler(.listening)
     }
 
     private func cancelPendingWork() {
@@ -198,7 +364,9 @@ public final class TranslationSession {
         activeRevision &+= 1
         captureTask?.cancel()
         captureTask = nil
-        scheduler?.cancel()
+        cancelTranslation()
+        confirmedRevision = nil
+        confirmedRegions = []
         if let coordinator { Task { await coordinator.cancelPendingRequests() } }
         monitor.setVisualUpdatesEnabled(false)
         overlay.hideAll()
@@ -225,12 +393,39 @@ public final class TranslationSession {
         }
     }
 
-    private func matchesRendered(_ regions: [TextRegion]) -> Bool {
-        guard !lastRendered.isEmpty else { return false }
-        let eligible = regions.filter { TextFilter.shouldTranslate($0.sourceText) && $0.sourceText.count <= 4000 }
-        return eligible.count == lastRendered.count && eligible.allSatisfy { region in
-            lastRendered.contains { $0.region.sourceText == region.sourceText && $0.region.screenFrame == region.screenFrame }
+    private func reusableTranslations(for regions: [TextRegion]) -> [RenderedTranslation] {
+        var previous = lastRendered
+        return regions.compactMap { region in
+            guard let index = previous.firstIndex(where: { $0.region.sourceText == region.sourceText }) else { return nil }
+            let retained = previous.remove(at: index)
+            return RenderedTranslation(region: identifiedRegion(region, id: retained.id), text: retained.text)
         }
+    }
+
+    private func preservingIdentifiers(_ translations: [RenderedTranslation]) -> [RenderedTranslation] {
+        var previous = lastRendered
+        return translations.map { translation in
+            guard let index = previous.firstIndex(where: { $0.region.sourceText == translation.region.sourceText }) else { return translation }
+            let retained = previous.remove(at: index)
+            return RenderedTranslation(region: identifiedRegion(translation.region, id: retained.id), text: translation.text)
+        }
+    }
+
+    private func identifiedRegion(_ region: TextRegion, id: UUID) -> TextRegion {
+        TextRegion(id: id, sourceText: region.sourceText, screenFrame: region.screenFrame, confidence: region.confidence,
+                   source: region.source, windowRevision: region.windowRevision)
+    }
+
+    @discardableResult
+    private func display(_ translations: [RenderedTranslation], revision: UInt64) -> Bool {
+        let changed = translations.count != lastRendered.count || translations.contains { translation in
+            !lastRendered.contains { previous in
+                previous.id == translation.id && previous.text == translation.text && previous.region.screenFrame == translation.region.screenFrame
+            }
+        }
+        if changed { overlay.update(translations: translations, revision: revision) }
+        lastRendered = translations
+        return changed
     }
 
     private func handle(_ error: CaptureError) {
@@ -297,7 +492,7 @@ public final class TranslationSession {
         case .failed(let status):
             logger.event("engine_failed", fields: ["status": status.rawValue])
         case .captureBlocked(let error, let revision):
-            guard isRunning, revision == activeRevision else { return }
+            guard isRunning, revision == activeRevision || revision == submittedRevision else { return }
             handle(error)
         }
     }

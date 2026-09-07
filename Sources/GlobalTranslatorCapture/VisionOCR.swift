@@ -71,13 +71,23 @@ public final class VisionOCRService: VisionOCRProviding, @unchecked Sendable {
 
     private func normalized(_ observations: [VisionTextObservation]) -> [VisionTextObservation] {
         var seen = Set<String>()
-        return observations.compactMap { observation in
+        let normalized = observations.compactMap { observation -> VisionTextObservation? in
             let text = observation.text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
             let box = observation.boundingBox.standardized.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
             guard !text.isEmpty, !box.isNull, !box.isEmpty, observation.confidence >= 0,
                   seen.insert(text + "|\(box.minX)|\(box.minY)|\(box.width)|\(box.height)").inserted else { return nil }
             return VisionTextObservation(text: text, boundingBox: box, confidence: min(max(observation.confidence, 0), 1))
-        }.prefix(maxRegions).map { $0 }
+        }
+        var eligible: [VisionTextObservation] = []
+        var other: [VisionTextObservation] = []
+        for observation in normalized {
+            if TextFilter.shouldTranslate(observation.text) {
+                eligible.append(observation)
+            } else {
+                other.append(observation)
+            }
+        }
+        return Array((eligible + other).prefix(maxRegions))
     }
 }
 

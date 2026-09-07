@@ -8,31 +8,31 @@ public final class AccessibilityTextCollector: AccessibilityCollecting, @uncheck
     public let maxRegions: Int
     public let timeout: TimeInterval
     public let primaryDisplayFrame: CGRect?
-    private let excludedBundleIdentifiers: Set<String>
+    private let translatedBundleIdentifiers: Set<String>
 
     public convenience init(
+        translatedBundleIdentifiers: Set<String> = [],
         maxNodes: Int = 256,
         maxRegions: Int = 24,
         timeout: TimeInterval = 0.2,
-        excludedBundleIdentifiers: Set<String> = [],
         primaryDisplayFrame: CGRect? = nil
     ) {
         self.init(
+            translatedBundleIdentifiers: translatedBundleIdentifiers,
             reader: AXAccessibilityNodeReader(maxNodes: maxNodes),
             maxNodes: maxNodes,
             maxRegions: maxRegions,
             timeout: timeout,
-            excludedBundleIdentifiers: excludedBundleIdentifiers,
             primaryDisplayFrame: primaryDisplayFrame
         )
     }
 
     public init(
+        translatedBundleIdentifiers: Set<String>,
         reader: any AccessibilityNodeReading,
         maxNodes: Int = 256,
         maxRegions: Int = 24,
         timeout: TimeInterval = 0.2,
-        excludedBundleIdentifiers: Set<String> = [],
         primaryDisplayFrame: CGRect? = nil
     ) {
         self.reader = reader
@@ -40,7 +40,7 @@ public final class AccessibilityTextCollector: AccessibilityCollecting, @uncheck
         self.maxRegions = min(max(maxRegions, 0), 24)
         self.timeout = min(max(timeout, 0.01), 0.2)
         self.primaryDisplayFrame = primaryDisplayFrame
-        self.excludedBundleIdentifiers = excludedBundleIdentifiers
+        self.translatedBundleIdentifiers = translatedBundleIdentifiers
     }
 
     public func collectResult(from descriptor: ActiveWindowDescriptor) async -> AccessibilityCollectionResult {
@@ -62,21 +62,35 @@ public final class AccessibilityTextCollector: AccessibilityCollecting, @uncheck
         guard descriptor.frame.width > 0, descriptor.frame.height > 0 else {
             throw CaptureError.invalidWindow
         }
+        // Window-level authorization happens before any AX tree is read.
+        guard translatedBundleIdentifiers.contains(descriptor.bundleIdentifier) else {
+            throw CaptureError.excludedApplication(descriptor.bundleIdentifier)
+        }
         guard let root = try reader.readRoot(for: descriptor) else { return [] }
         let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(timeout * 1_000_000_000)
-        var pending = [root]
+        var pending: [(node: AccessibilityNode, inWebArea: Bool)] = [(root, false)]
         var regions: [TextRegion] = []
+        var bodyRegions: [TextRegion] = []
+        var webRegions: [TextRegion] = []
+        var hasWebArea = false
         var untranslatedRegions: [TextRegion] = []
         var largeImageFrames: [CGRect] = []
         var readableTextFrames: [CGRect] = []
         var seen = Set<String>()
         var visited = 0
-        while !pending.isEmpty, visited < maxNodes, regions.count < maxRegions {
+        while !pending.isEmpty, visited < maxNodes {
             if DispatchTime.now().uptimeNanoseconds >= deadline { break }
-            let node = pending.removeLast()
+            let entry = pending.removeLast()
+            let node = entry.node
             visited += 1
-            pending.append(contentsOf: node.children.reversed())
-            if node.role == .image || node.role == .page || (node.role == .group && node.children.isEmpty), !node.isSecure, !node.isOffscreen, let frame = nodeFrame(node) {
+            guard !node.isSecure, !node.isOffscreen,
+                  node.bundleIdentifier.map({ translatedBundleIdentifiers.contains($0) }) ?? true else { continue }
+            let inWebArea = entry.inWebArea || node.role == .webArea
+            if node.role == .webArea, let frame = nodeFrame(node), descriptor.frame.intersects(frame) {
+                hasWebArea = true
+            }
+            pending.append(contentsOf: node.children.reversed().map { ($0, inWebArea) })
+            if node.role == .image || node.role == .page || (node.role == .group && node.children.isEmpty), let frame = nodeFrame(node) {
                 let visibleImage = frame.intersection(descriptor.frame)
                 if !visibleImage.isNull, visibleImage.width * visibleImage.height >= descriptor.frame.width * descriptor.frame.height * 0.25 {
                     if hasInvalidImageTextCoordinates(node, imageFrame: frame, deadline: deadline) {
@@ -99,18 +113,30 @@ public final class AccessibilityTextCollector: AccessibilityCollecting, @uncheck
                 source: .accessibility,
                 windowRevision: descriptor.revision
             )
+            if inWebArea { webRegions.append(region) }
             if TextFilter.shouldTranslate(text) {
-                regions.append(region)
+                if node.role == .staticText || node.role == .textField {
+                    bodyRegions.append(region)
+                } else {
+                    regions.append(region)
+                }
             } else if untranslatedRegions.count < maxRegions {
                 untranslatedRegions.append(region)
             }
         }
+        guard pending.isEmpty else { throw CaptureError.accessibilityUnavailable }
         if largeImageFrames.contains(where: { imageFrame in
             !readableTextFrames.contains { imageFrame.contains(CGPoint(x: $0.midX, y: $0.midY)) }
         }) {
             throw CaptureError.accessibilityUnavailable
         }
-        let selectedRegions = Array((regions + untranslatedRegions).prefix(maxRegions))
+        if hasWebArea {
+            guard !webRegions.isEmpty else { throw CaptureError.accessibilityUnavailable }
+            let eligible = webRegions.filter { TextFilter.shouldTranslate($0.sourceText) }
+            let remaining = webRegions.filter { !TextFilter.shouldTranslate($0.sourceText) }
+            return Array((eligible + remaining).prefix(maxRegions))
+        }
+        let selectedRegions = Array((bodyRegions + regions + untranslatedRegions).prefix(maxRegions))
         if descriptor.frame.height >= 300, !selectedRegions.isEmpty,
            selectedRegions.allSatisfy({ $0.screenFrame.midY >= descriptor.frame.minY + descriptor.frame.height * 0.7 }) {
             throw CaptureError.accessibilityUnavailable
@@ -135,7 +161,7 @@ public final class AccessibilityTextCollector: AccessibilityCollecting, @uncheck
 
     private func shouldInclude(_ node: AccessibilityNode, frame: CGRect, descriptor: ActiveWindowDescriptor) -> Bool {
         guard !node.isSecure, !node.isOffscreen,
-              node.bundleIdentifier.map({ !excludedBundleIdentifiers.contains($0) }) ?? true,
+              node.bundleIdentifier.map({ translatedBundleIdentifiers.contains($0) }) ?? true,
               frame.width > 1, frame.height > 1,
               descriptor.frame.intersects(frame) else { return false }
         let windowArea = descriptor.frame.width * descriptor.frame.height
@@ -169,7 +195,7 @@ public final class AccessibilityTextCollector: AccessibilityCollecting, @uncheck
             candidate = node.description ?? node.value ?? node.title
         case .image:
             candidate = [node.title, node.description, node.value].compactMap { $0 }.first { !$0.isEmpty }
-        case .group, .page:
+        case .group, .page, .webArea:
             candidate = nil
         }
         return candidate?.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ") ?? ""
