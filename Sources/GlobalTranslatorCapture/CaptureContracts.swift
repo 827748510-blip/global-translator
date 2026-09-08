@@ -144,6 +144,10 @@ public struct ActiveWindowDescriptor: Codable, Equatable, Sendable {
 public enum CaptureSource: String, Codable, Equatable, Sendable {
     case accessibility
     case visionOCR
+    /// Text already extracted from a page (extension bridge or CDP in-page).
+    /// No screen or Accessibility capture is involved, so secure-input and
+    /// session-lock gates that protect window capture do not apply.
+    case pageText
 }
 
 public struct ImageFingerprint: Hashable, Codable, Sendable {
