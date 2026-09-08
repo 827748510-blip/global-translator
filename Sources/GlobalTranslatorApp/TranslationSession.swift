@@ -76,7 +76,8 @@ public final class TranslationSession {
         backends: [any TranslationBackend],
         backend: BackendKind,
         model: String,
-        visionFallbackEnabled: Bool
+        visionFallbackEnabled: Bool,
+        bridgeBackends: [any TranslationBackend]? = nil
     ) {
         stop()
         self.backend = backend
@@ -84,7 +85,9 @@ public final class TranslationSession {
         self.visionFallbackEnabled = visionFallbackEnabled
         let coordinator = coordinatorFactory(backends, makeEventSink())
         self.coordinator = coordinator
-        self.bridgeCoordinator = coordinatorFactory(backends, makeEventSink())
+        // A dedicated backend instance (when provided) so overlay coalescing
+        // cannot cancel in-flight extension translations.
+        self.bridgeCoordinator = coordinatorFactory(bridgeBackends ?? backends, makeEventSink())
         let outputHandler: @MainActor @Sendable (EngineOutput) -> Void = { [weak self] output in
             self?.receive(output)
         }
@@ -150,16 +153,44 @@ public final class TranslationSession {
     /// `isRunning`, so Chrome in-page translation works without Accessibility
     /// or Screen Recording. The coordinator itself outlives stop/start;
     /// only `configure()` replaces it.
+    ///
+    /// Local backends are translated one string at a time so a dense page
+    /// (X.com, 30+ strings) cannot pile sequential Ollama round-trips into
+    /// a single JSON-schema call that dies as `networkFailure` and opens the
+    /// circuit. Transient item failures become nil rather than failing the
+    /// whole HTTP request.
     public func translateBridgeTexts(_ texts: [String]) async throws -> [String?] {
         guard isBridgeActive else { throw ExtensionBridgeError.translatorInactive }
-        guard let coordinator = bridgeCoordinator else { throw ExtensionBridgeError.translatorUnavailable }
+        guard bridgeCoordinator != nil else { throw ExtensionBridgeError.translatorUnavailable }
         let capped = Array(texts.prefix(400))
-        let regions = capped.map { text in
+        if backend == .local {
+            var results: [String?] = []
+            results.reserveCapacity(capped.count)
+            for text in capped {
+                guard isBridgeActive else { throw ExtensionBridgeError.translatorInactive }
+                do {
+                    let part = try await translateBridgeSlice([text])
+                    results.append(contentsOf: part)
+                } catch let error as ExtensionBridgeError {
+                    throw error
+                } catch {
+                    logger.event("bridge_item_failed", fields: ["reason": String(describing: error)])
+                    results.append(nil)
+                }
+            }
+            return results
+        }
+        return try await translateBridgeSlice(capped)
+    }
+
+    private func translateBridgeSlice(_ texts: [String]) async throws -> [String?] {
+        guard let coordinator = bridgeCoordinator else { throw ExtensionBridgeError.translatorUnavailable }
+        let regions = texts.map { text in
             TextRegion(id: UUID(), sourceText: text, screenFrame: .zero,
                        confidence: 1, source: .accessibility, windowRevision: 0)
         }
         let eligible = regions.filter { TextFilter.shouldTranslate($0.sourceText) && $0.sourceText.count <= 4_000 }
-        guard !eligible.isEmpty else { return capped.map { _ in nil } }
+        guard !eligible.isEmpty else { return texts.map { _ in nil } }
         let descriptor = ActiveWindowDescriptor(
             pid: 0, bundleIdentifier: "extension.bridge", windowID: nil,
             frame: .zero, revision: 0, invalidatesOverlay: false)

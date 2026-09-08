@@ -28,10 +28,12 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
     /// The ID is what Chrome actually derives from the manifest key —
     /// verified stable across install paths. Re-verified 2026-09-08 against
     /// Chrome for Testing 151 with a fresh profile loading `extension/`:
-    /// the live isolated-world origin is `fjggaipmhcfmgikhkjppkdliaoopaefc`
-    /// (the `fignfi…` value was a leftover from a Chrome 152 sideload
-    /// experiment and rejected real traffic).
+    /// the live isolated-world origin is `fjggaipmhcfmgikhkjppkdliaoopaefc`.
     public static let allowedOrigin = "chrome-extension://fjggaipmhcfmgikhkjppkdliaoopaefc"
+    /// Chrome `--load-extension` sideload sometimes derives this ID even
+    /// when the manifest key is present (Chrome 152 experiment leftover).
+    public static let sideloadOrigin = "chrome-extension://fignfifoniblkonapihmkfakmlgkbkcf"
+    public static let allowedOrigins: Set<String> = [allowedOrigin, sideloadOrigin]
     public static let defaultPort: UInt16 = 9_233
 
     private static let maximumHeaderBytes = 16_384
@@ -169,7 +171,7 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
             send(corsPreflightResponse(for: request.origin), on: connection)
             return
         }
-        guard request.origin == Self.allowedOrigin else {
+        guard Self.allowedOrigins.contains(request.origin ?? "") else {
             logger?.event("bridge_rejected", fields: ["status": "origin", "path": request.path])
             send(.json(status: 403, object: ["error": "forbidden"]), on: connection)
             return
@@ -178,20 +180,20 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         // POST as well as GET: browsers omit the Origin header on plain GET
         // fetches, so the extension pings with POST to prove its identity.
         case ("GET", "/health"), ("POST", "/health"):
-            send(.json(status: 200, object: ["ok": true]), on: connection)
+            send(.json(status: 200, object: ["ok": true]), on: connection, origin: request.origin)
         case ("POST", "/translate"):
-            handleTranslate(request.body, on: connection)
+            handleTranslate(request.body, origin: request.origin, on: connection)
         default:
-            send(.json(status: 404, object: ["error": "not found"]), on: connection)
+            send(.json(status: 404, object: ["error": "not found"]), on: connection, origin: request.origin)
         }
     }
 
-    private func handleTranslate(_ body: Data, on connection: NWConnection) {
+    private func handleTranslate(_ body: Data, origin: String?, on connection: NWConnection) {
         guard let payload = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
               let texts = payload["texts"] as? [String],
               !texts.isEmpty, texts.count <= Self.maximumTexts,
               texts.allSatisfy({ $0.utf8.count <= Self.maximumTextUTF8 }) else {
-            send(.json(status: 400, object: ["error": "bad request"]), on: connection)
+            send(.json(status: 400, object: ["error": "bad request"]), on: connection, origin: origin)
             return
         }
         logger?.event("bridge_translate", fields: ["count": String(texts.count)])
@@ -211,7 +213,7 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
                 self.logger?.event("bridge_translate_failed", fields: ["reason": String(describing: error)])
                 response = .json(status: 500, object: ["error": "translation failed"])
             }
-            self.queue.async { self.send(response, on: connection) }
+            self.queue.async { self.send(response, on: connection, origin: origin) }
         }
     }
 
@@ -222,10 +224,11 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         let contentType: String
         let body: Data
         var cors: Bool = true
+        var origin: String? = nil
 
-        static func json(status: Int, object: [String: Any]) -> Response {
+        static func json(status: Int, object: [String: Any], origin: String? = nil) -> Response {
             let body = (try? JSONSerialization.data(withJSONObject: object)) ?? Data()
-            return Response(status: status, contentType: "application/json", body: body)
+            return Response(status: status, contentType: "application/json", body: body, origin: origin)
         }
 
         static func plain(status: Int, body: String) -> Response {
@@ -234,19 +237,21 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
     }
 
     private func corsPreflightResponse(for origin: String?) -> Response {
-        guard origin == Self.allowedOrigin else {
+        guard let origin, Self.allowedOrigins.contains(origin) else {
             return .json(status: 403, object: ["error": "forbidden"])
         }
-        return Response(status: 204, contentType: "text/plain", body: Data())
+        return Response(status: 204, contentType: "text/plain", body: Data(), origin: origin)
     }
 
-    private func send(_ response: Response, on connection: NWConnection) {
+    private func send(_ response: Response, on connection: NWConnection, origin: String? = nil) {
         var head = "HTTP/1.1 \(response.status) \(Self.statusText(response.status))\r\n"
         head += "Content-Type: \(response.contentType)\r\n"
         head += "Content-Length: \(response.body.count)\r\n"
         head += "Connection: close\r\n"
         if response.cors {
-            head += "Access-Control-Allow-Origin: \(Self.allowedOrigin)\r\n"
+            let allow = origin ?? response.origin
+            let echoed = allow.flatMap { Self.allowedOrigins.contains($0) ? $0 : nil } ?? Self.allowedOrigin
+            head += "Access-Control-Allow-Origin: \(echoed)\r\n"
             head += "Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n"
             head += "Access-Control-Allow-Headers: content-type\r\n"
             head += "Vary: Origin\r\n"

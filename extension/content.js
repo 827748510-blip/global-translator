@@ -4,7 +4,11 @@
 // Mirrors the extraction/apply rules of the CDP in-page pipeline.
 (() => {
   const SKIPPED_TAGS = ["SCRIPT", "STYLE", "NOSCRIPT", "CODE", "PRE", "TEXTAREA"];
-  const CHUNK_SIZE = 30;
+  // Keep this aligned with local Ollama: qwen3 thinking + JSON schema is
+  // reliable one (or a few) string(s) at a time. A 30-item POST made the
+  // desktop app run many sequential round-trips under one fetch and die as
+  // networkFailure, then open the circuit for ~30s.
+  const CHUNK_SIZE = 3;
   const MAX_PER_ROUND = 200;
   const MAX_ROUNDS = 5;
   const OBSERVER_DEBOUNCE_MS = 800;

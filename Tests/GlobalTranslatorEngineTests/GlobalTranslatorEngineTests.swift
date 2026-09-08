@@ -20,6 +20,53 @@ struct GlobalTranslatorEngineTests {
     }
 
     @Test
+    func pageTextLocalBatchesAreSingleItemsSoDensePagesDoNotTripTheCircuit() async throws {
+        let regions = (0..<30).map { makeRegion(text: "Visible label \($0)", y: CGFloat(100 + $0 * 25)) }
+        let backend = RecordingBackend(kind: .local) { request, _ in
+            TranslationResult(windowRevision: request.windowRevision, translations: request.items.map {
+                Translation(segmentId: $0.id, simplifiedChineseText: "译文")
+            })
+        }
+        let breaker = CircuitBreaker()
+        let coordinator = TranslationCoordinator(
+            backends: [backend],
+            circuitBreaker: breaker,
+            permissions: SystemPermissionController(snapshotProvider: { .allGranted })
+        )
+        let output = try await coordinator.translate(
+            snapshot: makeSnapshot(regions: regions, revision: 0, source: .pageText),
+            backend: .local,
+            modelIdentifier: "test",
+            visionFallbackEnabled: false
+        )
+        #expect(output.translations.count == 30)
+        #expect(await backend.requests.map { $0.items.count } == Array(repeating: 1, count: 30))
+        #expect(!(await breaker.isOpen))
+    }
+
+    @Test
+    func pageTextNetworkFailureDoesNotOpenTheCircuit() async throws {
+        let backend = ThrowingBackend(kind: .local, error: .networkFailure)
+        let breaker = CircuitBreaker()
+        let coordinator = TranslationCoordinator(
+            backends: [backend],
+            circuitBreaker: breaker,
+            permissions: SystemPermissionController(snapshotProvider: { .allGranted })
+        )
+        let snapshot = makeSnapshot(regions: [makeRegion(text: "Hello world")], revision: 0, source: .pageText)
+        for _ in 0..<5 {
+            await #expect(throws: TranslationError.networkFailure) {
+                _ = try await coordinator.translate(
+                    snapshot: snapshot, backend: .local, modelIdentifier: "test", visionFallbackEnabled: false
+                )
+            }
+        }
+        #expect(!(await breaker.isOpen))
+        #expect(await backend.requestCount == 5)
+        #expect(await coordinator.state != .circuitOpen)
+    }
+
+    @Test
     func batchesFilteredTextAndRemapsDuplicateRegions() async throws {
         let firstID = UUID()
         let secondID = UUID()

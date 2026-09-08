@@ -38,8 +38,23 @@ struct ExtensionBridgeRevisionGateTests {
 
 struct ExtensionBridgeServerTests {
     @Test
+    func contentScriptUsesSmallChunksForLocalOllama() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("extension/content.js")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        #expect(source.contains("const CHUNK_SIZE = 3;"))
+        #expect(!source.contains("const CHUNK_SIZE = 30;"))
+    }
+
+    @Test
     func allowedOriginStaysPinnedToTheShippedExtensionId() {
         #expect(ExtensionBridgeServer.allowedOrigin == "chrome-extension://fjggaipmhcfmgikhkjppkdliaoopaefc")
+        #expect(ExtensionBridgeServer.sideloadOrigin == "chrome-extension://fignfifoniblkonapihmkfakmlgkbkcf")
+        #expect(ExtensionBridgeServer.allowedOrigins.contains(ExtensionBridgeServer.allowedOrigin))
+        #expect(ExtensionBridgeServer.allowedOrigins.contains(ExtensionBridgeServer.sideloadOrigin))
     }
     private func waitForPort(_ server: ExtensionBridgeServer) async -> UInt16? {
         for _ in 0..<200 {
@@ -104,6 +119,27 @@ struct ExtensionBridgeServerTests {
 
         let foreignPreflight = request(port, method: "OPTIONS", path: "/translate", origin: "https://evil.example")
         #expect(((try await session.data(for: foreignPreflight)).1 as? HTTPURLResponse)?.statusCode == 403)
+    }
+
+    @Test
+    func sideloadOriginIsAcceptedAndEchoed() async throws {
+        let server = ExtensionBridgeServer(port: 0) { texts in texts.map { "译:" + $0 } }
+        server.start()
+        defer { server.stop() }
+        let port = try await #require(waitForPort(server))
+        let body = try JSONSerialization.data(withJSONObject: ["texts": ["hello"]])
+        let urlRequest = request(port, method: "POST", path: "/translate",
+                                 origin: ExtensionBridgeServer.sideloadOrigin, body: body)
+        let (data, response) = try await URLSession(configuration: .ephemeral).data(for: urlRequest)
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        #expect((response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Access-Control-Allow-Origin") == ExtensionBridgeServer.sideloadOrigin)
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect((object["translations"] as? [String]) == ["译:hello"])
+
+        let preflight = request(port, method: "OPTIONS", path: "/translate", origin: ExtensionBridgeServer.sideloadOrigin)
+        let (_, preflightResponse) = try await URLSession(configuration: .ephemeral).data(for: preflight)
+        #expect((preflightResponse as? HTTPURLResponse)?.statusCode == 204)
+        #expect((preflightResponse as? HTTPURLResponse)?.value(forHTTPHeaderField: "Access-Control-Allow-Origin") == ExtensionBridgeServer.sideloadOrigin)
     }
 
     @Test
@@ -362,6 +398,63 @@ extension ApplicationControllerTests {
         try await waitForCapture { controller.viewModel.status == .missingPermission }
         #expect(overlay.lastTranslations.isEmpty)
         #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        await controller.stop()
+    }
+
+    @Test
+    func localBridgeTranslatesThirtyStringsWithoutABulkCoordinatorCall() async throws {
+        let denied = PermissionSnapshot(
+            accessibilityTrusted: false,
+            screenCaptureAuthorized: false,
+            secureInputEnabled: false,
+            sessionLocked: false
+        )
+        let coordinator = OneItemCoordinator()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                permission: FakePermissionController(snapshot: denied),
+                coordinator: coordinator
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        let texts = (0..<30).map { "Hello from page \($0) now" }
+        let result = try await session.translateBridgeTexts(texts)
+        #expect(result == texts.map { "你好 " + $0 })
+        #expect(await coordinator.itemCounts == Array(repeating: 1, count: 30))
+        #expect(!session.isRunning)
+        await controller.stop()
+    }
+
+    @Test
+    func localBridgeKeepsGoingAfterATransientItemFailure() async throws {
+        let coordinator = FlakySecondItemCoordinator()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                permission: FakePermissionController(snapshot: PermissionSnapshot(
+                    accessibilityTrusted: false, screenCaptureAuthorized: false,
+                    secureInputEnabled: false, sessionLocked: false)),
+                coordinator: coordinator
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        let result = try await session.translateBridgeTexts([
+            "Hello from page one now",
+            "Hello from page two now",
+            "Hello from page three now"
+        ])
+        #expect(result == ["你好 Hello from page one now", nil, "你好 Hello from page three now"])
         await controller.stop()
     }
 }

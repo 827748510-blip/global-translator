@@ -19,7 +19,9 @@ extension ApplicationControllerComponents {
             configurationStore: ConfigStore(url: paths.configURL),
             credentialStore: MacOSKeychainStore(),
             permissionController: SystemPermissionController(),
-            backendFactory: LiveTranslationBackendFactory(),
+            backendFactory: LiveTranslationBackendFactory(
+                localTransport: URLSessionHTTPTransport(requestTimeout: 90, resourceTimeout: 180)
+            ),
             monitorFactory: { allowed in
                 ActiveWindowMonitorAdapter(
                     ownBundleIdentifier: Bundle.main.bundleIdentifier,

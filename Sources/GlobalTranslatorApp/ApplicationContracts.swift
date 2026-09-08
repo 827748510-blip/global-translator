@@ -52,9 +52,14 @@ public protocol TranslationBackendFactory: Sendable {
 
 public struct LiveTranslationBackendFactory: TranslationBackendFactory, Sendable {
     private let transport: any HTTPTransport
+    private let localTransport: any HTTPTransport
 
-    public init(transport: any HTTPTransport = URLSessionHTTPTransport()) {
+    public init(
+        transport: any HTTPTransport = URLSessionHTTPTransport(),
+        localTransport: (any HTTPTransport)? = nil
+    ) {
         self.transport = transport
+        self.localTransport = localTransport ?? transport
     }
 
     public func makeBackend(
@@ -69,7 +74,7 @@ public struct LiveTranslationBackendFactory: TranslationBackendFactory, Sendable
             return CoalescingTranslationBackend(base: try LocalOpenAIBackend(
                 baseURL: configuration.localBaseURL,
                 model: configuration.localModel,
-                transport: transport
+                transport: localTransport
             ))
         }
     }

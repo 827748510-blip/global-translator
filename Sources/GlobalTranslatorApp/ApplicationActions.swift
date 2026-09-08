@@ -154,11 +154,17 @@ extension ApplicationController {
             configuration: configuration,
             credentials: components.credentialStore
         ) {
+            let bridgeBackend = (try? components.backendFactory.makeBackend(
+                kind: configuration.backend,
+                configuration: configuration,
+                credentials: components.credentialStore
+            )) ?? backend
             session?.configure(
                 backends: [backend],
                 backend: configuration.backend,
                 model: modelIdentifier,
-                visionFallbackEnabled: configuration.visionFallbackEnabled
+                visionFallbackEnabled: configuration.visionFallbackEnabled,
+                bridgeBackends: [bridgeBackend]
             )
         }
         queueSave()
@@ -391,8 +397,12 @@ extension ApplicationController {
         if viewModel.backendReady, let backend = try? components.backendFactory.makeBackend(
             kind: configuration.backend, configuration: configuration, credentials: components.credentialStore
         ) {
+            let bridgeBackend = (try? components.backendFactory.makeBackend(
+                kind: configuration.backend, configuration: configuration, credentials: components.credentialStore
+            )) ?? backend
             session?.configure(backends: [backend], backend: configuration.backend,
-                               model: modelIdentifier, visionFallbackEnabled: configuration.visionFallbackEnabled)
+                               model: modelIdentifier, visionFallbackEnabled: configuration.visionFallbackEnabled,
+                               bridgeBackends: [bridgeBackend])
             if shouldResume { maybeStartPersistedSession() }
         } else {
             scheduleBackendRefresh(startPersistedSession: shouldResume)

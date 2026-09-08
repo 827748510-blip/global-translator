@@ -228,11 +228,17 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             session?.stop()
             return
         }
+        let bridgeBackend = (try? components.backendFactory.makeBackend(
+            kind: expectedConfiguration.backend,
+            configuration: expectedConfiguration,
+            credentials: components.credentialStore
+        )) ?? backend
         session?.configure(
             backends: [backend],
             backend: expectedConfiguration.backend,
             model: modelIdentifier,
-            visionFallbackEnabled: expectedConfiguration.visionFallbackEnabled
+            visionFallbackEnabled: expectedConfiguration.visionFallbackEnabled,
+            bridgeBackends: [bridgeBackend]
         )
     }
 

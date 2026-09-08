@@ -323,6 +323,63 @@ actor TranslatingCoordinator: TranslationCoordinating {
     }
 }
 
+/// Fails if the bridge still dumps a dense page into one coordinator call.
+actor OneItemCoordinator: TranslationCoordinating {
+    private(set) var itemCounts: [Int] = []
+
+    func selectBackend(kind: BackendKind, modelIdentifier: String) async {}
+    func clearCache() async {}
+    func cancelPendingRequests() async {}
+    func translate(
+        snapshot: CaptureSnapshot,
+        backend: BackendKind,
+        modelIdentifier: String,
+        visionFallbackEnabled: Bool
+    ) async throws -> EngineOutput {
+        itemCounts.append(snapshot.regions.count)
+        if snapshot.regions.count > 1 {
+            throw TranslationError.networkFailure
+        }
+        let translations = snapshot.regions.map { region in
+            RenderedTranslation(region: region, text: "你好 " + region.sourceText)
+        }
+        return EngineOutput(
+            windowRevision: snapshot.descriptor.revision,
+            translations: translations,
+            metrics: EngineMetrics(inputRegionCount: translations.count, eligibleRegionCount: translations.count,
+                cacheHitCount: 0, batchCount: 1, translatedRegionCount: translations.count,
+                durationMilliseconds: 1, status: .success)
+        )
+    }
+}
+
+actor FlakySecondItemCoordinator: TranslationCoordinating {
+    private var calls = 0
+
+    func selectBackend(kind: BackendKind, modelIdentifier: String) async {}
+    func clearCache() async {}
+    func cancelPendingRequests() async {}
+    func translate(
+        snapshot: CaptureSnapshot,
+        backend: BackendKind,
+        modelIdentifier: String,
+        visionFallbackEnabled: Bool
+    ) async throws -> EngineOutput {
+        calls += 1
+        if calls == 2 { throw TranslationError.networkFailure }
+        let translations = snapshot.regions.map { region in
+            RenderedTranslation(region: region, text: "你好 " + region.sourceText)
+        }
+        return EngineOutput(
+            windowRevision: snapshot.descriptor.revision,
+            translations: translations,
+            metrics: EngineMetrics(inputRegionCount: translations.count, eligibleRegionCount: translations.count,
+                cacheHitCount: 0, batchCount: 1, translatedRegionCount: translations.count,
+                durationMilliseconds: 1, status: .success)
+        )
+    }
+}
+
 final class EngineEventBox: @unchecked Sendable {
     private let lock = NSLock()
     private var sink: EngineEventSink?
