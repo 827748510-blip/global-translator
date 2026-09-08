@@ -11,7 +11,7 @@ extension ApplicationControllerTests {
     func deferredTranslationWaitsForMatchingPageRecapture() async throws {
         let fixture = FlickerFixture()
         let controller = try await startFlickerController(fixture, renderImmediately: false)
-        let output = fixture.output(revision: 1)
+        let output = await fixture.output(revision: 1)
         fixture.monitor.emit(fixture.window(revision: 2))
         fixture.scheduler.emit(output)
         #expect(fixture.overlay.translations.isEmpty)
@@ -26,10 +26,10 @@ extension ApplicationControllerTests {
     func churnedPageRendersDeferredTranslationForUnchangedRegions() async throws {
         let fixture = FlickerFixture()
         let controller = try await startFlickerController(fixture, renderImmediately: false)
-        let firstOutput = fixture.output(revision: 1)
+        let firstOutput = await fixture.output(revision: 1)
         // The page churns while the translation is in flight: one region
         // changes, the other stays (timeline counters, "show N posts" pills).
-        fixture.capture.setTexts(["Stable text", "Updated text"])
+        await fixture.capture.setTexts(["Stable text", "Updated text"])
         fixture.monitor.emit(fixture.window(revision: 2))
         // The in-flight output arrives before the recapture lands, so it is
         // deferred rather than rendered.
@@ -42,7 +42,7 @@ extension ApplicationControllerTests {
         #expect(fixture.overlay.translations.map(\.region.sourceText) == ["Stable text"])
         #expect(fixture.scheduler.value?.submitCount == 2)
         // Once the follow-up translation lands, every region is shown.
-        fixture.scheduler.emit(fixture.output(revision: 2))
+        fixture.scheduler.emit(await fixture.output(revision: 2))
         #expect(fixture.overlay.translations.map(\.region.sourceText) == ["Stable text", "Updated text"])
         await controller.stop()
     }
@@ -66,10 +66,10 @@ extension ApplicationControllerTests {
         controller.session?.start()
         fixture.monitor.emit(fixture.window(revision: 1))
         try await waitForCapture { fixture.scheduler.value?.submitCount == 1 }
-        let output = fixture.output(revision: 1)
+        let output = await fixture.output(revision: 1)
         let cancellations = fixture.scheduler.value?.cancelCount ?? 0
         fixture.monitor.emit(fixture.window(revision: 2))
-        try await waitForCapture { fixture.capture.count == 2 }
+        try await waitForCapture { await fixture.capture.count == 2 }
         eventBox.emit(.captureBlocked(reason: .protected(.secureInput), windowRevision: 1))
         try await waitForCapture { (fixture.scheduler.value?.cancelCount ?? 0) > cancellations }
         #expect((fixture.scheduler.value?.cancelCount ?? 0) > cancellations)
@@ -82,11 +82,11 @@ extension ApplicationControllerTests {
     func unchangedPageRefreshKeepsInFlightTranslationAndUsesLatestCoordinates() async throws {
         let fixture = FlickerFixture()
         let controller = try await startFlickerController(fixture, renderImmediately: false)
-        let originalOutput = fixture.output(revision: 1)
+        let originalOutput = await fixture.output(revision: 1)
         let cancellations = fixture.scheduler.value?.cancelCount
-        fixture.capture.setOffset(40)
+        await fixture.capture.setOffset(40)
         fixture.monitor.emit(fixture.window(revision: 2))
-        try await waitForCapture { fixture.capture.count == 2 }
+        try await waitForCapture { await fixture.capture.count == 2 }
         for _ in 0..<20 { await Task.yield() }
         #expect(fixture.scheduler.value?.submitCount == 1)
         #expect(fixture.scheduler.value?.cancelCount == cancellations)
@@ -101,8 +101,8 @@ extension ApplicationControllerTests {
     func outputArrivingBeforeRecaptureCannotRenderChangedPage() async throws {
         let fixture = FlickerFixture()
         let controller = try await startFlickerController(fixture, renderImmediately: false)
-        let originalOutput = fixture.output(revision: 1)
-        fixture.capture.setTexts(["A different page"])
+        let originalOutput = await fixture.output(revision: 1)
+        await fixture.capture.setTexts(["A different page"])
         fixture.monitor.emit(fixture.window(revision: 2))
         fixture.scheduler.emit(originalOutput)
         #expect(fixture.overlay.translations.isEmpty)
@@ -111,7 +111,7 @@ extension ApplicationControllerTests {
         #expect(fixture.overlay.translations.isEmpty)
         fixture.scheduler.emit(originalOutput)
         #expect(fixture.overlay.translations.isEmpty)
-        fixture.scheduler.emit(fixture.output(revision: 2))
+        fixture.scheduler.emit(await fixture.output(revision: 2))
         #expect(fixture.overlay.translations.map(\.region.sourceText) == ["A different page"])
         await controller.stop()
     }
@@ -120,11 +120,11 @@ extension ApplicationControllerTests {
     func invalidateRefreshKeepsInFlightTranslationForIdenticalContent() async throws {
         let fixture = FlickerFixture()
         let controller = try await startFlickerController(fixture, renderImmediately: false)
-        let originalOutput = fixture.output(revision: 1)
+        let originalOutput = await fixture.output(revision: 1)
         let cancellations = fixture.scheduler.value?.cancelCount
-        fixture.capture.setOffset(60)
+        await fixture.capture.setOffset(60)
         fixture.monitor.emit(ActiveWindowDescriptor(pid: 42, bundleIdentifier: "qa.editor", windowID: 17, frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 2, invalidatesOverlay: true))
-        try await waitForCapture { fixture.capture.count == 2 }
+        try await waitForCapture { await fixture.capture.count == 2 }
         for _ in 0..<20 { await Task.yield() }
         #expect(fixture.scheduler.value?.submitCount == 1)
         #expect(fixture.scheduler.value?.cancelCount == cancellations)
@@ -165,7 +165,7 @@ extension ApplicationControllerTests {
         #expect(applied.first?.first?.nodeID == "n1")
         #expect(fixture.overlay.translations.isEmpty)
         #expect(fixture.scheduler.value?.submitCount == 0)
-        #expect(fixture.capture.count == 0)
+        #expect(await fixture.capture.count == 0)
         await controller.stop()
     }
 
@@ -201,7 +201,7 @@ extension ApplicationControllerTests {
         #expect(inPage.extractCount == 1)
         #expect(inPage.applied.first?.isEmpty == true)
         try await Task.sleep(for: .milliseconds(300))
-        #expect(fixture.capture.count == 0)
+        #expect(await fixture.capture.count == 0)
         #expect(fixture.scheduler.value?.submitCount == 0)
         #expect(fixture.overlay.translations.isEmpty)
 
@@ -210,7 +210,7 @@ extension ApplicationControllerTests {
         fixture.monitor.emit(ActiveWindowDescriptor(pid: 42, bundleIdentifier: "com.google.Chrome", windowID: 17, frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 2, invalidatesOverlay: true))
         try await Task.sleep(for: .milliseconds(500))
         #expect(inPage.extractCount == 1)
-        #expect(fixture.capture.count == 0)
+        #expect(await fixture.capture.count == 0)
         #expect(fixture.scheduler.value?.submitCount == 0)
         await controller.stop()
     }
@@ -242,14 +242,14 @@ extension ApplicationControllerTests {
         try await waitForCapture(timeout: 5) { inPage.extractCount == 1 }
         #expect(inPage.extractCount == 1)
         try await Task.sleep(for: .milliseconds(300))
-        #expect(fixture.capture.count == 0)
+        #expect(await fixture.capture.count == 0)
         #expect(fixture.scheduler.value?.submitCount == 0)
         #expect(fixture.overlay.translations.isEmpty)
 
         fixture.monitor.emit(ActiveWindowDescriptor(pid: 42, bundleIdentifier: "com.google.Chrome", windowID: 17, frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 2, invalidatesOverlay: true))
         try await Task.sleep(for: .milliseconds(500))
         #expect(inPage.extractCount == 1)
-        #expect(fixture.capture.count == 0)
+        #expect(await fixture.capture.count == 0)
         await controller.stop()
     }
 
@@ -260,7 +260,7 @@ extension ApplicationControllerTests {
         let controller = try await startInPageController(fixture, inPage: inPage)
         try await Task.sleep(for: .milliseconds(300))
         #expect(fixture.scheduler.value?.submitCount == 0)
-        #expect(fixture.capture.count == 0)
+        #expect(await fixture.capture.count == 0)
         let extracts = inPage.extractCount
         #expect(extracts == 0)
         #expect(fixture.overlay.translations.isEmpty)
@@ -276,7 +276,7 @@ extension ApplicationControllerTests {
 
         try await Task.sleep(for: .milliseconds(300))
         #expect(inPage.extractCount == 0)
-        #expect(fixture.capture.count == 0)
+        #expect(await fixture.capture.count == 0)
         #expect(fixture.scheduler.value?.submitCount == 0)
         #expect(fixture.overlay.translations.isEmpty)
 
@@ -285,7 +285,7 @@ extension ApplicationControllerTests {
         fixture.monitor.emit(ActiveWindowDescriptor(pid: 7777, bundleIdentifier: "com.google.Chrome", windowID: 99, frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 2, invalidatesOverlay: true))
         try await waitForCapture(timeout: 5) { inPage.extractCount == 1 }
         #expect(inPage.extractCount == 1)
-        #expect(fixture.capture.count == 0)
+        #expect(await fixture.capture.count == 0)
         await controller.stop()
     }
 
@@ -319,10 +319,10 @@ extension ApplicationControllerTests {
         let updateCount = fixture.overlay.updateCount
         for revision in 2...4 {
             fixture.monitor.emit(fixture.window(revision: UInt64(revision)))
-            try await waitForCapture { fixture.capture.count == revision }
+            try await waitForCapture { await fixture.capture.count == revision }
             for _ in 0..<20 { await Task.yield() }
         }
-        #expect(fixture.capture.count == 4)
+        #expect(await fixture.capture.count == 4)
         #expect(fixture.overlay.hideCount == hideCount)
         #expect(fixture.overlay.updateCount == updateCount)
         #expect(fixture.scheduler.value?.submitCount == 1)
@@ -336,14 +336,14 @@ extension ApplicationControllerTests {
         let controller = try await startFlickerController(fixture)
         let stableID = try #require(fixture.overlay.translations.first?.id)
         let hideCount = fixture.overlay.hideCount
-        fixture.capture.setTexts(["Stable text", "Updated text"])
+        await fixture.capture.setTexts(["Stable text", "Updated text"])
         fixture.monitor.emit(fixture.window(revision: 2))
         try await waitForCapture { fixture.scheduler.value?.submitCount == 2 }
         #expect(fixture.overlay.hideCount == hideCount)
         #expect(fixture.overlay.translations.map(\.region.sourceText) == ["Stable text"])
         #expect(fixture.overlay.translations.first?.id == stableID)
 
-        fixture.scheduler.emit(fixture.output(revision: 2))
+        fixture.scheduler.emit(await fixture.output(revision: 2))
         #expect(fixture.overlay.translations.count == 2)
         #expect(fixture.overlay.translations.first?.id == stableID)
         await controller.stop()
@@ -355,9 +355,9 @@ extension ApplicationControllerTests {
         let controller = try await startFlickerController(fixture)
         let ids = fixture.overlay.translations.map(\.id)
         let hides = fixture.overlay.hideCount
-        fixture.capture.setOffset(40)
+        await fixture.capture.setOffset(40)
         fixture.monitor.emit(fixture.window(revision: 2))
-        try await waitForCapture { fixture.capture.count == 2 }
+        try await waitForCapture { await fixture.capture.count == 2 }
         for _ in 0..<20 { await Task.yield() }
         #expect(fixture.overlay.hideCount == hides)
         #expect(fixture.overlay.translations.map(\.id) == ids)
@@ -387,7 +387,7 @@ extension ApplicationControllerTests {
         try await waitForCapture { fixture.scheduler.value?.submitCount == 1 }
         #expect(fixture.scheduler.value?.submitCount == 1)
         if renderImmediately {
-            fixture.scheduler.emit(fixture.output(revision: 1))
+            fixture.scheduler.emit(await fixture.output(revision: 1))
             #expect(fixture.overlay.translations.count == 2)
         }
         return controller
@@ -403,8 +403,8 @@ private final class FlickerFixture {
     func window(revision: UInt64) -> ActiveWindowDescriptor {
         ActiveWindowDescriptor(pid: 42, bundleIdentifier: "qa.editor", windowID: 17, frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: revision, invalidatesOverlay: revision == 1)
     }
-    func output(revision: UInt64) -> EngineOutput {
-        let translations = capture.regions.map { RenderedTranslation(region: $0, text: "译文 " + $0.sourceText) }
+    func output(revision: UInt64) async -> EngineOutput {
+        let translations = await capture.regions.map { RenderedTranslation(region: $0, text: "译文 " + $0.sourceText) }
         return EngineOutput(windowRevision: revision, translations: translations, metrics: EngineMetrics(inputRegionCount: translations.count, eligibleRegionCount: translations.count, cacheHitCount: 0, batchCount: 1, translatedRegionCount: translations.count, durationMilliseconds: 1, status: .success))
     }
 }
@@ -421,24 +421,20 @@ private final class FlickerOverlay: OverlayControlling {
     func hideAll() { translations = []; hideCount += 1 }
 }
 
-private final class FlickerCapture: CapturePipelining, @unchecked Sendable {
-    private let lock = NSLock()
+private actor FlickerCapture: CapturePipelining {
     private var texts = ["Stable text", "Changing text"]
     private var offset: CGFloat = 0
     private var captures = 0
     private var lastRegions: [TextRegion] = []
-    var count: Int { lock.withLock { captures } }
-    var regions: [TextRegion] { lock.withLock { lastRegions } }
-    func setTexts(_ texts: [String]) { lock.withLock { self.texts = texts } }
-    func setOffset(_ offset: CGFloat) { lock.withLock { self.offset = offset } }
+    var count: Int { captures }
+    var regions: [TextRegion] { lastRegions }
+    func setTexts(_ texts: [String]) { self.texts = texts }
+    func setOffset(_ offset: CGFloat) { self.offset = offset }
     func capture(_ descriptor: ActiveWindowDescriptor) async throws -> CaptureSnapshot {
-        let regions = lock.withLock {
-            captures += 1
-            lastRegions = texts.enumerated().map { index, text in
-                TextRegion(id: UUID(), sourceText: text, screenFrame: CGRect(x: 30, y: 300 - CGFloat(index) * 60 + offset, width: 240, height: 28), confidence: 1, source: .accessibility, windowRevision: descriptor.revision)
-            }
-            return lastRegions
+        captures += 1
+        lastRegions = texts.enumerated().map { index, text in
+            TextRegion(id: UUID(), sourceText: text, screenFrame: CGRect(x: 30, y: 300 - CGFloat(index) * 60 + offset, width: 240, height: 28), confidence: 1, source: .accessibility, windowRevision: descriptor.revision)
         }
-        return CaptureSnapshot(window: CapturedWindow(descriptor: descriptor, regions: regions, source: .accessibility))
+        return CaptureSnapshot(window: CapturedWindow(descriptor: descriptor, regions: lastRegions, source: .accessibility))
     }
 }

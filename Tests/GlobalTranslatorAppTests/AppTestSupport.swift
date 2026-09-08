@@ -214,19 +214,11 @@ struct FakeCapturePipeline: CapturePipelining, Sendable {
     }
 }
 
-final class CountingCapturePipeline: CapturePipelining, @unchecked Sendable {
-    private let lock = NSLock()
-    private var captures = 0
-    var count: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return captures
-    }
+actor CountingCapturePipeline: CapturePipelining {
+    private(set) var count = 0
 
     func capture(_ descriptor: ActiveWindowDescriptor) async throws -> CaptureSnapshot {
-        lock.lock()
-        captures += 1
-        lock.unlock()
+        count += 1
         let region = TextRegion(
             id: UUID(),
             sourceText: "Visible English label",

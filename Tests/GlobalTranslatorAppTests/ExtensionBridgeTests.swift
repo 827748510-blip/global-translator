@@ -549,7 +549,7 @@ extension ApplicationControllerTests {
             revision: 1, invalidatesOverlay: true
         ))
         try await Task.sleep(for: .milliseconds(300))
-        #expect(capture.count == 0)
+        #expect(await capture.count == 0)
         #expect(schedulerBox.value?.submitCount == 0)
         #expect(overlay.lastTranslations.isEmpty)
         #expect(logger.records.contains { $0.0 == "window_skipped_for_bridge" })
@@ -584,8 +584,8 @@ extension ApplicationControllerTests {
             windowID: 17, frame: CGRect(x: 0, y: 0, width: 800, height: 600),
             revision: 1, invalidatesOverlay: true
         ))
-        try await waitForCapture { capture.count == 1 }
-        #expect(capture.count == 1)
+        try await waitForCapture { await capture.count == 1 }
+        #expect(await capture.count == 1)
         #expect(schedulerBox.value?.submitCount == 1)
         await controller.stop()
     }
@@ -618,8 +618,8 @@ extension ApplicationControllerTests {
             windowID: 17, frame: CGRect(x: 0, y: 0, width: 800, height: 600),
             revision: 1, invalidatesOverlay: true
         ))
-        try await waitForCapture { capture.count == 1 }
-        #expect(capture.count == 1)
+        try await waitForCapture { await capture.count == 1 }
+        #expect(await capture.count == 1)
         #expect(schedulerBox.value?.submitCount == 1)
         await controller.stop()
     }
@@ -658,7 +658,7 @@ extension ApplicationControllerTests {
             #expect(result.translations == ["你好 Hello from explore \(revision) now"])
         }
         try await Task.sleep(for: .milliseconds(300))
-        #expect(capture.count == 0)
+        #expect(await capture.count == 0)
         #expect(schedulerBox.value?.submitCount == 0)
         await controller.stop()
     }
