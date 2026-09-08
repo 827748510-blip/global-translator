@@ -30,7 +30,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             return;
           }
           const payload = await response.json();
-          sendResponse({ translations: payload.translations || [] });
+          sendResponse({
+            translations: payload.translations || [],
+            retry: Array.isArray(payload.retry) ? payload.retry : []
+          });
         })
         .catch((error) => sendResponse({ error: String(error) }))
     );

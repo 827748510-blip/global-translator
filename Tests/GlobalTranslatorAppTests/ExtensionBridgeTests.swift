@@ -47,6 +47,8 @@ struct ExtensionBridgeServerTests {
         let source = try String(contentsOf: url, encoding: .utf8)
         #expect(source.contains("const CHUNK_SIZE = 3;"))
         #expect(!source.contains("const CHUNK_SIZE = 30;"))
+        #expect(source.contains("if (retry.has(i)) continue;"))
+        #expect(source.contains("scheduleRetry();"))
     }
 
     @Test
@@ -60,7 +62,7 @@ struct ExtensionBridgeServerTests {
         #expect(source.contains("function enqueueBridgeFetch("))
         #expect(source.contains("let bridgeChain = Promise.resolve();"))
         #expect(source.contains("enqueueBridgeFetch(() =>"))
-    }
+        #expect(source.contains("retry: Array.isArray(payload.retry) ? payload.retry : []"))
 
     @Test
     func extensionManifestBumpsWhenBackgroundQueueChanges() throws {
@@ -70,8 +72,8 @@ struct ExtensionBridgeServerTests {
             .deletingLastPathComponent()
             .appendingPathComponent("extension/manifest.json")
         let source = try String(contentsOf: url, encoding: .utf8)
-        #expect(source.contains("\"version\": \"1.0.2\""))
-        #expect(!source.contains("\"version\": \"1.0.1\""))
+        #expect(source.contains("\"version\": \"1.0.3\""))
+        #expect(!source.contains("\"version\": \"1.0.2\""))
     }
 
     @Test
@@ -103,7 +105,7 @@ struct ExtensionBridgeServerTests {
     @Test
     func translateRoundTripsAndKeepsNullsAligned() async throws {
         let server = ExtensionBridgeServer(port: 0) { texts in
-            texts.map { $0 == "skip" ? nil : "译:" + $0 }
+            ExtensionBridgeTranslation(translations: texts.map { $0 == "skip" ? nil : "译:" + $0 })
         }
         server.start()
         defer { server.stop() }
@@ -120,12 +122,39 @@ struct ExtensionBridgeServerTests {
         #expect(translations[0] as? String == "译:hello")
         #expect(translations[1] is NSNull)
         #expect(translations[2] as? String == "译:world")
+        let retry = object["retry"] as? [Any]
+        #expect(retry?.isEmpty == true)
         #expect((response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Access-Control-Allow-Origin") == ExtensionBridgeServer.allowedOrigin)
     }
 
     @Test
+    func translateResponseListsTransientFailureIndexesForRetry() async throws {
+        let server = ExtensionBridgeServer(port: 0) { texts in
+            ExtensionBridgeTranslation(
+                translations: texts.map { $0 == "fail" ? nil : "译:" + $0 },
+                retryIndexes: texts.enumerated().compactMap { $0.element == "fail" ? $0.offset : nil }
+            )
+        }
+        server.start()
+        defer { server.stop() }
+        let port = try await #require(waitForPort(server))
+        let body = try JSONSerialization.data(withJSONObject: ["texts": ["hello", "fail", "world"]])
+        let urlRequest = request(port, method: "POST", path: "/translate",
+                                 origin: ExtensionBridgeServer.allowedOrigin, body: body)
+        let (data, response) = try await URLSession(configuration: .ephemeral).data(for: urlRequest)
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let translations = try #require(object["translations"] as? [Any])
+        #expect(translations[0] as? String == "译:hello")
+        #expect(translations[1] is NSNull)
+        #expect(translations[2] as? String == "译:world")
+        let retryNumbers = try #require(object["retry"] as? [NSNumber])
+        #expect(retryNumbers.map(\.intValue) == [1])
+    }
+
+    @Test
     func missingOrForeignOriginIsRejected() async throws {
-        let server = ExtensionBridgeServer(port: 0) { texts in texts.map { $0 } }
+        let server = ExtensionBridgeServer(port: 0) { texts in ExtensionBridgeTranslation(translations: texts.map { $0 }) }
         server.start()
         defer { server.stop() }
         let port = try await #require(waitForPort(server))
@@ -148,7 +177,7 @@ struct ExtensionBridgeServerTests {
 
     @Test
     func sideloadOriginIsAcceptedAndEchoed() async throws {
-        let server = ExtensionBridgeServer(port: 0) { texts in texts.map { "译:" + $0 } }
+        let server = ExtensionBridgeServer(port: 0) { texts in ExtensionBridgeTranslation(translations: texts.map { "译:" + $0 }) }
         server.start()
         defer { server.stop() }
         let port = try await #require(waitForPort(server))
@@ -169,7 +198,7 @@ struct ExtensionBridgeServerTests {
 
     @Test
     func healthEndpointAnswersForExtensionOnly() async throws {
-        let server = ExtensionBridgeServer(port: 0) { texts in texts.map { $0 } }
+        let server = ExtensionBridgeServer(port: 0) { texts in ExtensionBridgeTranslation(translations: texts.map { $0 }) }
         server.start()
         defer { server.stop() }
         let port = try await #require(waitForPort(server))
@@ -206,7 +235,7 @@ struct ExtensionBridgeServerTests {
 
     @Test
     func oversizedPayloadIsRejected() async throws {
-        let server = ExtensionBridgeServer(port: 0) { texts in texts.map { $0 } }
+        let server = ExtensionBridgeServer(port: 0) { texts in ExtensionBridgeTranslation(translations: texts.map { $0 }) }
         server.start()
         defer { server.stop() }
         let port = try await #require(waitForPort(server))
@@ -234,7 +263,8 @@ extension ApplicationControllerTests {
         let session = try #require(controller.session)
         #expect(session.isBridgeActive)
         let result = try await session.translateBridgeTexts(["Hello there", "已经是中文", "General Kenobi"])
-        #expect(result == ["你好 Hello there", nil, "你好 General Kenobi"])
+        #expect(result.translations == ["你好 Hello there", nil, "你好 General Kenobi"])
+        #expect(result.retryIndexes.isEmpty)
         await controller.stop()
     }
 
@@ -271,13 +301,13 @@ extension ApplicationControllerTests {
         let session = try #require(controller.session)
         #expect(session.isBridgeActive)
         session.start()
-        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        #expect(try await session.translateBridgeTexts(["Hello there"]).translations == ["你好 Hello there"])
         session.stop()
         #expect(!session.isRunning)
         #expect(session.isBridgeActive)
-        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        #expect(try await session.translateBridgeTexts(["Hello there"]).translations == ["你好 Hello there"])
         session.start()
-        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        #expect(try await session.translateBridgeTexts(["Hello there"]).translations == ["你好 Hello there"])
         await controller.stop()
     }
 
@@ -299,7 +329,7 @@ extension ApplicationControllerTests {
         await waitForStartupHealthCheck(controller)
         let session = try #require(controller.session)
         #expect(session.isRunning)
-        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        #expect(try await session.translateBridgeTexts(["Hello there"]).translations == ["你好 Hello there"])
 
         permission.update(PermissionSnapshot(
             accessibilityTrusted: true,
@@ -309,7 +339,7 @@ extension ApplicationControllerTests {
         ))
         controller.refreshPermissions()
         #expect(session.isRunning)
-        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        #expect(try await session.translateBridgeTexts(["Hello there"]).translations == ["你好 Hello there"])
         await controller.stop()
     }
 
@@ -343,7 +373,7 @@ extension ApplicationControllerTests {
         #expect(session.isBridgeActive)
         #expect(!session.isRunning)
         #expect(monitor.startCount == 0)
-        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        #expect(try await session.translateBridgeTexts(["Hello there"]).translations == ["你好 Hello there"])
         await controller.stop()
     }
 
@@ -379,7 +409,7 @@ extension ApplicationControllerTests {
         #expect(session.isBridgeActive)
         #expect(!session.isRunning)
         #expect(monitor.startCount == 0)
-        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        #expect(try await session.translateBridgeTexts(["Hello there"]).translations == ["你好 Hello there"])
         await controller.stop()
     }
 
@@ -413,7 +443,7 @@ extension ApplicationControllerTests {
         let session = try #require(controller.session)
         #expect(monitor.startCount == 0)
         #expect(!session.isRunning)
-        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        #expect(try await session.translateBridgeTexts(["Hello there"]).translations == ["你好 Hello there"])
 
         session.start()
         monitor.emit(ActiveWindowDescriptor(
@@ -422,7 +452,7 @@ extension ApplicationControllerTests {
         ))
         try await waitForCapture { controller.viewModel.status == .missingPermission }
         #expect(overlay.lastTranslations.isEmpty)
-        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        #expect(try await session.translateBridgeTexts(["Hello there"]).translations == ["你好 Hello there"])
         await controller.stop()
     }
 
@@ -450,7 +480,8 @@ extension ApplicationControllerTests {
         let session = try #require(controller.session)
         let texts = (0..<30).map { "Hello from page \($0) now" }
         let result = try await session.translateBridgeTexts(texts)
-        #expect(result == texts.map { "你好 " + $0 })
+        #expect(result.translations == texts.map { "你好 " + $0 })
+        #expect(result.retryIndexes.isEmpty)
         #expect(await coordinator.itemCounts == Array(repeating: 1, count: 30))
         #expect(!session.isRunning)
         await controller.stop()
@@ -479,7 +510,8 @@ extension ApplicationControllerTests {
             "Hello from page two now",
             "Hello from page three now"
         ])
-        #expect(result == ["你好 Hello from page one now", nil, "你好 Hello from page three now"])
+        #expect(result.translations == ["你好 Hello from page one now", nil, "你好 Hello from page three now"])
+        #expect(result.retryIndexes == [1])
         await controller.stop()
     }
 
@@ -520,7 +552,7 @@ extension ApplicationControllerTests {
         #expect(schedulerBox.value?.submitCount == 0)
         #expect(overlay.lastTranslations.isEmpty)
         #expect(logger.records.contains { $0.0 == "window_skipped_for_bridge" })
-        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        #expect(try await session.translateBridgeTexts(["Hello there"]).translations == ["你好 Hello there"])
         await controller.stop()
     }
 
@@ -622,7 +654,7 @@ extension ApplicationControllerTests {
             let result = try await session.translateBridgeTexts([
                 "Hello from explore \(revision) now"
             ])
-            #expect(result == ["你好 Hello from explore \(revision) now"])
+            #expect(result.translations == ["你好 Hello from explore \(revision) now"])
         }
         try await Task.sleep(for: .milliseconds(300))
         #expect(capture.count == 0)

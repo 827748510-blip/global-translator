@@ -9,6 +9,19 @@ public enum ExtensionBridgeError: Error, Equatable, Sendable {
     case translatorUnavailable
 }
 
+/// Aligned with the request `texts` array. `nil` is a deliberate skip
+/// (already Chinese, filtered). Indexes in `retryIndexes` were transient
+/// backend failures and must not be treated as "already asked".
+public struct ExtensionBridgeTranslation: Equatable, Sendable {
+    public let translations: [String?]
+    public let retryIndexes: [Int]
+
+    public init(translations: [String?], retryIndexes: [Int] = []) {
+        self.translations = translations
+        self.retryIndexes = retryIndexes
+    }
+}
+
 /// Loopback-only HTTP endpoint used by the "Global Translator Bridge"
 /// browser extension. The extension pins its own key, so its extension ID —
 /// and therefore its `Origin` header — is stable; requests carrying any
@@ -17,12 +30,13 @@ public enum ExtensionBridgeError: Error, Equatable, Sendable {
 ///
 /// Protocol:
 ///   GET  /health     -> 200 {"ok":true}
-///   POST /translate  {"texts":[String]} -> 200 {"translations":[String?]}
-///                     entries are aligned with the input; null marks texts
-///                     that were filtered out or left untranslated.
+///   POST /translate  {"texts":[String]} -> 200
+///                     {"translations":[String?], "retry":[Int]}
+///                     null is a deliberate skip; `retry` lists indexes
+///                     that failed transiently and should be asked again.
 ///   OPTIONS *        -> 204 with CORS headers for the extension origin.
 public final class ExtensionBridgeServer: @unchecked Sendable {
-    public typealias TranslateHandler = @MainActor @Sendable ([String]) async throws -> [String?]
+    public typealias TranslateHandler = @MainActor @Sendable ([String]) async throws -> ExtensionBridgeTranslation
 
     /// Origin produced by the extension whose manifest pins the bundled key.
     /// The ID is what Chrome actually derives from the manifest key —
@@ -201,8 +215,11 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
             guard let self else { return }
             let response: Response
             do {
-                let translations = try await self.handler(texts)
-                response = .json(status: 200, object: ["translations": translations.map { $0 as Any }])
+                let result = try await self.handler(texts)
+                response = .json(status: 200, object: [
+                    "translations": result.translations.map { $0 as Any },
+                    "retry": result.retryIndexes
+                ])
             } catch ExtensionBridgeError.translatorInactive {
                 response = .json(status: 503, object: ["error": "inactive"])
             } catch is CaptureError {

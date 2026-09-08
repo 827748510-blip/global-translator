@@ -86,12 +86,16 @@
           resolve(null);
           return;
         }
-        resolve(response.translations || []);
+        resolve({
+          translations: response.translations || [],
+          retry: Array.isArray(response.retry) ? response.retry : []
+        });
       });
     });
   }
 
-  function apply(items, translations) {
+  function apply(items, translations, retryIndexes) {
+    const retry = new Set(retryIndexes || []);
     let applied = 0;
     for (let i = 0; i < items.length; i++) {
       const entry = store.entries.get(items[i].id);
@@ -100,8 +104,10 @@
       const original = node.nodeValue;
       const trimmed = original.trim();
       if (!trimmed || trimmed !== items[i].text) continue;
-      // Mark as asked even when the app filtered the text out (nil
-      // translation), otherwise every DOM mutation would re-request it.
+      // Transient backend failures stay unmarked so the next round
+      // asks again. Deliberate skips (already Chinese) are marked so a
+      // DOM mutation does not re-request them forever.
+      if (retry.has(i)) continue;
       entry.source = items[i].text;
       const translated = translations[i];
       if (!translated || typeof translated !== "string") continue;
@@ -123,14 +129,17 @@
         if (items.length === 0) break;
         for (let offset = 0; offset < items.length; offset += CHUNK_SIZE) {
           const chunk = items.slice(offset, offset + CHUNK_SIZE);
-          const translations = await translateChunk(chunk.map((item) => item.text));
-          if (!translations) {
+          const result = await translateChunk(chunk.map((item) => item.text));
+          if (!result) {
             // App unreachable or master switch bouncing; retry without
             // waiting for another DOM mutation.
             scheduleRetry();
             return;
           }
-          apply(chunk, translations);
+          apply(chunk, result.translations, result.retry);
+          if (result.retry.length > 0) {
+            scheduleRetry();
+          }
         }
       }
       retryDelay = RETRY_INITIAL_MS;

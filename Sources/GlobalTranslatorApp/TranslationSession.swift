@@ -164,8 +164,10 @@ public final class TranslationSession {
     /// Translates texts arriving from the browser-extension bridge. Bypasses
     /// window tracking entirely — no overlays, no revisions — and uses a
     /// dedicated coordinator so the window pipeline's revision gate cannot
-    /// reject these unversioned requests. The returned array is aligned with
-    /// the input order; nil marks entries filtered out or left untranslated.
+    /// reject these unversioned requests. The returned batch is aligned with
+    /// the input order. `nil` marks entries filtered out (already Chinese).
+    /// Transient local-backend failures are also `nil` and listed in
+    /// `retryIndexes` so the extension does not treat them as already asked.
     /// Gated on `isBridgeActive` (the menu-bar master switch) rather than
     /// `isRunning`, so Chrome in-page translation works without Accessibility
     /// or Screen Recording. The coordinator itself outlives stop/start;
@@ -174,16 +176,16 @@ public final class TranslationSession {
     /// Local backends are translated one string at a time so a dense page
     /// (X.com, 30+ strings) cannot pile sequential Ollama round-trips into
     /// a single JSON-schema call that dies as `networkFailure` and opens the
-    /// circuit. Transient item failures become nil rather than failing the
-    /// whole HTTP request.
-    public func translateBridgeTexts(_ texts: [String]) async throws -> [String?] {
+    /// circuit. Transient item failures do not 500 the whole HTTP request.
+    public func translateBridgeTexts(_ texts: [String]) async throws -> ExtensionBridgeTranslation {
         guard isBridgeActive else { throw ExtensionBridgeError.translatorInactive }
         guard bridgeCoordinator != nil else { throw ExtensionBridgeError.translatorUnavailable }
         let capped = Array(texts.prefix(400))
         if backend == .local {
             var results: [String?] = []
+            var retryIndexes: [Int] = []
             results.reserveCapacity(capped.count)
-            for text in capped {
+            for (index, text) in capped.enumerated() {
                 guard isBridgeActive else { throw ExtensionBridgeError.translatorInactive }
                 do {
                     let part = try await translateBridgeSlice([text])
@@ -193,11 +195,12 @@ public final class TranslationSession {
                 } catch {
                     logger.event("bridge_item_failed", fields: ["reason": String(describing: error)])
                     results.append(nil)
+                    retryIndexes.append(index)
                 }
             }
-            return results
+            return ExtensionBridgeTranslation(translations: results, retryIndexes: retryIndexes)
         }
-        return try await translateBridgeSlice(capped)
+        return ExtensionBridgeTranslation(translations: try await translateBridgeSlice(capped))
     }
 
     private func translateBridgeSlice(_ texts: [String]) async throws -> [String?] {
