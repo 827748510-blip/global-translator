@@ -399,6 +399,40 @@ struct ApplicationControllerTests {
     }
 
     @Test
+    func permissionRefreshDoesNotEnableBridgeWhenBackendIsUnhealthy() async throws {
+        let denied = PermissionSnapshot(
+            accessibilityTrusted: false,
+            screenCaptureAuthorized: false,
+            secureInputEnabled: false,
+            sessionLocked: false
+        )
+        let factory = StubBackendFactory(health: BackendHealth(status: .unavailable, message: "cold"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: RecordingConfigurationStore(configuration: AppConfiguration(
+                    autoTranslateEnabled: true, backend: .local, localModel: "test")),
+                permission: FakePermissionController(snapshot: denied),
+                backendFactory: factory
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        #expect(!controller.viewModel.backendReady)
+        #expect(!controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(controller.session?.isBridgeActive != true)
+        let healthBefore = controller.viewModel.healthMessage
+
+        controller.refreshPermissions()
+        #expect(!controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(controller.session?.isBridgeActive != true)
+        #expect(controller.configuration.autoTranslateEnabled)
+        #expect(controller.viewModel.healthMessage == healthBefore)
+        #expect(controller.viewModel.status != .missingPermission)
+        await controller.stop()
+    }
+
+    @Test
     func openingSettingsRefreshesPermissionWithoutOverridingManualOffOrStoppedState() async throws {
         let denied = PermissionSnapshot(accessibilityTrusted: false, screenCaptureAuthorized: false,
                                         secureInputEnabled: false, sessionLocked: false)

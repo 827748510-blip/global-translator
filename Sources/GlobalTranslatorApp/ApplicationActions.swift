@@ -238,17 +238,21 @@ extension ApplicationController {
             || previous.screenCaptureAuthorized != snapshot.screenCaptureAuthorized
         guard !configurationLoadFailed else { return }
         guard snapshot.hasCaptureAccess else {
-            // Overlay capture cannot run, but the extension bridge must keep
-            // serving page text while the master switch stays on.
+            // Overlay capture cannot run. The extension bridge may keep
+            // serving page text only while the master switch is on *and*
+            // the backend is still ready — do not revive the switch after a
+            // failed health check or while enable is in flight.
             if configuration.autoTranslateEnabled || viewModel.isAutomaticTranslationEnabled || automaticEnablePending {
                 session?.stop()
-                if configuration.autoTranslateEnabled {
-                    session?.setBridgeActive(true)
-                    viewModel.isAutomaticTranslationEnabled = true
-                    applyStatus(.missingPermission)
-                } else {
-                    viewModel.isAutomaticTranslationEnabled = false
-                    session?.setBridgeActive(false)
+            }
+            if configuration.autoTranslateEnabled, viewModel.canEnableAutomaticTranslation {
+                session?.setBridgeActive(true)
+                viewModel.isAutomaticTranslationEnabled = true
+                applyStatus(.missingPermission)
+            } else if !automaticEnablePending {
+                viewModel.isAutomaticTranslationEnabled = false
+                session?.setBridgeActive(false)
+                if !configuration.autoTranslateEnabled {
                     applyStatus(.off)
                 }
             }
