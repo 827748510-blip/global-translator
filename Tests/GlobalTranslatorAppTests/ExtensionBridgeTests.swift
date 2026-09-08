@@ -37,6 +37,10 @@ struct ExtensionBridgeRevisionGateTests {
 }
 
 struct ExtensionBridgeServerTests {
+    @Test
+    func allowedOriginStaysPinnedToTheShippedExtensionId() {
+        #expect(ExtensionBridgeServer.allowedOrigin == "chrome-extension://fjggaipmhcfmgikhkjppkdliaoopaefc")
+    }
     private func waitForPort(_ server: ExtensionBridgeServer) async -> UInt16? {
         for _ in 0..<200 {
             if let port = server.boundPort { return port }
@@ -167,6 +171,7 @@ extension ApplicationControllerTests {
         await waitForStartupHealthCheck(controller)
         controller.session?.start()
         let session = try #require(controller.session)
+        #expect(session.isBridgeActive)
         let result = try await session.translateBridgeTexts(["Hello there", "已经是中文", "General Kenobi"])
         #expect(result == ["你好 Hello there", nil, "你好 General Kenobi"])
         await controller.stop()
@@ -184,6 +189,7 @@ extension ApplicationControllerTests {
         try await controller.start()
         await waitForStartupHealthCheck(controller)
         let session = try #require(controller.session)
+        #expect(!session.isBridgeActive)
         await #expect(throws: ExtensionBridgeError.translatorInactive) {
             _ = try await session.translateBridgeTexts(["Hello"])
         }
@@ -202,12 +208,13 @@ extension ApplicationControllerTests {
         try await controller.start()
         await waitForStartupHealthCheck(controller)
         let session = try #require(controller.session)
+        #expect(session.isBridgeActive)
         session.start()
         #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
         session.stop()
-        await #expect(throws: ExtensionBridgeError.translatorInactive) {
-            _ = try await session.translateBridgeTexts(["Hello there"])
-        }
+        #expect(!session.isRunning)
+        #expect(session.isBridgeActive)
+        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
         session.start()
         #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
         await controller.stop()
@@ -241,6 +248,119 @@ extension ApplicationControllerTests {
         ))
         controller.refreshPermissions()
         #expect(session.isRunning)
+        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        await controller.stop()
+    }
+
+    @Test
+    func bridgeTranslatesWithoutCapturePermissionsWhileSessionNotRunning() async throws {
+        let denied = PermissionSnapshot(
+            accessibilityTrusted: false,
+            screenCaptureAuthorized: false,
+            secureInputEnabled: false,
+            sessionLocked: false
+        )
+        let permission = FakePermissionController(snapshot: denied)
+        let monitor = FakeWindowMonitor()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test",
+            translatedBundleIDs: ["com.google.Chrome"]))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                permission: permission,
+                monitor: monitor,
+                coordinator: TranslatingCoordinator()
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        #expect(controller.viewModel.backendReady)
+        #expect(controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(session.isBridgeActive)
+        #expect(!session.isRunning)
+        #expect(monitor.startCount == 0)
+        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        await controller.stop()
+    }
+
+    @Test
+    func enablingAutoTranslateWithoutCapturePermissionsServesBridge() async throws {
+        let denied = PermissionSnapshot(
+            accessibilityTrusted: false,
+            screenCaptureAuthorized: false,
+            secureInputEnabled: false,
+            sessionLocked: false
+        )
+        let permission = FakePermissionController(snapshot: denied)
+        let monitor = FakeWindowMonitor()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: false, backend: .local, localModel: "test",
+            translatedBundleIDs: ["com.google.Chrome"]))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                permission: permission,
+                monitor: monitor,
+                coordinator: TranslatingCoordinator()
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        #expect(controller.viewModel.canEnableAutomaticTranslation)
+        #expect(!controller.viewModel.isAutomaticTranslationEnabled)
+        controller.viewModel.setAutomaticTranslation(true)
+        try await waitForCapture(timeout: 2) { controller.viewModel.isAutomaticTranslationEnabled }
+        let session = try #require(controller.session)
+        #expect(session.isBridgeActive)
+        #expect(!session.isRunning)
+        #expect(monitor.startCount == 0)
+        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        await controller.stop()
+    }
+
+    @Test
+    func windowOverlayRefusesWithoutCapturePermissionsWhileBridgeWorks() async throws {
+        let denied = PermissionSnapshot(
+            accessibilityTrusted: false,
+            screenCaptureAuthorized: false,
+            secureInputEnabled: false,
+            sessionLocked: false
+        )
+        let permission = FakePermissionController(snapshot: denied)
+        let monitor = FakeWindowMonitor()
+        let overlay = FakeOverlay()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test",
+            translatedBundleIDs: ["qa.editor"]))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                permission: permission,
+                monitor: monitor,
+                overlay: overlay,
+                coordinator: TranslatingCoordinator(),
+                capture: SingleRegionCapturePipeline()
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        #expect(monitor.startCount == 0)
+        #expect(!session.isRunning)
+        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+
+        session.start()
+        monitor.emit(ActiveWindowDescriptor(
+            pid: 42, bundleIdentifier: "qa.editor",
+            frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 1
+        ))
+        try await waitForCapture { controller.viewModel.status == .missingPermission }
+        #expect(overlay.lastTranslations.isEmpty)
         #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
         await controller.stop()
     }

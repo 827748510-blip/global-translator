@@ -40,6 +40,7 @@ extension ApplicationController {
         guard viewModel.canEnableAutomaticTranslation else {
             automaticEnablePending = false
             viewModel.isAutomaticTranslationEnabled = false
+            session?.setBridgeActive(false)
             viewModel.healthMessage = viewModel.automaticEnableBlockedReason
             applyStatus(.off)
             return
@@ -78,6 +79,7 @@ extension ApplicationController {
                 } else {
                     self.configuration.autoTranslateEnabled = false
                 }
+                self.session?.setBridgeActive(false)
                 self.session?.stop()
                 self.viewModel.healthMessage = health.status.uiSafeFailureMessage
                 self.applyStatus(.error)
@@ -90,6 +92,7 @@ extension ApplicationController {
                 self.automaticEnableTask = nil
                 self.viewModel.isAutomaticTranslationEnabled = false
                 self.configuration.autoTranslateEnabled = false
+                self.session?.setBridgeActive(false)
                 self.session?.stop()
                 self.applyStatus(.off)
                 return
@@ -98,7 +101,8 @@ extension ApplicationController {
             self.automaticEnablePending = false
             self.automaticEnableTask = nil
             self.configuration.autoTranslateEnabled = true
-            self.session?.start()
+            self.session?.setBridgeActive(true)
+            self.startWindowSessionIfPermitted()
             self.queueSave()
         }
     }
@@ -167,6 +171,7 @@ extension ApplicationController {
         viewModel.availableModels = []
         viewModel.isAutomaticTranslationEnabled = false
         configuration.autoTranslateEnabled = false
+        session?.setBridgeActive(false)
         session?.stop()
         await session?.clearCache()
         queueSave()
@@ -226,15 +231,20 @@ extension ApplicationController {
         let grantsChanged = previous.accessibilityTrusted != snapshot.accessibilityTrusted
             || previous.screenCaptureAuthorized != snapshot.screenCaptureAuthorized
         guard !configurationLoadFailed else { return }
-        guard snapshot.accessibilityTrusted || snapshot.screenCaptureAuthorized else {
-            if viewModel.isAutomaticTranslationEnabled || automaticEnablePending {
-                automaticRequestToken &+= 1
-                automaticEnableTask?.cancel()
-                automaticEnableTask = nil
-                automaticEnablePending = false
-                viewModel.isAutomaticTranslationEnabled = false
+        guard snapshot.hasCaptureAccess else {
+            // Overlay capture cannot run, but the extension bridge must keep
+            // serving page text while the master switch stays on.
+            if configuration.autoTranslateEnabled || viewModel.isAutomaticTranslationEnabled || automaticEnablePending {
                 session?.stop()
-                applyStatus(.missingPermission)
+                if configuration.autoTranslateEnabled {
+                    session?.setBridgeActive(true)
+                    viewModel.isAutomaticTranslationEnabled = true
+                    applyStatus(.missingPermission)
+                } else {
+                    viewModel.isAutomaticTranslationEnabled = false
+                    session?.setBridgeActive(false)
+                    applyStatus(.off)
+                }
             }
             return
         }
@@ -414,6 +424,7 @@ extension ApplicationController {
         automaticEnablePending = false
         viewModel.isAutomaticTranslationEnabled = false
         configuration.autoTranslateEnabled = false
+        session?.setBridgeActive(false)
         session?.stop()
         applyStatus(.off)
         queueSave()

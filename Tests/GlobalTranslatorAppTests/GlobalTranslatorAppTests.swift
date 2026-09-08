@@ -309,8 +309,8 @@ struct ApplicationControllerTests {
     }
 
     @Test
-    func persistedAutomaticTranslationRemainsOffWhenPermissionMissing() async throws {
-        let persisted = AppConfiguration(autoTranslateEnabled: true)
+    func persistedAutomaticTranslationKeepsWindowOffWhenPermissionMissing() async throws {
+        let persisted = AppConfiguration(autoTranslateEnabled: true, backend: .local, localModel: "test")
         let store = RecordingConfigurationStore(configuration: persisted)
         let permission = FakePermissionController(snapshot: PermissionSnapshot(
             accessibilityTrusted: false,
@@ -328,8 +328,11 @@ struct ApplicationControllerTests {
         await waitForStartupHealthCheck(controller)
 
         #expect(monitor.startCount == 0)
-        #expect(!controller.viewModel.isAutomaticTranslationEnabled)
-        #expect(controller.viewModel.healthMessage == "需要辅助功能或屏幕录制权限才能开启自动翻译")
+        #expect(!controller.session!.isRunning)
+        #expect(controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(controller.configuration.autoTranslateEnabled)
+        #expect(controller.viewModel.healthMessage == "需要辅助功能或屏幕录制权限")
+        await controller.stop()
     }
 
     @Test
@@ -374,7 +377,9 @@ struct ApplicationControllerTests {
         )
         try await controller.start()
         await waitForStartupHealthCheck(controller)
-        #expect(!controller.viewModel.canEnableAutomaticTranslation)
+        #expect(controller.viewModel.canEnableAutomaticTranslation)
+        #expect(controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(monitor.startCount == 0)
         // No permission request/poll is active: the user changed Settings later.
         permission.update(.allGranted)
         let delegate = DesktopApplicationDelegate(controller: controller, onQuit: {})
@@ -387,7 +392,7 @@ struct ApplicationControllerTests {
 
         permission.update(denied)
         controller.refreshPermissions()
-        #expect(!controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(controller.viewModel.isAutomaticTranslationEnabled)
         #expect(monitor.stopCount >= 1)
         #expect(controller.configuration.autoTranslateEnabled)
         await controller.stop()

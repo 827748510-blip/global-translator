@@ -13,7 +13,7 @@ public extension PermissionSnapshot {
         case .pageText:
             return
         case nil:
-            guard accessibilityTrusted || screenCaptureAuthorized else {
+            guard hasCaptureAccess else {
                 throw CaptureError.permissionRequired(.accessibility)
             }
         }

@@ -26,6 +26,12 @@ public struct PermissionSnapshot: Codable, Equatable, Sendable {
         secureInputEnabled: false,
         sessionLocked: false
     )
+
+    /// Window overlay / OCR capture needs at least one of these.
+    /// The browser-extension bridge does not: it receives DOM text.
+    public var hasCaptureAccess: Bool {
+        accessibilityTrusted || screenCaptureAuthorized
+    }
 }
 
 public enum PermissionKind: String, Codable, Equatable, Sendable {

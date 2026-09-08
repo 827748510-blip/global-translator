@@ -7,6 +7,9 @@ import GlobalTranslatorUI
 @MainActor
 public final class TranslationSession {
     public private(set) var isRunning = false
+    /// Menu-bar master switch for the extension bridge. Independent of
+    /// `isRunning`, which only tracks window overlay capture.
+    public private(set) var isBridgeActive = false
     public private(set) var activeRevision: UInt64 = 0
 
     private let monitor: any ActiveWindowMonitoring
@@ -109,10 +112,10 @@ public final class TranslationSession {
         activeWindow = nil
         lastRendered = []
         if let coordinator { Task { await coordinator.cancelPendingRequests() } }
-        if let bridgeCoordinator { Task { await bridgeCoordinator.cancelPendingRequests() } }
         // Keep both coordinators. stop/start only pauses window tracking; the
-        // extension bridge must still be able to translate after a permission
-        // refresh bounce that calls stop() then start() without configure().
+        // extension bridge stays available while `isBridgeActive` is true,
+        // including after a permission-refresh bounce that calls stop() then
+        // start() without configure(). Do not cancel in-flight bridge work.
         activeRevision &+= 1
         captureTask?.cancel()
         captureTask = nil
@@ -128,6 +131,12 @@ public final class TranslationSession {
         visionFallbackEnabled = enabled
     }
 
+    /// The extension bridge follows the menu-bar master switch, not window
+    /// capture. `stop()` / `start()` only pause overlay tracking.
+    public func setBridgeActive(_ active: Bool) {
+        isBridgeActive = active
+    }
+
     public func clearCache() async {
         await coordinator?.clearCache()
     }
@@ -137,11 +146,12 @@ public final class TranslationSession {
     /// dedicated coordinator so the window pipeline's revision gate cannot
     /// reject these unversioned requests. The returned array is aligned with
     /// the input order; nil marks entries filtered out or left untranslated.
-    /// Gated on `isRunning` so the menu-bar master switch also governs the
-    /// extension. The coordinator itself outlives stop/start; only
-    /// `configure()` replaces it.
+    /// Gated on `isBridgeActive` (the menu-bar master switch) rather than
+    /// `isRunning`, so Chrome in-page translation works without Accessibility
+    /// or Screen Recording. The coordinator itself outlives stop/start;
+    /// only `configure()` replaces it.
     public func translateBridgeTexts(_ texts: [String]) async throws -> [String?] {
-        guard isRunning else { throw ExtensionBridgeError.translatorInactive }
+        guard isBridgeActive else { throw ExtensionBridgeError.translatorInactive }
         guard let coordinator = bridgeCoordinator else { throw ExtensionBridgeError.translatorUnavailable }
         let capped = Array(texts.prefix(400))
         let regions = capped.map { text in
@@ -443,7 +453,7 @@ public final class TranslationSession {
                 let permission = self.permissions.snapshot
                 guard !permission.secureInputEnabled, !permission.sessionLocked else { continue }
                 self.protectionTask = nil
-                guard permission.accessibilityTrusted || permission.screenCaptureAuthorized else {
+                guard permission.hasCaptureAccess else {
                     self.statusHandler(.missingPermission)
                     return
                 }
