@@ -25,6 +25,10 @@
   let debounceTimer = null;
   let retryTimer = null;
   let retryDelay = RETRY_INITIAL_MS;
+  // Arm a retry after this pass finishes. Calling scheduleRetry() while
+  // `running` is true lets the timer fire into a no-op run() that clears
+  // retryTimer, so unmarked strings on a quiet page never get asked again.
+  let retryPending = false;
 
   function textOf(node) {
     return (node.nodeValue || "").trim();
@@ -131,20 +135,22 @@
           const chunk = items.slice(offset, offset + CHUNK_SIZE);
           const result = await translateChunk(chunk.map((item) => item.text));
           if (!result) {
-            // App unreachable or master switch bouncing; retry without
-            // waiting for another DOM mutation.
-            scheduleRetry();
+            retryPending = true;
             return;
           }
           apply(chunk, result.translations, result.retry);
           if (result.retry.length > 0) {
-            scheduleRetry();
+            retryPending = true;
           }
         }
       }
-      retryDelay = RETRY_INITIAL_MS;
+      if (!retryPending) retryDelay = RETRY_INITIAL_MS;
     } finally {
       running = false;
+      if (retryPending && enabled && document.visibilityState === "visible") {
+        retryPending = false;
+        scheduleRetry();
+      }
     }
   }
 
@@ -159,6 +165,10 @@
     retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
     retryTimer = setTimeout(() => {
       retryTimer = null;
+      if (running) {
+        retryPending = true;
+        return;
+      }
       run();
     }, delay);
   }
@@ -180,6 +190,7 @@
     debounceTimer = null;
     if (retryTimer) clearTimeout(retryTimer);
     retryTimer = null;
+    retryPending = false;
   }
 
   chrome.storage.local.get({ enabled: true }, (prefs) => {

@@ -48,6 +48,8 @@ struct ExtensionBridgeServerTests {
         #expect(source.contains("const CHUNK_SIZE = 3;"))
         #expect(!source.contains("const CHUNK_SIZE = 30;"))
         #expect(source.contains("if (retry.has(i)) continue;"))
+        #expect(source.contains("let retryPending = false;"))
+        #expect(source.contains("retryPending = true;"))
         #expect(source.contains("scheduleRetry();"))
     }
 
@@ -73,8 +75,8 @@ struct ExtensionBridgeServerTests {
             .deletingLastPathComponent()
             .appendingPathComponent("extension/manifest.json")
         let source = try String(contentsOf: url, encoding: .utf8)
-        #expect(source.contains("\"version\": \"1.0.3\""))
-        #expect(!source.contains("\"version\": \"1.0.2\""))
+        #expect(source.contains("\"version\": \"1.0.4\""))
+        #expect(!source.contains("\"version\": \"1.0.3\""))
     }
 
     @Test
