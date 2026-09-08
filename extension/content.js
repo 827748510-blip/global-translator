@@ -8,6 +8,8 @@
   const MAX_PER_ROUND = 200;
   const MAX_ROUNDS = 5;
   const OBSERVER_DEBOUNCE_MS = 800;
+  const RETRY_INITIAL_MS = 1500;
+  const RETRY_MAX_MS = 15000;
 
   // id -> { node, source, translation } — source is the text we translated;
   // if the page re-renders a node with the same source text, the cached
@@ -17,6 +19,8 @@
   let running = false;
   let observer = null;
   let debounceTimer = null;
+  let retryTimer = null;
+  let retryDelay = RETRY_INITIAL_MS;
 
   function textOf(node) {
     return (node.nodeValue || "").trim();
@@ -116,10 +120,16 @@
         for (let offset = 0; offset < items.length; offset += CHUNK_SIZE) {
           const chunk = items.slice(offset, offset + CHUNK_SIZE);
           const translations = await translateChunk(chunk.map((item) => item.text));
-          if (!translations) return; // translator off or app unreachable; retry on next mutation
+          if (!translations) {
+            // App unreachable or master switch bouncing; retry without
+            // waiting for another DOM mutation.
+            scheduleRetry();
+            return;
+          }
           apply(chunk, translations);
         }
       }
+      retryDelay = RETRY_INITIAL_MS;
     } finally {
       running = false;
     }
@@ -128,6 +138,16 @@
   function scheduleRun() {
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(run, OBSERVER_DEBOUNCE_MS);
+  }
+
+  function scheduleRetry() {
+    if (!enabled || retryTimer) return;
+    const delay = retryDelay;
+    retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      run();
+    }, delay);
   }
 
   function startObserver() {
@@ -145,6 +165,8 @@
     observer = null;
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = null;
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = null;
   }
 
   chrome.storage.local.get({ enabled: true }, (prefs) => {
@@ -160,9 +182,16 @@
     enabled = changes.enabled.newValue !== false;
     if (enabled) {
       startObserver();
+      retryDelay = RETRY_INITIAL_MS;
       run();
     } else {
       stopObserver();
     }
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (!enabled || document.visibilityState !== "visible") return;
+    retryDelay = RETRY_INITIAL_MS;
+    scheduleRun();
   });
 })();

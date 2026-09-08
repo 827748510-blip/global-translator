@@ -110,7 +110,9 @@ public final class TranslationSession {
         lastRendered = []
         if let coordinator { Task { await coordinator.cancelPendingRequests() } }
         if let bridgeCoordinator { Task { await bridgeCoordinator.cancelPendingRequests() } }
-        bridgeCoordinator = nil
+        // Keep both coordinators. stop/start only pauses window tracking; the
+        // extension bridge must still be able to translate after a permission
+        // refresh bounce that calls stop() then start() without configure().
         activeRevision &+= 1
         captureTask?.cancel()
         captureTask = nil
@@ -131,11 +133,13 @@ public final class TranslationSession {
     }
 
     /// Translates texts arriving from the browser-extension bridge. Bypasses
-    /// window tracking entirely — no overlays, no revisions — and reuses the
-    /// shared coordinator (and its cache). The returned array is aligned with
+    /// window tracking entirely — no overlays, no revisions — and uses a
+    /// dedicated coordinator so the window pipeline's revision gate cannot
+    /// reject these unversioned requests. The returned array is aligned with
     /// the input order; nil marks entries filtered out or left untranslated.
     /// Gated on `isRunning` so the menu-bar master switch also governs the
-    /// extension.
+    /// extension. The coordinator itself outlives stop/start; only
+    /// `configure()` replaces it.
     public func translateBridgeTexts(_ texts: [String]) async throws -> [String?] {
         guard isRunning else { throw ExtensionBridgeError.translatorInactive }
         guard let coordinator = bridgeCoordinator else { throw ExtensionBridgeError.translatorUnavailable }
@@ -149,7 +153,7 @@ public final class TranslationSession {
         let descriptor = ActiveWindowDescriptor(
             pid: 0, bundleIdentifier: "extension.bridge", windowID: nil,
             frame: .zero, revision: 0, invalidatesOverlay: false)
-        let snapshot = CaptureSnapshot(window: CapturedWindow(descriptor: descriptor, regions: eligible, source: .accessibility))
+        let snapshot = CaptureSnapshot(window: CapturedWindow(descriptor: descriptor, regions: eligible, source: .pageText))
         await coordinator.selectBackend(kind: backend, modelIdentifier: model)
         let output = try await coordinator.translate(
             snapshot: snapshot,
@@ -333,7 +337,7 @@ public final class TranslationSession {
                            confidence: 1, source: .accessibility, windowRevision: descriptor.revision)
             }
             let snapshot = CaptureSnapshot(window: CapturedWindow(
-                descriptor: descriptor, regions: regions, source: .accessibility))
+                descriptor: descriptor, regions: regions, source: .pageText))
             guard let coordinator else { return .channelFailed }
             await coordinator.selectBackend(kind: backend, modelIdentifier: model)
             logger.event("inpage_stage", fields: ["stage": "translating", "count": String(regions.count)])

@@ -189,4 +189,59 @@ extension ApplicationControllerTests {
         }
         await controller.stop()
     }
+
+    @Test
+    func bridgeSurvivesStopAndStartWithoutReconfigure() async throws {
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test",
+            translatedBundleIDs: ["com.google.Chrome"]))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, coordinator: TranslatingCoordinator())
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        session.start()
+        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        session.stop()
+        await #expect(throws: ExtensionBridgeError.translatorInactive) {
+            _ = try await session.translateBridgeTexts(["Hello there"])
+        }
+        session.start()
+        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        await controller.stop()
+    }
+
+    @Test
+    func permissionRefreshRestartKeepsBridgeTranslator() async throws {
+        let permission = FakePermissionController(snapshot: .allGranted)
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test",
+            translatedBundleIDs: ["com.google.Chrome"]))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                permission: permission,
+                coordinator: TranslatingCoordinator()
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        #expect(session.isRunning)
+        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+
+        permission.update(PermissionSnapshot(
+            accessibilityTrusted: true,
+            screenCaptureAuthorized: false,
+            secureInputEnabled: false,
+            sessionLocked: false
+        ))
+        controller.refreshPermissions()
+        #expect(session.isRunning)
+        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        await controller.stop()
+    }
 }

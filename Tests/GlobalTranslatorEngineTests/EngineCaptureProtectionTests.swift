@@ -41,6 +41,30 @@ struct EngineCaptureProtectionTests {
     }
 
     @Test
+    func pageTextSnapshotIgnoresSecureInputAndMissingWindowPermissions() async throws {
+        let backend = VisionRecordingBackend(kind: .local)
+        let permissions = SystemPermissionController(snapshotProvider: {
+            PermissionSnapshot(
+                accessibilityTrusted: false,
+                screenCaptureAuthorized: false,
+                secureInputEnabled: true,
+                sessionLocked: true
+            )
+        })
+        let coordinator = TranslationCoordinator(backends: [backend], permissions: permissions)
+        let snapshot = makeSnapshot(
+            regions: [makeRegion(text: "Hello from the page")],
+            revision: 0,
+            source: .pageText
+        )
+        let output = try await coordinator.translate(
+            snapshot: snapshot, backend: .local, modelIdentifier: "test", visionFallbackEnabled: false
+        )
+        #expect(output.translations.count == 1)
+        #expect(await backend.textRequestCount == 1)
+    }
+
+    @Test
     func revokedSourcePermissionPreventsModelRequestEvenIfOtherPermissionRemains() async {
         let backend = VisionRecordingBackend(kind: .local)
         let permissions = SystemPermissionController(snapshotProvider: {
