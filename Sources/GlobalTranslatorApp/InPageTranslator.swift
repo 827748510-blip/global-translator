@@ -28,7 +28,12 @@ public struct InPageReplacement: Equatable, Sendable {
 /// directly in the DOM instead of drawing overlay bubbles.
 public protocol InPageTranslating: AnyObject, Sendable {
     /// Cheap check used to route browser windows away from overlay bubbles.
-    func isApplicable(bundleIdentifier: String) async -> Bool
+    /// `windowPID` identifies the process owning the focused window: only
+    /// windows owned by the debug-enabled browser instance are translated
+    /// in-page — windows from any other browser process (same bundle
+    /// identifier, no debug port) must fall through to the bubble pipeline.
+    /// Callers pass <= 0 when the window's process is unknown.
+    func isApplicable(bundleIdentifier: String, windowPID: Int32) async -> Bool
     func extract(windowRevision: UInt64) async throws -> [InPageText]
     func apply(_ replacements: [InPageReplacement]) async throws
 }
@@ -42,6 +47,7 @@ public actor CDPInPageTranslator: InPageTranslating {
     private let urlSession: URLSession
     private var lastProbeAt: Date?
     private var lastProbeResult = false
+    private var browserPID: Int32?
     private var nodeIdentifiers: [String: UUID] = [:]
 
     public init(port: UInt16 = 9_222) {
@@ -59,13 +65,44 @@ public actor CDPInPageTranslator: InPageTranslating {
         self.urlSession = URLSession(configuration: configuration)
     }
 
-    public func isApplicable(bundleIdentifier: String) async -> Bool {
+    public func isApplicable(bundleIdentifier: String, windowPID: Int32) async -> Bool {
         guard browserBundleIdentifiers.contains(bundleIdentifier) else { return false }
-        if let lastProbeAt, Date().timeIntervalSince(lastProbeAt) < 5 { return lastProbeResult }
+        if let lastProbeAt, Date().timeIntervalSince(lastProbeAt) < 5 {
+            return lastProbeResult && owns(windowPID: windowPID)
+        }
         let available = await Self.probe(port: port, session: urlSession)
+        browserPID = available ? await fetchBrowserPID() : nil
         lastProbeAt = Date()
         lastProbeResult = available
-        return available
+        return available && owns(windowPID: windowPID)
+    }
+
+    /// Only the browser instance exposing the debug port gets in-page
+    /// translation; windows of any other process with the same bundle
+    /// identifier (e.g. a main Chrome running next to the dedicated
+    /// debug-profile instance) must reach the bubble pipeline instead of
+    /// being silently swallowed. Unknown PIDs (query failure or a caller
+    /// without one) keep the legacy claim-everything behavior so
+    /// single-instance setups are unaffected.
+    private func owns(windowPID: Int32) -> Bool {
+        guard windowPID > 0, let browserPID else { return true }
+        return browserPID == windowPID
+    }
+
+    /// Main-process PID of the debug-enabled browser, resolved through the
+    /// browser-level DevTools target (`SystemInfo.getProcessInfo`).
+    private func fetchBrowserPID() async -> Int32? {
+        guard let versionURL = URL(string: "http://127.0.0.1:\(port)/json/version"),
+              let (data, response) = try? await urlSession.data(from: versionURL),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let webSocketURL = object["webSocketDebuggerUrl"] as? String,
+              let payload = try? await rpc(webSocketURL: webSocketURL, method: "SystemInfo.getProcessInfo", params: [:]),
+              let processes = payload["processInfo"] as? [[String: Any]] else { return nil }
+        for process in processes where process["type"] as? String == "browser" {
+            if let id = process["id"] as? Int { return Int32(id) }
+        }
+        return nil
     }
 
     public func extract(windowRevision: UInt64) async throws -> [InPageText] {
@@ -166,7 +203,11 @@ public actor CDPInPageTranslator: InPageTranslating {
     }
 
     private func rpc(page: PageTarget, method: String, params: [String: Any]) async throws -> [String: Any] {
-        guard let url = URL(string: page.webSocketURL) else { throw URLError(.badURL) }
+        try await rpc(webSocketURL: page.webSocketURL, method: method, params: params)
+    }
+
+    private func rpc(webSocketURL: String, method: String, params: [String: Any]) async throws -> [String: Any] {
+        guard let url = URL(string: webSocketURL) else { throw URLError(.badURL) }
         let webSocket = urlSession.webSocketTask(with: url)
         webSocket.resume()
         defer { webSocket.cancel(with: .normalClosure, reason: nil) }

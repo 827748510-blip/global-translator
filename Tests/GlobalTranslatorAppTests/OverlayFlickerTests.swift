@@ -23,6 +23,31 @@ extension ApplicationControllerTests {
     }
 
     @Test
+    func churnedPageRendersDeferredTranslationForUnchangedRegions() async throws {
+        let fixture = FlickerFixture()
+        let controller = try await startFlickerController(fixture, renderImmediately: false)
+        let firstOutput = fixture.output(revision: 1)
+        // The page churns while the translation is in flight: one region
+        // changes, the other stays (timeline counters, "show N posts" pills).
+        fixture.capture.setTexts(["Stable text", "Updated text"])
+        fixture.monitor.emit(fixture.window(revision: 2))
+        // The in-flight output arrives before the recapture lands, so it is
+        // deferred rather than rendered.
+        fixture.scheduler.emit(firstOutput)
+        #expect(fixture.overlay.translations.isEmpty)
+        // The recapture confirms the change: the still-present region renders
+        // immediately from the deferred output at fresh coordinates and only
+        // the genuinely new text is resubmitted.
+        try await waitForCapture { fixture.scheduler.value?.submitCount == 2 }
+        #expect(fixture.overlay.translations.map(\.region.sourceText) == ["Stable text"])
+        #expect(fixture.scheduler.value?.submitCount == 2)
+        // Once the follow-up translation lands, every region is shown.
+        fixture.scheduler.emit(fixture.output(revision: 2))
+        #expect(fixture.overlay.translations.map(\.region.sourceText) == ["Stable text", "Updated text"])
+        await controller.stop()
+    }
+
+    @Test
     func protectionEventForReusedRequestStillCancelsAfterPageRefresh() async throws {
         let fixture = FlickerFixture()
         let eventBox = EngineEventBox()
@@ -244,6 +269,32 @@ extension ApplicationControllerTests {
         #expect(extracts == 0)
         fixture.scheduler.emit(fixture.output(revision: 1))
         #expect(fixture.overlay.translations.count == 2)
+        await controller.stop()
+    }
+
+    @Test
+    func foreignBrowserProcessWindowFallsBackToBubbles() async throws {
+        let fixture = FlickerFixture()
+        let inPage = FakeInPageTranslator(available: true)
+        inPage.acceptedWindowPID = 7777
+        let controller = try await startInPageController(fixture, inPage: inPage)
+
+        // The focused Chrome window belongs to a different process than the
+        // debug-enabled instance: the in-page channel must NOT claim it and
+        // the bubble pipeline takes over.
+        try await waitForCapture { fixture.scheduler.value?.submitCount == 1 }
+        #expect(inPage.extractCount == 0)
+        #expect(fixture.capture.count == 1)
+        #expect(fixture.scheduler.value?.submitCount == 1)
+        fixture.scheduler.emit(fixture.output(revision: 1))
+        #expect(fixture.overlay.translations.count == 2)
+
+        // Switching to a window owned by the debug-enabled instance claims
+        // the in-page channel again without any extra capture.
+        fixture.monitor.emit(ActiveWindowDescriptor(pid: 7777, bundleIdentifier: "com.google.Chrome", windowID: 99, frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 2, invalidatesOverlay: true))
+        try await waitForCapture(timeout: 5) { inPage.extractCount == 1 }
+        #expect(inPage.extractCount == 1)
+        #expect(fixture.capture.count == 1)
         await controller.stop()
     }
 

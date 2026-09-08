@@ -513,6 +513,70 @@ struct ApplicationControllerTests {
     }
 
     @Test
+    func unhealthyStartupRetriesUntilBackendRecoversThenStarts() async throws {
+        // A cold local backend flunks the startup health check; the retry
+        // loop must keep trying and auto-start the session once healthy.
+        let gate = HealthCheckGate()
+        let monitor = FakeWindowMonitor()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test",
+            translatedBundleIDs: ["qa.editor"]))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, backendFactory: GatedBackendFactory(gate: gate), monitor: monitor)
+        )
+        controller.backendRetryInterval = 0.05
+        try await controller.start()
+        await gate.release(BackendHealth(status: .unavailable, message: "cold"))
+        await waitForStartupHealthCheck(controller)
+        #expect(monitor.startCount == 0)
+        try await Task.sleep(for: .milliseconds(250))
+        #expect(monitor.startCount == 0)
+        await         gate.release(BackendHealth(status: .healthy, message: "ok"))
+        try await waitForCapture(timeout: 5) { monitor.startCount == 1 }
+        #expect(monitor.startCount == 1)
+        #expect(controller.viewModel.isAutomaticTranslationEnabled)
+        await controller.stop()
+    }
+
+    @Test
+    func transientEnableFailureKeepsIntentAndRetriesUntilStarted() async throws {
+        // Toggling translation on while the backend is momentarily down must
+        // not erase the saved preference: intent stays on, and the retry
+        // loop completes the enable once the backend recovers.
+        let gate = HealthCheckGate()
+        let monitor = FakeWindowMonitor()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: false, backend: .local, localModel: "test",
+            translatedBundleIDs: ["qa.editor"]))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, backendFactory: GatedBackendFactory(gate: gate), monitor: monitor)
+        )
+        controller.backendRetryInterval = 0.05
+        try await controller.start()
+        await gate.release(BackendHealth(status: .healthy, message: "ok"))
+        await waitForStartupHealthCheck(controller)
+        #expect(monitor.startCount == 0)
+
+        // Backend goes cold right before the user enables translation.
+        await gate.release(BackendHealth(status: .unavailable, message: "cold"))
+        controller.setAutomaticTranslation(true)
+        // The failure path is the only place that restores the saved intent.
+        try await waitForCapture(timeout: 2) { controller.configuration.autoTranslateEnabled }
+        #expect(!controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(controller.configuration.autoTranslateEnabled)
+        #expect(monitor.startCount == 0)
+
+        // Backend recovers: the retry loop completes the enable on its own.
+        await gate.release(BackendHealth(status: .healthy, message: "ok"))
+        try await waitForCapture(timeout: 5) { monitor.startCount == 1 }
+        #expect(controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(controller.configuration.autoTranslateEnabled)
+        await controller.stop()
+    }
+
+    @Test
     func currentRevisionOutputReachesOverlayAndStaleCaptureDoesNot() async throws {
         let monitor = FakeWindowMonitor()
         let capture = SingleRegionCapturePipeline()
