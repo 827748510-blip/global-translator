@@ -68,7 +68,16 @@ extension ApplicationController {
                 self.automaticEnablePending = false
                 self.automaticEnableTask = nil
                 self.viewModel.isAutomaticTranslationEnabled = false
-                self.configuration.autoTranslateEnabled = false
+                if health.status == .unavailable {
+                    // Transient failure (cold local model, sleeping backend):
+                    // keep the user's saved intent and let the retry loop
+                    // flip the switch on once the backend recovers — a cold
+                    // start must not silently erase the preference.
+                    self.configuration.autoTranslateEnabled = true
+                    self.scheduleBackendRetry(healthToken: self.backendHealthToken)
+                } else {
+                    self.configuration.autoTranslateEnabled = false
+                }
                 self.session?.stop()
                 self.viewModel.healthMessage = health.status.uiSafeFailureMessage
                 self.applyStatus(.error)

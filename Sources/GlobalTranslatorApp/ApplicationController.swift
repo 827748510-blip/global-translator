@@ -33,7 +33,15 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
     var backendRefreshTask: Task<Void, Never>?
     var automaticEnableTask: Task<Void, Never>?
     var permissionRefreshTask: Task<Void, Never>?
+    var backendRetryTask: Task<Void, Never>?
+    var backendRetryAttempt = 0
+    /// Interval between startup health-check retries; tests shrink it.
+    var backendRetryInterval: TimeInterval = 10
+    /// Cold local backends (model unloaded after sleep) can flunk the startup
+    /// health check; retry for a few minutes before giving up.
+    static let maxBackendRetryAttempts = 30
     var applicationPicker: NSOpenPanel?
+    var bridgeServer: ExtensionBridgeServer?
 
     public init(
         paths: RuntimePaths,
@@ -74,6 +82,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         pushConfigurationState()
         if settingsRequested { statusItem?.showSettings() }
         makeSession()
+        startExtensionBridge()
         if configurationLoadFailed {
             viewModel.backendReady = false
             viewModel.healthMessage = "配置无效，已使用安全默认值"
@@ -101,6 +110,9 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         automaticEnablePending = false
         backendRefreshTask?.cancel()
         backendRefreshTask = nil
+        backendRetryTask?.cancel()
+        backendRetryTask = nil
+        backendRetryAttempt = 0
         automaticEnableTask?.cancel()
         automaticEnableTask = nil
         permissionRefreshTask?.cancel()
@@ -110,6 +122,8 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         callbackBox = nil
         session?.stop()
         session = nil
+        bridgeServer?.stop()
+        bridgeServer = nil
         statusItem?.stop()
         statusItem = nil
         overlay?.hideAll()
@@ -174,6 +188,18 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         makeSession()
     }
 
+    /// Serves the browser-extension bridge for the whole lifetime of the
+    /// daemon; the handler resolves the session lazily so session rebuilds
+    /// and backend reconfiguration need no server restart.
+    private func startExtensionBridge() {
+        let server = ExtensionBridgeServer(logger: components.logger) { [weak self] texts in
+            guard let session = self?.session else { throw ExtensionBridgeError.translatorUnavailable }
+            return try await session.translateBridgeTexts(texts)
+        }
+        server.start()
+        bridgeServer = server
+    }
+
     func refreshBackend() async {
         let healthToken = backendHealthToken
         let expectedConfiguration = configuration
@@ -189,6 +215,11 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
               expectedConfiguration.localBaseURL == configuration.localBaseURL,
               expectedConfiguration.localModel == configuration.localModel else { return }
         applyHealth(health)
+        // Only `.unavailable` is transient (cold local model, sleeping
+        // backend); credential/model problems need user action.
+        if health.status == .unavailable {
+            scheduleBackendRetry(healthToken: healthToken)
+        }
         guard let backend = try? components.backendFactory.makeBackend(
             kind: expectedConfiguration.backend,
             configuration: expectedConfiguration,
@@ -207,6 +238,9 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
 
     func scheduleBackendRefresh(startPersistedSession: Bool = false) {
         backendRefreshTask?.cancel()
+        backendRetryTask?.cancel()
+        backendRetryTask = nil
+        backendRetryAttempt = 0
         let healthToken = backendHealthToken
         backendRefreshTask = Task { @MainActor [weak self] in
             guard let self,
@@ -234,6 +268,31 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             : health.status.uiSafeFailureMessage
         if health.status != .healthy {
             viewModel.status = .error
+        }
+    }
+
+    /// Retries a transiently failing backend health check on a fixed cadence
+    /// and, once healthy, runs the persisted auto-start. Without this a cold
+    /// local model (unloaded after sleep) left the session off forever.
+    func scheduleBackendRetry(healthToken: UInt64) {
+        guard configuration.autoTranslateEnabled else { return }
+        guard backendRetryAttempt < Self.maxBackendRetryAttempts else { return }
+        backendRetryAttempt += 1
+        let attempt = backendRetryAttempt
+        let interval = backendRetryInterval
+        backendRetryTask?.cancel()
+        backendRetryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(interval))
+            guard let self,
+                  self.started,
+                  !Task.isCancelled,
+                  self.backendHealthToken == healthToken,
+                  self.configuration.autoTranslateEnabled,
+                  self.session?.isRunning != true else { return }
+            self.components.logger.event("backend_retry", fields: ["attempt": String(attempt)])
+            await self.refreshBackend()
+            guard self.started, self.backendHealthToken == healthToken, !Task.isCancelled else { return }
+            self.maybeStartPersistedSession()
         }
     }
 

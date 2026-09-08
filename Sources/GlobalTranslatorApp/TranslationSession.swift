@@ -26,6 +26,11 @@ public final class TranslationSession {
     private var inPageInFlight = false
     private var inPageCooldownUntil = Date.distantPast
     private var coordinator: (any TranslationCoordinating)?
+    /// Dedicated coordinator for the browser-extension bridge. The bridge
+    /// sends unversioned requests (revision 0), which the window pipeline's
+    /// monotonically increasing revision gate would reject as stale — so the
+    /// bridge must never share that coordinator.
+    private var bridgeCoordinator: (any TranslationCoordinating)?
     private var scheduler: (any TranslationScheduling)?
     private var captureTask: Task<Void, Never>?
     private var protectionTask: Task<Void, Never>?
@@ -76,6 +81,7 @@ public final class TranslationSession {
         self.visionFallbackEnabled = visionFallbackEnabled
         let coordinator = coordinatorFactory(backends, makeEventSink())
         self.coordinator = coordinator
+        self.bridgeCoordinator = coordinatorFactory(backends, makeEventSink())
         let outputHandler: @MainActor @Sendable (EngineOutput) -> Void = { [weak self] output in
             self?.receive(output)
         }
@@ -103,6 +109,8 @@ public final class TranslationSession {
         activeWindow = nil
         lastRendered = []
         if let coordinator { Task { await coordinator.cancelPendingRequests() } }
+        if let bridgeCoordinator { Task { await bridgeCoordinator.cancelPendingRequests() } }
+        bridgeCoordinator = nil
         activeRevision &+= 1
         captureTask?.cancel()
         captureTask = nil
@@ -120,6 +128,40 @@ public final class TranslationSession {
 
     public func clearCache() async {
         await coordinator?.clearCache()
+    }
+
+    /// Translates texts arriving from the browser-extension bridge. Bypasses
+    /// window tracking entirely — no overlays, no revisions — and reuses the
+    /// shared coordinator (and its cache). The returned array is aligned with
+    /// the input order; nil marks entries filtered out or left untranslated.
+    /// Gated on `isRunning` so the menu-bar master switch also governs the
+    /// extension.
+    public func translateBridgeTexts(_ texts: [String]) async throws -> [String?] {
+        guard isRunning else { throw ExtensionBridgeError.translatorInactive }
+        guard let coordinator = bridgeCoordinator else { throw ExtensionBridgeError.translatorUnavailable }
+        let capped = Array(texts.prefix(400))
+        let regions = capped.map { text in
+            TextRegion(id: UUID(), sourceText: text, screenFrame: .zero,
+                       confidence: 1, source: .accessibility, windowRevision: 0)
+        }
+        let eligible = regions.filter { TextFilter.shouldTranslate($0.sourceText) && $0.sourceText.count <= 4_000 }
+        guard !eligible.isEmpty else { return capped.map { _ in nil } }
+        let descriptor = ActiveWindowDescriptor(
+            pid: 0, bundleIdentifier: "extension.bridge", windowID: nil,
+            frame: .zero, revision: 0, invalidatesOverlay: false)
+        let snapshot = CaptureSnapshot(window: CapturedWindow(descriptor: descriptor, regions: eligible, source: .accessibility))
+        await coordinator.selectBackend(kind: backend, modelIdentifier: model)
+        let output = try await coordinator.translate(
+            snapshot: snapshot,
+            backend: backend,
+            modelIdentifier: model,
+            visionFallbackEnabled: visionFallbackEnabled
+        )
+        var translated: [UUID: String] = [:]
+        for translation in output.translations where !translation.text.isEmpty {
+            translated[translation.region.id] = translation.text
+        }
+        return regions.map { translated[$0.id] }
     }
 
     public func handleWindow(_ descriptor: ActiveWindowDescriptor?) {
@@ -160,14 +202,19 @@ public final class TranslationSession {
         captureTask = Task { @MainActor [weak self] in
             guard let self else { return }
             // Browsers with a reachable in-page channel translate inside the
-            // page (like native browser translation). Once the channel answers
-            // for this bundle identifier it OWNS the window: bubbles never
+            // page (like native browser translation) — but only when the
+            // focused window belongs to the debug-enabled browser instance:
+            // isApplicable matches the window PID against the CDP browser
+            // process, so windows of another browser process with the same
+            // bundle identifier (main Chrome without a debug port) fall
+            // through to bubbles instead of being silently swallowed. Once
+            // the channel answers for this window it OWNS it: bubbles never
             // appear, even while the channel cools down or the page currently
             // has nothing translatable. Only a genuine channel failure drops
             // to the bubble pipeline.
             if let inPage,
                translatedBundleIdentifiers.contains(descriptor.bundleIdentifier),
-               await inPage.isApplicable(bundleIdentifier: descriptor.bundleIdentifier) {
+               await inPage.isApplicable(bundleIdentifier: descriptor.bundleIdentifier, windowPID: descriptor.pid) {
                 guard Date() >= self.inPageCooldownUntil else { return }
                 guard !self.inPageInFlight else { return }
                 self.inPageInFlight = true
@@ -205,8 +252,18 @@ public final class TranslationSession {
                 if let output = self.deferredOutput { self.receive(output) }
                 return
             }
+            // A deferred output (translation finished after the page already
+            // moved on) must not be discarded wholesale: regions whose text
+            // is still on screen render immediately at the fresh coordinates,
+            // and only genuinely new text waits for the resubmission below.
+            // Live pages (timeline counters, "show N posts" pills) otherwise
+            // churn faster than translations complete and bubbles never show.
+            let deferred = self.deferredOutput
             self.cancelTranslation()
-            let retained = self.reusableTranslations(for: eligible)
+            var retained = self.reusableTranslations(for: eligible)
+            if let deferred {
+                retained.append(contentsOf: self.deferredTranslations(deferred, matching: eligible, excluding: retained))
+            }
             if self.display(retained, revision: expectedRevision) {
                 self.logger.event("overlay_reused", fields: ["region_count": String(retained.count), "revision": String(expectedRevision)])
             }
@@ -399,6 +456,20 @@ public final class TranslationSession {
             guard let index = previous.firstIndex(where: { $0.region.sourceText == region.sourceText }) else { return nil }
             let retained = previous.remove(at: index)
             return RenderedTranslation(region: identifiedRegion(region, id: retained.id), text: retained.text)
+        }
+    }
+
+    /// Deferred translations whose source text is still on screen, remapped
+    /// onto the freshly captured regions so they render at the current
+    /// coordinates. Regions already covered by `retained` are skipped.
+    private func deferredTranslations(_ output: EngineOutput, matching regions: [TextRegion], excluding retained: [RenderedTranslation]) -> [RenderedTranslation] {
+        var available = output.translations
+        return regions.compactMap { region in
+            guard !retained.contains(where: { $0.region.sourceText == region.sourceText }),
+                  let index = available.firstIndex(where: {
+                      $0.region.sourceText == region.sourceText && $0.region.source == region.source
+                  }) else { return nil }
+            return RenderedTranslation(region: region, text: available.remove(at: index).text)
         }
     }
 

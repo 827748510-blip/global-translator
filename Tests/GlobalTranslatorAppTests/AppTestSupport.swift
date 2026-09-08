@@ -266,6 +266,10 @@ actor StaleFailureCapturePipeline: CapturePipelining {
 
 final class FakeInPageTranslator: InPageTranslating, @unchecked Sendable {
     let available: Bool
+    /// When set, only windows owned by this process are claimed; windows of
+    /// other processes fall through to the bubble pipeline (mirrors the PID
+    /// ownership check in CDPInPageTranslator).
+    var acceptedWindowPID: Int32?
     var extractError: Error?
     private var appliedStorage: [[InPageReplacement]] = []
     private(set) var extractCount = 0
@@ -275,8 +279,10 @@ final class FakeInPageTranslator: InPageTranslating, @unchecked Sendable {
         self.available = available
     }
 
-    func isApplicable(bundleIdentifier: String) async -> Bool {
-        available
+    func isApplicable(bundleIdentifier: String, windowPID: Int32) async -> Bool {
+        guard available else { return false }
+        if let acceptedWindowPID, acceptedWindowPID != windowPID { return false }
+        return true
     }
 
     func extract(windowRevision: UInt64) async throws -> [InPageText] {
