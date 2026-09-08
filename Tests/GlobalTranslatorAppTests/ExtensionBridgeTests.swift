@@ -50,6 +50,31 @@ struct ExtensionBridgeServerTests {
     }
 
     @Test
+    func backgroundScriptSerializesLoopbackFetches() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("extension/background.js")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        #expect(source.contains("function enqueueBridgeFetch("))
+        #expect(source.contains("let bridgeChain = Promise.resolve();"))
+        #expect(source.contains("enqueueBridgeFetch(() =>"))
+    }
+
+    @Test
+    func extensionManifestBumpsWhenBackgroundQueueChanges() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("extension/manifest.json")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        #expect(source.contains("\"version\": \"1.0.2\""))
+        #expect(!source.contains("\"version\": \"1.0.1\""))
+    }
+
+    @Test
     func allowedOriginStaysPinnedToTheShippedExtensionId() {
         #expect(ExtensionBridgeServer.allowedOrigin == "chrome-extension://fjggaipmhcfmgikhkjppkdliaoopaefc")
         #expect(ExtensionBridgeServer.sideloadOrigin == "chrome-extension://fignfifoniblkonapihmkfakmlgkbkcf")
@@ -455,6 +480,153 @@ extension ApplicationControllerTests {
             "Hello from page three now"
         ])
         #expect(result == ["你好 Hello from page one now", nil, "你好 Hello from page three now"])
+        await controller.stop()
+    }
+
+    @Test
+    func chromeWindowSkipsOverlayCaptureWhenBridgeIsActive() async throws {
+        let monitor = FakeWindowMonitor()
+        let capture = CountingCapturePipeline()
+        let overlay = FakeOverlay()
+        let schedulerBox = SchedulerBox()
+        let logger = RecordingLogger()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test",
+            translatedBundleIDs: ["com.google.Chrome"]))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                monitor: monitor,
+                overlay: overlay,
+                coordinator: TranslatingCoordinator(),
+                capture: capture,
+                schedulerBox: schedulerBox,
+                logger: logger
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        #expect(session.isBridgeActive)
+        session.start()
+        monitor.emit(ActiveWindowDescriptor(
+            pid: 42, bundleIdentifier: "com.google.Chrome",
+            windowID: 17, frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+            revision: 1, invalidatesOverlay: true
+        ))
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(capture.count == 0)
+        #expect(schedulerBox.value?.submitCount == 0)
+        #expect(overlay.lastTranslations.isEmpty)
+        #expect(logger.records.contains { $0.0 == "window_skipped_for_bridge" })
+        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        await controller.stop()
+    }
+
+    @Test
+    func editorWindowStillCapturesWhenBridgeIsActive() async throws {
+        let monitor = FakeWindowMonitor()
+        let capture = CountingCapturePipeline()
+        let schedulerBox = SchedulerBox()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test",
+            translatedBundleIDs: ["qa.editor"]))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                monitor: monitor,
+                coordinator: TranslatingCoordinator(),
+                capture: capture,
+                schedulerBox: schedulerBox
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        session.start()
+        monitor.emit(ActiveWindowDescriptor(
+            pid: 42, bundleIdentifier: "qa.editor",
+            windowID: 17, frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+            revision: 1, invalidatesOverlay: true
+        ))
+        try await waitForCapture { capture.count == 1 }
+        #expect(capture.count == 1)
+        #expect(schedulerBox.value?.submitCount == 1)
+        await controller.stop()
+    }
+
+    @Test
+    func chromeWindowCapturesWhenBridgeIsInactive() async throws {
+        let monitor = FakeWindowMonitor()
+        let capture = CountingCapturePipeline()
+        let schedulerBox = SchedulerBox()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test",
+            translatedBundleIDs: ["com.google.Chrome"]))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                monitor: monitor,
+                coordinator: TranslatingCoordinator(),
+                capture: capture,
+                schedulerBox: schedulerBox
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        session.start()
+        session.setBridgeActive(false)
+        monitor.emit(ActiveWindowDescriptor(
+            pid: 42, bundleIdentifier: "com.google.Chrome",
+            windowID: 17, frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+            revision: 1, invalidatesOverlay: true
+        ))
+        try await waitForCapture { capture.count == 1 }
+        #expect(capture.count == 1)
+        #expect(schedulerBox.value?.submitCount == 1)
+        await controller.stop()
+    }
+
+    @Test
+    func bridgeKeepsTranslatingWhileChromeWindowRevisionsKeepRising() async throws {
+        let monitor = FakeWindowMonitor()
+        let capture = CountingCapturePipeline()
+        let schedulerBox = SchedulerBox()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test",
+            translatedBundleIDs: ["com.google.Chrome"]))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                monitor: monitor,
+                coordinator: TranslatingCoordinator(),
+                capture: capture,
+                schedulerBox: schedulerBox
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        session.start()
+        for revision in 1...8 {
+            monitor.emit(ActiveWindowDescriptor(
+                pid: 42, bundleIdentifier: "com.google.Chrome",
+                windowID: 17, frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+                revision: UInt64(revision), invalidatesOverlay: true
+            ))
+            let result = try await session.translateBridgeTexts([
+                "Hello from explore \(revision) now"
+            ])
+            #expect(result == ["你好 Hello from explore \(revision) now"])
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(capture.count == 0)
+        #expect(schedulerBox.value?.submitCount == 0)
         await controller.stop()
     }
 }

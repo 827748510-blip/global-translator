@@ -216,7 +216,7 @@ extension ApplicationControllerTests {
     }
 
     @Test
-    func inPageChannelFailureFallsBackToBubblesWithCooldown() async throws {
+    func inPageChannelFailureDoesNotFallBackToBubblesWhenBridgeOwnsChrome() async throws {
         let fixture = FlickerFixture()
         let inPage = FakeInPageTranslator(available: true)
         inPage.extractError = URLError(.cannotConnectToHost)
@@ -238,63 +238,54 @@ extension ApplicationControllerTests {
         await waitForStartupHealthCheck(controller)
         controller.session?.start()
 
-        // A genuine channel failure (extract throws) still drops to bubbles.
         fixture.monitor.emit(ActiveWindowDescriptor(pid: 42, bundleIdentifier: "com.google.Chrome", windowID: 17, frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 1, invalidatesOverlay: true))
-        try await waitForCapture(timeout: 5) { fixture.scheduler.value?.submitCount == 1 }
+        try await waitForCapture(timeout: 5) { inPage.extractCount == 1 }
         #expect(inPage.extractCount == 1)
-        #expect(fixture.capture.count == 1)
-        #expect(fixture.scheduler.value?.submitCount == 1)
-        fixture.scheduler.emit(fixture.output(revision: 1))
-        #expect(fixture.overlay.translations.count == 2)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(fixture.capture.count == 0)
+        #expect(fixture.scheduler.value?.submitCount == 0)
+        #expect(fixture.overlay.translations.isEmpty)
 
-        // During the cooldown the failed channel is not retried and bubbles
-        // are not re-captured either — the window stays quiet until the
-        // cooldown expires.
         fixture.monitor.emit(ActiveWindowDescriptor(pid: 42, bundleIdentifier: "com.google.Chrome", windowID: 17, frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 2, invalidatesOverlay: true))
         try await Task.sleep(for: .milliseconds(500))
         #expect(inPage.extractCount == 1)
-        #expect(fixture.capture.count == 1)
+        #expect(fixture.capture.count == 0)
         await controller.stop()
     }
 
     @Test
-    func browserWithoutInPageChannelKeepsBubblePipeline() async throws {
+    func browserWithoutInPageChannelSkipsOverlayWhenBridgeActive() async throws {
         let fixture = FlickerFixture()
         let inPage = FakeInPageTranslator(available: false)
         let controller = try await startInPageController(fixture, inPage: inPage)
-        try await waitForCapture { fixture.scheduler.value?.submitCount == 1 }
-        #expect(fixture.scheduler.value?.submitCount == 1)
-        #expect(fixture.capture.count == 1)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(fixture.scheduler.value?.submitCount == 0)
+        #expect(fixture.capture.count == 0)
         let extracts = inPage.extractCount
         #expect(extracts == 0)
-        fixture.scheduler.emit(fixture.output(revision: 1))
-        #expect(fixture.overlay.translations.count == 2)
+        #expect(fixture.overlay.translations.isEmpty)
         await controller.stop()
     }
 
     @Test
-    func foreignBrowserProcessWindowFallsBackToBubbles() async throws {
+    func foreignBrowserProcessWindowSkipsOverlayWhenBridgeActive() async throws {
         let fixture = FlickerFixture()
         let inPage = FakeInPageTranslator(available: true)
         inPage.acceptedWindowPID = 7777
         let controller = try await startInPageController(fixture, inPage: inPage)
 
-        // The focused Chrome window belongs to a different process than the
-        // debug-enabled instance: the in-page channel must NOT claim it and
-        // the bubble pipeline takes over.
-        try await waitForCapture { fixture.scheduler.value?.submitCount == 1 }
+        try await Task.sleep(for: .milliseconds(300))
         #expect(inPage.extractCount == 0)
-        #expect(fixture.capture.count == 1)
-        #expect(fixture.scheduler.value?.submitCount == 1)
-        fixture.scheduler.emit(fixture.output(revision: 1))
-        #expect(fixture.overlay.translations.count == 2)
+        #expect(fixture.capture.count == 0)
+        #expect(fixture.scheduler.value?.submitCount == 0)
+        #expect(fixture.overlay.translations.isEmpty)
 
         // Switching to a window owned by the debug-enabled instance claims
-        // the in-page channel again without any extra capture.
+        // the in-page channel without overlay capture.
         fixture.monitor.emit(ActiveWindowDescriptor(pid: 7777, bundleIdentifier: "com.google.Chrome", windowID: 99, frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 2, invalidatesOverlay: true))
         try await waitForCapture(timeout: 5) { inPage.extractCount == 1 }
         #expect(inPage.extractCount == 1)
-        #expect(fixture.capture.count == 1)
+        #expect(fixture.capture.count == 0)
         await controller.stop()
     }
 

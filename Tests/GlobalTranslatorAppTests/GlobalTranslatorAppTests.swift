@@ -93,6 +93,31 @@ struct ApplicationControllerTests {
         #expect(result.translations.first?.segmentId == second.items.first?.id)
     }
 
+    @Test
+    func overlayAndBridgeLocalBackendsShareOneOllamaFlight() async throws {
+        let transport = OverlapEchoTransport()
+        let factory = LiveTranslationBackendFactory(transport: transport)
+        let configuration = AppConfiguration(backend: .local, localModel: "test")
+        let credentials = RecordingCredentialStore(value: nil)
+        let overlay = try factory.makeBackend(kind: .local, configuration: configuration, credentials: credentials)
+        let bridge = try factory.makeBackend(kind: .local, configuration: configuration, credentials: credentials)
+        let overlayRequest = TranslationRequest(
+            windowRevision: 1,
+            items: [TranslationItem(id: UUID(), sourceText: "overlay window text")]
+        )
+        let bridgeRequest = TranslationRequest(
+            windowRevision: 0,
+            items: [TranslationItem(id: UUID(), sourceText: "bridge page text")]
+        )
+        async let overlayResult = overlay.translate(overlayRequest)
+        async let bridgeResult = bridge.translate(bridgeRequest)
+        let results = try await (overlayResult, bridgeResult)
+        #expect(results.0.translations.first?.simplifiedChineseText == "你好")
+        #expect(results.1.translations.first?.simplifiedChineseText == "你好")
+        #expect(await transport.calls == 2)
+        #expect(await transport.maxInFlight == 1)
+    }
+
     @Test(arguments: [CaptureError.unsupported, CaptureError.permissionRequired(.screenCapture)])
     func transientWindowCaptureFailureRequestsRefreshButPermissionsDoNot(error: CaptureError) async throws {
         let monitor = FakeWindowMonitor()

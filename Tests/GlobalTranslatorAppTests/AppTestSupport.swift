@@ -129,6 +129,28 @@ actor DelayedEchoTransport: HTTPTransport {
     }
 }
 
+actor OverlapEchoTransport: HTTPTransport {
+    private(set) var calls = 0
+    private var inFlight = 0
+    private(set) var maxInFlight = 0
+    private struct Payload: Decodable { let messages: [Message] }
+    private struct Message: Decodable { let content: String }
+    private struct Item: Decodable { let segmentId: UUID }
+
+    func send(_ request: URLRequest) async throws -> HTTPResponse {
+        inFlight += 1
+        maxInFlight = max(maxInFlight, inFlight)
+        calls += 1
+        defer { inFlight -= 1 }
+        let payload = try JSONDecoder().decode(Payload.self, from: request.httpBody ?? Data())
+        let items = try JSONDecoder().decode([Item].self, from: Data((payload.messages.last?.content ?? "[]").utf8))
+        try await Task.sleep(for: .milliseconds(80))
+        let translated = try JSONSerialization.data(withJSONObject: ["translations": items.map { ["segmentId": $0.segmentId.uuidString, "text": "你好"] }])
+        let response = try JSONSerialization.data(withJSONObject: ["choices": [["message": ["content": String(decoding: translated, as: UTF8.self)]]]])
+        return HTTPResponse(statusCode: 200, headers: [:], body: response)
+    }
+}
+
 struct StubBackend: TranslationBackend, Sendable {
     let kind: BackendKind
     func healthCheck() async -> BackendHealth { BackendHealth(status: .healthy, message: "ok") }
@@ -189,6 +211,35 @@ struct FakeCapturePipeline: CapturePipelining, Sendable {
     var source: CaptureSource = .accessibility
     func capture(_ descriptor: ActiveWindowDescriptor) async throws -> CaptureSnapshot {
         CaptureSnapshot(window: CapturedWindow(descriptor: descriptor, regions: [], source: source))
+    }
+}
+
+final class CountingCapturePipeline: CapturePipelining, @unchecked Sendable {
+    private let lock = NSLock()
+    private var captures = 0
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return captures
+    }
+
+    func capture(_ descriptor: ActiveWindowDescriptor) async throws -> CaptureSnapshot {
+        lock.lock()
+        captures += 1
+        lock.unlock()
+        let region = TextRegion(
+            id: UUID(),
+            sourceText: "Visible English label",
+            screenFrame: CGRect(x: 20, y: 20, width: 80, height: 20),
+            confidence: 1,
+            source: .accessibility,
+            windowRevision: descriptor.revision
+        )
+        return CaptureSnapshot(window: CapturedWindow(
+            descriptor: descriptor,
+            regions: [region],
+            source: .accessibility
+        ))
     }
 }
 

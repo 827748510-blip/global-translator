@@ -231,6 +231,83 @@ struct GlobalTranslatorCoreTests {
     }
 }
 
+struct SerializingTranslationBackendTests {
+    @Test
+    func concurrentTranslatesDoNotOverlapTheBaseBackend() async throws {
+        let base = SlowRecordingBackend()
+        let serial = SerializingTranslationBackend(base: base)
+        let first = TranslationRequest(
+            windowRevision: 1,
+            items: [TranslationItem(id: UUID(), sourceText: "first window")]
+        )
+        let second = TranslationRequest(
+            windowRevision: 2,
+            items: [TranslationItem(id: UUID(), sourceText: "second bridge")]
+        )
+        async let firstResult = serial.translate(first)
+        async let secondResult = serial.translate(second)
+        _ = try await (firstResult, secondResult)
+        #expect(await base.maxInFlight == 1)
+        #expect(await base.started.count == 2)
+        #expect(await base.finished == await base.started)
+    }
+
+    @Test
+    func overlayCancelDoesNotAbortAQueuedBridgeTranslate() async throws {
+        let base = SlowRecordingBackend()
+        let serial = SerializingTranslationBackend(base: base)
+        let overlay = CoalescingTranslationBackend(base: serial)
+        let first = TranslationRequest(
+            windowRevision: 1,
+            items: [TranslationItem(id: UUID(), sourceText: "overlay scrape")]
+        )
+        let bridge = TranslationRequest(
+            windowRevision: 0,
+            items: [TranslationItem(id: UUID(), sourceText: "bridge batch")]
+        )
+        let overlayTask = Task { try await overlay.translate(first) }
+        for _ in 0..<200 where await base.started.isEmpty { await Task.yield() }
+        let bridgeTask = Task { try await serial.translate(bridge) }
+        await overlay.cancelOutstandingRequests()
+        overlayTask.cancel()
+        let bridgeResult = try await bridgeTask.value
+        _ = await overlayTask.result
+        #expect(bridgeResult.translations.first?.simplifiedChineseText == "译:bridge batch")
+        #expect(await base.finished.contains("bridge batch"))
+    }
+}
+
+private actor SlowRecordingBackend: TranslationBackend {
+    let kind: BackendKind = .local
+    private var inFlight = 0
+    private(set) var maxInFlight = 0
+    private(set) var started: [String] = []
+    private(set) var finished: [String] = []
+
+    func healthCheck() async -> BackendHealth {
+        BackendHealth(status: .healthy, message: "ok")
+    }
+
+    func translate(_ request: TranslationRequest) async throws -> TranslationResult {
+        let text = request.items.first?.sourceText ?? ""
+        inFlight += 1
+        maxInFlight = max(maxInFlight, inFlight)
+        started.append(text)
+        defer {
+            inFlight -= 1
+            finished.append(text)
+        }
+        try await Task.sleep(for: .milliseconds(80))
+        try Task.checkCancellation()
+        return TranslationResult(
+            windowRevision: request.windowRevision,
+            translations: request.items.map {
+                Translation(segmentId: $0.id, simplifiedChineseText: "译:" + $0.sourceText)
+            }
+        )
+    }
+}
+
 private actor FakeTransport: HTTPTransport {
     private var queuedResponses: [HTTPResponse]
     private(set) var requests: [URLRequest] = []

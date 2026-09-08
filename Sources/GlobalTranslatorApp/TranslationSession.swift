@@ -138,6 +138,23 @@ public final class TranslationSession {
     /// capture. `stop()` / `start()` only pause overlay tracking.
     public func setBridgeActive(_ active: Bool) {
         isBridgeActive = active
+        guard active, let activeWindow, shouldSkipOverlayForExtensionBridge(activeWindow.bundleIdentifier) else {
+            return
+        }
+        overlay.hideAll()
+        cancelTranslation()
+        captureTask?.cancel()
+        captureTask = nil
+        logger.event("window_skipped_for_bridge", fields: [
+            "bundle": activeWindow.bundleIdentifier,
+            "revision": String(activeWindow.revision)
+        ])
+    }
+
+    /// Chromium windows are translated by the extension. Overlay AX/OCR of
+    /// Chrome while a bridge batch is in flight starves local Ollama.
+    private func shouldSkipOverlayForExtensionBridge(_ bundleIdentifier: String) -> Bool {
+        isBridgeActive && ChromiumBrowserBundles.contains(bundleIdentifier)
     }
 
     public func clearCache() async {
@@ -250,13 +267,10 @@ public final class TranslationSession {
             // page (like native browser translation) — but only when the
             // focused window belongs to the debug-enabled browser instance:
             // isApplicable matches the window PID against the CDP browser
-            // process, so windows of another browser process with the same
-            // bundle identifier (main Chrome without a debug port) fall
-            // through to bubbles instead of being silently swallowed. Once
-            // the channel answers for this window it OWNS it: bubbles never
-            // appear, even while the channel cools down or the page currently
-            // has nothing translatable. Only a genuine channel failure drops
-            // to the bubble pipeline.
+            // process. Main Chrome without a debug port is owned by the
+            // extension bridge: overlay AX/OCR is skipped so it cannot race
+            // local Ollama. A genuine CDP failure also skips overlay while
+            // the bridge is on. Other apps still use bubbles.
             if let inPage,
                translatedBundleIdentifiers.contains(descriptor.bundleIdentifier),
                await inPage.isApplicable(bundleIdentifier: descriptor.bundleIdentifier, windowPID: descriptor.pid) {
@@ -275,6 +289,18 @@ public final class TranslationSession {
                 case .channelFailed:
                     self.inPageCooldownUntil = Date().addingTimeInterval(5)
                 }
+            }
+            // Normal Chrome (no debug port) used to fall through to overlay
+            // bubbles. With the extension bridge on, that AX scrape races
+            // `bridge_translate` on the same local Ollama process.
+            if self.shouldSkipOverlayForExtensionBridge(descriptor.bundleIdentifier) {
+                self.overlay.hideAll()
+                self.cancelTranslation()
+                self.logger.event("window_skipped_for_bridge", fields: [
+                    "bundle": descriptor.bundleIdentifier,
+                    "revision": String(descriptor.revision)
+                ])
+                return
             }
             await self.runCapturePipeline(descriptor: descriptor, expectedRevision: expectedRevision, capture: capture)
         }
