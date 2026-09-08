@@ -63,6 +63,7 @@ struct ExtensionBridgeServerTests {
         #expect(source.contains("let bridgeChain = Promise.resolve();"))
         #expect(source.contains("enqueueBridgeFetch(() =>"))
         #expect(source.contains("retry: Array.isArray(payload.retry) ? payload.retry : []"))
+    }
 
     @Test
     func extensionManifestBumpsWhenBackgroundQueueChanges() throws {
