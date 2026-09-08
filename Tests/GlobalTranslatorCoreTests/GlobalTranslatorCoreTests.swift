@@ -249,7 +249,9 @@ struct SerializingTranslationBackendTests {
         _ = try await (firstResult, secondResult)
         #expect(await base.maxInFlight == 1)
         #expect(await base.started.count == 2)
-        #expect(await base.finished == await base.started)
+        let finished = await base.finished
+        let started = await base.started
+        #expect(finished == started)
     }
 
     @Test
