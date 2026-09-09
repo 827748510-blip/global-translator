@@ -16,10 +16,12 @@ public enum DropdownLayout {
     }
 }
 
-/// Borderless white dropdown panel that can appear above fullscreen apps.
+/// Borderless dropdown panel that can appear above fullscreen apps.
 /// `canJoinAllSpaces + fullScreenAuxiliary` puts it on the fullscreen space;
 /// `nonactivatingPanel` keeps the frontmost app focused. The panel may become
 /// key so text fields inside settings accept typing, without activating.
+/// Appearance follows the system so light panels stay solid white and dark
+/// mode uses the system window background.
 public final class DropdownPanel: NSPanel {
     public var onResignKey: (() -> Void)?
     public var onOutsideClick: (() -> Void)?
@@ -33,8 +35,10 @@ public final class DropdownPanel: NSPanel {
             defer: false
         )
         contentViewController = content
-        appearance = NSAppearance(named: .aqua)
-        // The rounded white card is drawn by the SwiftUI content; the window
+        // Inherit the system appearance (light / dark). Do not pin `.aqua` —
+        // that forced a grey-tinted light panel and blocked Dark Mode.
+        appearance = nil
+        // The rounded card is drawn by the SwiftUI content; the window
         // itself is transparent so the corners are visible.
         backgroundColor = .clear
         isOpaque = false

@@ -158,6 +158,7 @@ private final class ShowcaseActions: SettingsActions {
     }
     func setVisionFallback(_ enabled: Bool) {}
     func setLocalConfiguration(baseURL: String, model: String) {}
+    func setDeepSeekModel(_ model: String) {}
     func requestPermission(_ kind: PermissionKind) {}
     func refreshPermissions() {}
     func openSystemSettings(_ kind: PermissionKind) {}

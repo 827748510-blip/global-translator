@@ -48,12 +48,12 @@ global-translator run --foreground
 ### DeepSeek 云端
 
 - 固定官方基址：`https://api.deepseek.com`
-- 固定模型探测：`deepseek-v4-flash-vision-exp`
-- Key 只保存在 macOS 登录 Keychain，Service 为 `com.maodashu.global-translator.deepseek`
+- 模型可从 `/models` 选择，写入 `config.json` 的 `deepSeekModel`，默认 `deepseek-chat`
+- Key 只保存在 macOS 登录 Keychain，Service 为 `com.maodashu.global-translator.deepseek`；已配置时设置显示「已配置 · 钥匙串保存」，不会在切换后端时再弹出空密钥框
 - 默认只发送待翻译文字；局部截图视觉兜底必须在弹窗中明确授权
 - 不自动切换到本地后端，不自动重放状态不确定的请求
 
-选择云端后端启动时，会探测该实验模型是否仍在账号的 `/models` 列表中。已在用户授权下验证真实 DeepSeek 接口；自动化测试使用 mock，不自动调用计费接口。详细结果见 [真实云端验收记录](docs/real-acceptance-2026-09-05.md)。
+选择云端后端启动时，会探测账号 `/models` 列表并使用已选（或默认）模型。已在用户授权下验证真实 DeepSeek 接口；自动化测试使用 mock，不自动调用计费接口。详细结果见 [真实云端验收记录](docs/real-acceptance-2026-09-05.md)。
 
 ### 本地模型
 

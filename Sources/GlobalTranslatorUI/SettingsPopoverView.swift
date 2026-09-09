@@ -46,6 +46,7 @@ public struct SettingsPopoverView: View {
         }
         .frame(width: GTPopoverMetrics.width)
         .frame(maxHeight: maxHeight)
+        .background(GTColor.panelBackground)
         .confirmationDialog(
             "删除已保存的 API Key？",
             isPresented: Binding(

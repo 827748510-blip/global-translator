@@ -20,6 +20,7 @@ private final class SpyActions: SettingsActions {
     var deleteKeyCallCount = 0
     var visionValues: [Bool] = []
     var localConfigurations: [(baseURL: String, model: String)] = []
+    var deepSeekModels: [String] = []
     var testConnectionCallCount = 0
     var permissionRequests: [PermissionKind] = []
     var openedSystemSettings: [PermissionKind] = []
@@ -73,6 +74,10 @@ private final class SpyActions: SettingsActions {
 
     func setLocalConfiguration(baseURL: String, model: String) {
         localConfigurations.append((baseURL, model))
+    }
+
+    func setDeepSeekModel(_ model: String) {
+        deepSeekModels.append(model)
     }
 
     func requestPermission(_ kind: PermissionKind) {
@@ -377,6 +382,8 @@ struct SettingsViewModelTests {
         #expect(viewModel.selectedBackend == .local)
         #expect(!viewModel.backendReady)
         #expect(viewModel.connectionTest == .idle)
+        #expect(viewModel.keyConfigured)
+        #expect(!viewModel.showsKeyEntry)
     }
 
     @Test
@@ -452,7 +459,6 @@ struct SettingsViewModelTests {
     func nonHealthyConnectionStatusesBecomeFailedWithSafeChineseText() async {
         let cases: [(BackendHealthStatus, String)] = [
             (.invalidCredentials, "凭证无效，请检查 API Key 后重试"),
-            (.modelUnavailable, "所需模型不可用，请更换模型或检查服务"),
             (.invalidConfiguration, "配置无效，请检查后端设置"),
             (.unavailable, "服务暂不可用，请稍后重试"),
         ]
@@ -474,6 +480,66 @@ struct SettingsViewModelTests {
             // Failure responses still refresh the model list when provided.
             #expect(viewModel.availableModels == ["fresh-model"])
         }
+    }
+
+    @Test
+    func modelUnavailableWithoutListStaysFailed() async {
+        let (viewModel, actions) = makeViewModel(keyConfigured: true)
+        viewModel.availableModels = ["kept"]
+        actions.health = BackendHealth(
+            status: .modelUnavailable,
+            message: "Required DeepSeek model is unavailable",
+            availableModels: []
+        )
+        await viewModel.testConnection()
+        #expect(viewModel.connectionTest == .failed("所需模型不可用，请更换模型或检查服务"))
+        #expect(!viewModel.backendReady)
+        #expect(viewModel.availableModels == ["kept"])
+    }
+
+    @Test
+    func modelUnavailableWithListAdoptsPreferredDeepSeekModel() async {
+        let (viewModel, actions) = makeViewModel(keyConfigured: true)
+        viewModel.deepSeekModel = "missing-model"
+        actions.health = BackendHealth(
+            status: .modelUnavailable,
+            message: "Selected DeepSeek model is unavailable",
+            availableModels: ["deepseek-chat", "deepseek-reasoner"]
+        )
+        await viewModel.testConnection()
+        #expect(viewModel.connectionTest == .healthy("DeepSeek backend is ready"))
+        #expect(viewModel.backendReady)
+        #expect(viewModel.deepSeekModel == "deepseek-chat")
+        #expect(actions.deepSeekModels == ["deepseek-chat"])
+        #expect(viewModel.availableModels == ["deepseek-chat", "deepseek-reasoner"])
+    }
+
+    @Test
+    func configuredKeyHidesEntryUntilReplaceAndClearsDraftOnSwitch() {
+        let (viewModel, _) = makeViewModel(keyConfigured: true)
+        #expect(!viewModel.showsKeyEntry)
+        #expect(!viewModel.isReplacingKey)
+        viewModel.beginReplaceKey()
+        #expect(viewModel.showsKeyEntry)
+        #expect(viewModel.isReplacingKey)
+        viewModel.keyDraft = "sk-should-not-stick"
+        viewModel.cancelReplaceKey()
+        #expect(!viewModel.showsKeyEntry)
+        #expect(viewModel.keyDraft == "")
+        viewModel.beginReplaceKey()
+        viewModel.keyDraft = "sk-draft"
+        viewModel.selectBackend(.local)
+        #expect(!viewModel.isReplacingKey)
+        #expect(viewModel.keyDraft == "")
+        #expect(viewModel.keyConfigured)
+    }
+
+    @Test
+    func commitDeepSeekModelForwardsSelection() {
+        let (viewModel, actions) = makeViewModel(keyConfigured: true)
+        viewModel.deepSeekModel = "deepseek-reasoner"
+        viewModel.commitDeepSeekModel()
+        #expect(actions.deepSeekModels == ["deepseek-reasoner"])
     }
 
     @Test

@@ -182,6 +182,7 @@ public protocol SettingsActions: AnyObject {
     func testConnection() async throws -> BackendHealth
     func setVisionFallback(_ enabled: Bool)
     func setLocalConfiguration(baseURL: String, model: String)
+    func setDeepSeekModel(_ model: String)
     func requestPermission(_ kind: PermissionKind)
     func refreshPermissions()
     func openSystemSettings(_ kind: PermissionKind)

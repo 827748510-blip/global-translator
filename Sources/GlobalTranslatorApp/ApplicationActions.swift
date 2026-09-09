@@ -132,10 +132,8 @@ extension ApplicationController {
         disableAutomaticTranslation()
         configuration.backend = kind
         viewModel.selectedBackend = kind
-        if kind == .deepSeekCloud {
-            let storedKey = try? components.credentialStore.read()
-            viewModel.keyConfigured = !(storedKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-        }
+        viewModel.isReplacingKey = false
+        viewModel.keyDraft = ""
         viewModel.backendReady = false
         viewModel.connectionTest = .idle
         viewModel.availableModels = []
@@ -159,14 +157,34 @@ extension ApplicationController {
             configuration: configuration,
             credentials: validator
         )
-        guard health.status == .healthy else {
+        guard health.status == .healthy
+            || (health.status == .modelUnavailable && !health.availableModels.isEmpty) else {
             throw ApplicationActionError.backendUnhealthy(health.status)
         }
         try components.credentialStore.save(apiKey: value)
         viewModel.keyConfigured = true
-        viewModel.backendReady = true
+        viewModel.isReplacingKey = false
+        viewModel.keyDraft = ""
         viewModel.availableModels = health.availableModels
-        viewModel.healthMessage = health.message
+        if !health.availableModels.isEmpty {
+            let picked = AppConfiguration.preferredDeepSeekModel(
+                current: configuration.deepSeekModel,
+                available: health.availableModels
+            )
+            configuration.deepSeekModel = picked
+            viewModel.deepSeekModel = picked
+        }
+        viewModel.backendReady = health.status == .healthy
+            || viewModel.availableModels.contains(
+                AppConfiguration.resolvedDeepSeekModel(configuration.deepSeekModel)
+            )
+        if health.status == .healthy {
+            viewModel.healthMessage = health.message
+        } else if viewModel.backendReady {
+            viewModel.healthMessage = "DeepSeek backend is ready"
+        } else {
+            viewModel.healthMessage = health.status.uiSafeFailureMessage
+        }
         if let backend = try? components.backendFactory.makeBackend(
             kind: configuration.backend,
             configuration: configuration,
@@ -180,6 +198,8 @@ extension ApplicationController {
     public func deleteAPIKey() async throws {
         try components.credentialStore.delete()
         viewModel.keyConfigured = false
+        viewModel.isReplacingKey = false
+        viewModel.keyDraft = ""
         viewModel.backendReady = false
         viewModel.availableModels = []
         viewModel.isAutomaticTranslationEnabled = false
@@ -234,6 +254,33 @@ extension ApplicationController {
         rebuildSession()
         queueSave()
         scheduleBackendRefresh()
+    }
+
+    public func setDeepSeekModel(_ model: String) {
+        let trimmed = AppConfiguration.resolvedDeepSeekModel(model)
+        guard trimmed.utf8.count <= 256 else { return }
+        let modelChanged = configuration.deepSeekModel != trimmed
+        configuration.deepSeekModel = trimmed
+        viewModel.deepSeekModel = trimmed
+        if !viewModel.availableModels.isEmpty, !viewModel.availableModels.contains(trimmed) {
+            viewModel.backendReady = false
+        }
+        guard modelChanged else { return }
+        backendHealthToken &+= 1
+        let previousSession = session
+        Task { await previousSession?.clearCache() }
+        rebuildSession()
+        queueSave()
+        if viewModel.backendReady, configuration.backend == .deepSeekCloud,
+           let backend = try? components.backendFactory.makeBackend(
+            kind: configuration.backend,
+            configuration: configuration,
+            credentials: components.credentialStore
+           ) {
+            applySessionBackends(overlay: backend, configuration: configuration)
+        } else {
+            scheduleBackendRefresh()
+        }
     }
 
     public func refreshPermissions() {

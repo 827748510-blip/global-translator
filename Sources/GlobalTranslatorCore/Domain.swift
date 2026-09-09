@@ -1,7 +1,7 @@
 import Foundation
 import CoreGraphics
 
-public enum BackendKind: String, Codable, Sendable, Equatable {
+public enum BackendKind: String, Codable, Sendable, Equatable, Hashable {
     case deepSeekCloud
     case local
 }

@@ -18,7 +18,7 @@ struct ReviewFixTests {
         #expect(requests[0].url?.absoluteString == "https://api.deepseek.com/responses")
         let body = try #require(requests[0].httpBody)
         let payload = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
-        #expect(payload["model"] as? String == "deepseek-v4-flash-vision-exp")
+        #expect(payload["model"] as? String == "deepseek-chat")
         let input = try #require(payload["input"] as? [[String: Any]])
         #expect(input.count == 2)
         #expect(input[0]["role"] as? String == "system")
@@ -59,7 +59,7 @@ struct ReviewFixTests {
 
     @Test
     func deepSeekHealthDiscoversFixedModelAndReadFailureIsUnavailable() async {
-        let models = Data(#"{"data":[{"id":"deepseek-v4-flash-vision-exp"}]}"#.utf8)
+        let models = Data(#"{"data":[{"id":"deepseek-chat"}]}"#.utf8)
         let transport = ReviewTransport(responses: [HTTPResponse(statusCode: 200, headers: [:], body: models)])
         let backend = DeepSeekBackend(transport: transport, credentialStore: ReviewCredentials(value: "key"))
         let healthy = await backend.healthCheck()
@@ -71,6 +71,34 @@ struct ReviewFixTests {
         let unavailable = DeepSeekBackend(transport: ReviewTransport(responses: []), credentialStore: FailingCredentials())
         let health = await unavailable.healthCheck()
         #expect(health.status == .unavailable)
+    }
+
+    @Test
+    func deepSeekUsesConfiguredModelAndHealthDoesNotRequireLegacyVisionId() async throws {
+        let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let output = #"{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"translations\":[{\"segmentId\":\"00000000-0000-0000-0000-000000000001\",\"text\":\"你好\"}]}"}]}]}"#
+        let transport = ReviewTransport(responses: [
+            HTTPResponse(statusCode: 200, headers: [:], body: Data(output.utf8))
+        ])
+        let backend = DeepSeekBackend(
+            transport: transport,
+            credentialStore: ReviewCredentials(value: "key"),
+            model: "deepseek-reasoner"
+        )
+        _ = try await backend.translate(TranslationRequest(windowRevision: 1, items: [TranslationItem(id: id, sourceText: "hello")]))
+        let body = try #require(await transport.requests.first?.httpBody)
+        let payload = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(payload["model"] as? String == "deepseek-reasoner")
+
+        let listed = Data(#"{"data":[{"id":"deepseek-chat"},{"id":"deepseek-reasoner"}]}"#.utf8)
+        let healthTransport = ReviewTransport(responses: [HTTPResponse(statusCode: 200, headers: [:], body: listed)])
+        let defaultBackend = DeepSeekBackend(
+            transport: healthTransport,
+            credentialStore: ReviewCredentials(value: "key")
+        )
+        let healthy = await defaultBackend.healthCheck()
+        #expect(healthy.status == .healthy)
+        #expect(healthy.availableModels == ["deepseek-chat", "deepseek-reasoner"])
     }
 
     @Test

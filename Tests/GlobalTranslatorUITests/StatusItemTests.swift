@@ -19,6 +19,7 @@ private final class StatusItemTestActions: SettingsActions {
     }
     func setVisionFallback(_ enabled: Bool) {}
     func setLocalConfiguration(baseURL: String, model: String) {}
+    func setDeepSeekModel(_ model: String) {}
     func requestPermission(_ kind: PermissionKind) {}
     func refreshPermissions() {}
     func openSystemSettings(_ kind: PermissionKind) {}
@@ -78,7 +79,7 @@ struct StatusItemTests {
         // Rounded corners are drawn by the content; the window is transparent.
         #expect(!panel.isOpaque)
         #expect(panel.backgroundColor == .clear)
-        #expect(panel.appearance?.name == NSAppearance(named: .aqua)?.name)
+        #expect(panel.appearance == nil)
 
         panel.orderOut(nil)
     }

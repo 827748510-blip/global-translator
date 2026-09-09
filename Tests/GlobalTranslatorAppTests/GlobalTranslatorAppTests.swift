@@ -506,6 +506,61 @@ struct ApplicationControllerTests {
         #expect(credentials.savedValues == ["draft-key"])
         #expect(controller.viewModel.keyConfigured)
         #expect(!controller.viewModel.keyDraft.contains("draft-key"))
+        #expect(!controller.viewModel.showsKeyEntry)
+        #expect(controller.configuration.deepSeekModel == AppConfiguration.defaultDeepSeekModel)
+    }
+
+    @Test
+    func switchingToDeepSeekWithStoredKeyDoesNotReopenEmptyKeyForm() async throws {
+        let credentials = RecordingCredentialStore(value: "stored-key")
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: RecordingConfigurationStore(configuration: AppConfiguration(
+                    backend: .local, localModel: "test")),
+                credentials: credentials
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let readsAfterStart = credentials.readCount
+        #expect(controller.viewModel.keyConfigured)
+        #expect(!controller.viewModel.showsKeyEntry)
+
+        controller.selectBackend(.deepSeekCloud)
+
+        #expect(controller.viewModel.selectedBackend == .deepSeekCloud)
+        #expect(controller.viewModel.keyConfigured)
+        #expect(!controller.viewModel.showsKeyEntry)
+        #expect(!controller.viewModel.isReplacingKey)
+        #expect(controller.viewModel.keyDraft == "")
+        #expect(credentials.readCount == readsAfterStart)
+        #expect(controller.modelIdentifier == AppConfiguration.defaultDeepSeekModel)
+        await controller.stop()
+    }
+
+    @Test
+    func setDeepSeekModelPersistsIdentifierAndKeepsKeyOutOfConfig() async throws {
+        let store = RecordingConfigurationStore()
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, credentials: RecordingCredentialStore(value: "stored-key"))
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        controller.viewModel.availableModels = ["deepseek-chat", "deepseek-reasoner"]
+        controller.setDeepSeekModel("deepseek-reasoner")
+        #expect(controller.configuration.deepSeekModel == "deepseek-reasoner")
+        #expect(controller.viewModel.deepSeekModel == "deepseek-reasoner")
+        #expect(controller.modelIdentifier == "deepseek-reasoner")
+        try await controller.persistence.flush()
+        let saved = await store.saved.last
+        #expect(saved?.deepSeekModel == "deepseek-reasoner")
+        let encoded = try JSONEncoder().encode(controller.configuration)
+        let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        #expect(object["apiKey"] == nil)
+        #expect(object["deepSeekModel"] as? String == "deepseek-reasoner")
+        await controller.stop()
     }
 
     @Test

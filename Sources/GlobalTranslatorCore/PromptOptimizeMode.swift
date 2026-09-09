@@ -1,7 +1,7 @@
 import Foundation
 
 /// Scene for 优化提示词. Default is workplace/social polish, not image-prompt rewrite.
-public enum PromptOptimizeMode: String, Codable, CaseIterable, Equatable, Sendable, Identifiable {
+public enum PromptOptimizeMode: String, Codable, CaseIterable, Equatable, Hashable, Sendable, Identifiable {
     case communicationPolish
     case taskInstruction
     case wordingFix

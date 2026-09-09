@@ -11,6 +11,7 @@ struct GlobalTranslatorCoreTests {
         #expect(!configuration.visionFallbackEnabled)
         #expect(configuration.localBaseURL.absoluteString == "http://127.0.0.1:11434/v1")
         #expect(configuration.localModel.isEmpty)
+        #expect(configuration.deepSeekModel == "deepseek-chat")
         #expect(configuration.translatedBundleIDs.isEmpty)
         #expect(configuration.selectionTranslateEnabled)
         #expect(configuration.promptOptimizeMode == .communicationPolish)
@@ -32,6 +33,7 @@ struct GlobalTranslatorCoreTests {
         #expect(decoded.autoTranslateEnabled)
         #expect(decoded.selectionTranslateEnabled)
         #expect(decoded.promptOptimizeMode == .communicationPolish)
+        #expect(decoded.deepSeekModel == "deepseek-chat")
 
         let allowJSON = Data(#"{"translatedBundleIDs":["com.google.Chrome"]}"#.utf8)
         let allow = try JSONDecoder().decode(AppConfiguration.self, from: allowJSON)
@@ -60,6 +62,26 @@ struct GlobalTranslatorCoreTests {
         let encoded = try JSONEncoder().encode(AppConfiguration(promptOptimizeMode: .communicationPolish))
         let object = try #require(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         #expect(object["promptOptimizeMode"] as? String == "communicationPolish")
+        #expect(object["deepSeekModel"] as? String == "deepseek-chat")
+        #expect(object["apiKey"] == nil)
+    }
+
+    @Test
+    func deepSeekModelPrefersConfiguredThenDefaultThenFirstAvailable() {
+        #expect(AppConfiguration.resolvedDeepSeekModel("  ") == "deepseek-chat")
+        #expect(AppConfiguration.resolvedDeepSeekModel("deepseek-reasoner") == "deepseek-reasoner")
+        #expect(AppConfiguration.preferredDeepSeekModel(
+            current: "deepseek-reasoner",
+            available: ["deepseek-chat", "deepseek-reasoner"]
+        ) == "deepseek-reasoner")
+        #expect(AppConfiguration.preferredDeepSeekModel(
+            current: "gone",
+            available: ["other", "deepseek-chat"]
+        ) == "deepseek-chat")
+        #expect(AppConfiguration.preferredDeepSeekModel(
+            current: "gone",
+            available: ["only-this"]
+        ) == "only-this")
     }
 
     @Test

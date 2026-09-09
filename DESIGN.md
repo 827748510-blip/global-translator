@@ -66,9 +66,12 @@ All tokens resolve to system semantics in `DesignTokens.swift`; no raw values.
 - **Color:** `Color.primary` / `Color.secondary` for text hierarchy; `Color.accentColor` for
   the single primary action; `Color(nsColor: .systemRed)` reserved for destructive labels and
   error text; `Color(nsColor: .controlBackgroundColor)` for filled section backgrounds.
-- **Material / tonal depth:** popover uses `NSVisualEffectView` (`.popover` material, system
-  provided by NSPopover); overlay uses `.regularMaterial` over `.thinMaterial` vibrancy with a
-  **solid fallback** (`NSColor.windowBackgroundColor`) when Reduce Transparency is on.
+  Popup chrome (`GTColor.panelBackground`) is **solid white** in light appearance and the
+  system window background in dark appearance — never `.regularMaterial` / grey tint.
+- **Material / tonal depth:** settings and 滑词 popovers use the solid panel token so they
+  follow System Settings light/dark automatically. Overlay translation bubbles keep
+  `.regularMaterial` over `.thinMaterial` vibrancy with the same solid panel fallback when
+  Reduce Transparency is on.
 - **Status tokens:** state → SF Symbol + text mapping is centralized (`MenuBarStatus`), so the
   status item, popover header, and VoiceOver always agree.
 
@@ -89,8 +92,10 @@ disabled (real `disabled`, with a textual reason nearby), loading (spinner + lab
 disabled), error (red text plus preserved input), empty (textual, e.g. "未添加排除应用",
 "未获取模型列表").**
 
-- Secure key field: empty draft → Save disabled; configured → "已配置 · 不显示" status text,
-  Replace flow, Delete requires confirmation; failure keeps the draft and shows the message.
+- Secure key field: unconfigured → empty draft, Save disabled until non-empty;
+  configured → "已配置 · 钥匙串保存", no SecureField until 替换密钥; Delete requires
+  confirmation; failure keeps the draft and shows the message. Switching to DeepSeek
+  with a stored Keychain item must not reopen the empty key form.
 - Connection test: idle → testing (progress) → healthy (message text) / failed (error text).
 - Permission rows: granted → "已授权"; missing → "未授权" + buttons (授权 / 打开系统设置).
 - Buttons: primary uses `.borderedProminent` sparingly (Save); others `.bordered`; destructive
@@ -113,9 +118,10 @@ disabled), error (red text plus preserved input), empty (textual, e.g. "未添�
   value text (permission status read as words); hit areas ≥ 44pt where practical.
 - Overlay: `ignoresMouseEvents`, nonactivating, excluded from the window cycle; it is visual
   output only and never steals focus from the user's real work.
-- Reduced Transparency → solid overlay background; overlays have no fade at all (Reduce
-  Motion is system-managed for the popover only). Dynamic Type respected throughout via
-  system text styles.
+- Settings and 滑词 popovers use a solid panel background (white / system dark) so Dark Mode
+  follows the computer appearance; Reduced Transparency does not change that fill. Overlay
+  bubbles still use a solid fallback when Reduce Transparency is on. Dynamic Type is
+  respected throughout via system text styles.
 
 ## 8. Personas & Runtime QA
 

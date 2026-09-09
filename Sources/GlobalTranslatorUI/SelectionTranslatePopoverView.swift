@@ -29,8 +29,6 @@ public struct SelectionTranslatePopoverView: View {
     var onOptimize: () -> Void = {}
     var onOptimizeModeChange: (PromptOptimizeMode) -> Void = { _ in }
 
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
     public init(
         content: SelectionPopoverContent,
         chrome: SelectionPopoverChrome,
@@ -98,21 +96,17 @@ public struct SelectionTranslatePopoverView: View {
                 )
             }
             if content.showsActionButtons {
-                HStack(spacing: GTSpacing.xSmall) {
+                GTEqualWidthHStack(spacing: GTSpacing.xSmall) {
                     if content.showsTranslateAction {
                         Button("翻译", action: onTranslate)
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
+                            .buttonStyle(GTEqualFillButtonStyle())
                             .disabled(content.status == .loading)
-                            .frame(maxWidth: .infinity)
                             .accessibilityHint("把选区译成简体中文")
                     }
                     if content.showsOptimizeAction {
                         Button("优化提示词", action: onOptimize)
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
+                            .buttonStyle(GTEqualFillButtonStyle())
                             .disabled(content.status == .optimizing)
-                            .frame(maxWidth: .infinity)
                             .accessibilityHint(chrome.optimizeMode.optimizeAccessibilityHint)
                     }
                     if content.allowsCopy {
@@ -124,15 +118,14 @@ public struct SelectionTranslatePopoverView: View {
                                 }
                                 Text(chrome.copyFeedback.title)
                             }
-                            .frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .frame(maxWidth: .infinity)
+                        .buttonStyle(GTEqualFillButtonStyle())
                         .accessibilityLabel(chrome.copyFeedback.title)
                         .accessibilityHint(chrome.copyFeedback == .idle ? "将结果复制到剪贴板" : chrome.copyFeedback.title)
                     }
                 }
+                .frame(height: GTSelectionMetrics.actionRowHeight)
+                .frame(maxWidth: .infinity)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -167,13 +160,8 @@ public struct SelectionTranslatePopoverView: View {
         }
     }
 
-    @ViewBuilder
     private var background: some View {
-        if reduceTransparency {
-            GTColor.overlaySolidFallback
-        } else {
-            Rectangle().fill(.regularMaterial)
-        }
+        GTColor.panelBackground
     }
 }
 
