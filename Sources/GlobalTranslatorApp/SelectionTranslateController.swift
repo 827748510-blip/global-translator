@@ -100,6 +100,10 @@ public final class SelectionTranslateController {
 
     private var enabled = false
     private var pointer = SelectionPointerState()
+    /// Scene-menu / popover presses must still update `pointer`, but must not
+    /// settle or dismiss. The menu window often closes before mouse-up, so the
+    /// matching `.up` lands outside `containsInteraction`.
+    private var pointerPressBeganOnOwnedUI = false
     private var settleGate = SelectionSettleGate()
     private var settleTask: Task<Void, Never>?
     private var translateTask: Task<Void, Never>?
@@ -181,10 +185,17 @@ public final class SelectionTranslateController {
 
     public func handlePointer(_ phase: SelectionPointerPhase, location: CGPoint) {
         guard enabled else { return }
-        if popover.containsInteraction(at: location) {
-            return
+        let onOwnedUI = popover.containsInteraction(at: location)
+        if phase == .down {
+            pointerPressBeganOnOwnedUI = onOwnedUI
         }
-        switch pointer.handle(phase) {
+        let action = pointer.handle(phase)
+        let swallow = pointerPressBeganOnOwnedUI || onOwnedUI
+        if phase == .up {
+            pointerPressBeganOnOwnedUI = false
+        }
+        guard !swallow else { return }
+        switch action {
         case .cancelPending:
             suppressCurrentSelectionIfShowing()
             cancelSettle()
@@ -211,6 +222,7 @@ public final class SelectionTranslateController {
 
     private func stopWork() {
         suppressedSource = nil
+        pointerPressBeganOnOwnedUI = false
         cancelSettle()
         cancelPresentation()
         popover.dismiss()

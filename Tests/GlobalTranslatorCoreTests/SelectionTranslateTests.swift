@@ -98,7 +98,7 @@ struct SelectionPointerAndDebounceTests {
         var state = SelectionPointerState()
         #expect(state.handle(.dragged) == .ignore)
         #expect(!state.didDrag)
-        #expect(state.handle(.up) == .scheduleSettle)
+        #expect(state.handle(.up) == .ignore)
         #expect(!state.didDrag)
     }
 

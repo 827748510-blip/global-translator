@@ -22,7 +22,8 @@ public enum SelectionPointerAction: Equatable, Sendable {
 }
 
 /// Mouse-up selection must not pop while the button is still down. Down and
-/// drag cancel any pending settle; up schedules one.
+/// drag cancel any pending settle; a matching up schedules one. Up with no
+/// prior down is ignored so a swallowed menu press cannot resettle.
 public struct SelectionPointerState: Equatable, Sendable {
     public private(set) var isButtonDown = false
     /// True when this press included a drag. Click-without-drag is not a
@@ -42,8 +43,9 @@ public struct SelectionPointerState: Equatable, Sendable {
             if isButtonDown { didDrag = true }
             return isButtonDown ? .cancelPending : .ignore
         case .up:
+            let wasDown = isButtonDown
             isButtonDown = false
-            return .scheduleSettle
+            return wasDown ? .scheduleSettle : .ignore
         }
     }
 }

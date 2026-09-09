@@ -89,6 +89,33 @@ struct SelectionTranslateControllerTests {
     }
 
     @Test
+    func sceneMenuReleaseAfterMenuClosesDoesNotResettleSelection() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Hello world")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "你好，世界"
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        dragSelect(controller)
+        try await waitUntil { popover.currentContent?.status == .translated }
+        let readsBefore = reader.readCount
+        let clipboardBefore = reader.clipboardFallbackUseCount
+        let dismissesBefore = popover.dismissCount
+
+        popover.extraInteractionFrames = [CGRect(x: 400, y: 400, width: 120, height: 80)]
+        controller.handlePointer(.down, location: CGPoint(x: 430, y: 430))
+        popover.extraInteractionFrames = []
+        controller.handlePointer(.up, location: CGPoint(x: 430, y: 430))
+
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(popover.currentContent?.status == .translated)
+        #expect(popover.currentContent?.displayTranslation == "你好，世界")
+        #expect(popover.dismissCount == dismissesBefore)
+        #expect(reader.readCount == readsBefore)
+        #expect(reader.clipboardFallbackUseCount == clipboardBefore)
+    }
+
+    @Test
     func draggingDoesNotReadUntilMouseUpSettles() async throws {
         let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Hello world")))
         let popover = FakeSelectionPopover()
