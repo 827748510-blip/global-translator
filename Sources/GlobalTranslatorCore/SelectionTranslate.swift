@@ -237,6 +237,7 @@ public enum SelectionTranslateSupport {
     public static let defaultTargetLanguage = "zh-Hans"
     public static let optimizingCopy = "优化中…"
     public static let optimizeFailedCopy = "优化失败"
+    public static let copyFeedbackMilliseconds = 1_500
 
     public static func truncatedOriginal(_ text: String, limit: Int = originalPreviewLimit) -> String {
         let compact = text.split(whereSeparator: { $0.isNewline }).joined(separator: " ")

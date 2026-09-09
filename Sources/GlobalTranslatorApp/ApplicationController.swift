@@ -200,6 +200,10 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             ownBundleIdentifiers: own
         )
         selectionTranslate = controller
+        controller.setOptimizeMode(configuration.promptOptimizeMode)
+        controller.onOptimizeModeChange = { [weak self] mode in
+            self?.setPromptOptimizeMode(mode)
+        }
         controller.setEnabled(configuration.selectionTranslateEnabled)
     }
 

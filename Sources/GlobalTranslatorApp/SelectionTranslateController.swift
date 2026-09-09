@@ -24,7 +24,7 @@ public enum SelectionTranslateError: Error, Equatable, Sendable, UISafeError {
 @MainActor
 public protocol SelectionTranslating: AnyObject {
     func translateSelection(_ text: String) async throws -> String
-    func optimizePrompt(_ text: String) async throws -> String
+    func optimizePrompt(_ text: String, mode: PromptOptimizeMode) async throws -> String
 }
 
 @MainActor
@@ -108,6 +108,8 @@ public final class SelectionTranslateController {
     /// Source text the user just dismissed (Esc / outside click / new press).
     /// Settle will not re-show it until the selection changes or becomes empty.
     private var suppressedSource: String?
+    private var optimizeMode: PromptOptimizeMode = .generativePrompt
+    public var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
 
     public var isEnabled: Bool { enabled }
 
@@ -149,6 +151,15 @@ public final class SelectionTranslateController {
         wired.onOptimize = { [weak self] in
             self?.performOptimize()
         }
+        wired.onOptimizeModeChange = { [weak self] mode in
+            self?.handleOptimizeModeChange(mode)
+        }
+        wired.optimizeMode = optimizeMode
+    }
+
+    public func setOptimizeMode(_ mode: PromptOptimizeMode) {
+        optimizeMode = mode
+        popover.optimizeMode = mode
     }
 
     public func setEnabled(_ enabled: Bool) {
@@ -294,6 +305,13 @@ public final class SelectionTranslateController {
         }
     }
 
+    private func handleOptimizeModeChange(_ mode: PromptOptimizeMode) {
+        guard optimizeMode != mode else { return }
+        optimizeMode = mode
+        popover.optimizeMode = mode
+        onOptimizeModeChange?(mode)
+    }
+
     private func performOptimize() {
         guard enabled, let content = popover.currentContent, !content.original.isEmpty else { return }
         guard TextFilter.shouldOfferPromptOptimization(content.original, targetLanguage: targetLanguage) else { return }
@@ -403,7 +421,7 @@ public final class SelectionTranslateController {
         }
         translateTask = Task { @MainActor [weak self] in
             do {
-                let optimized = try await translator.optimizePrompt(original)
+                let optimized = try await translator.optimizePrompt(original, mode: optimizeMode)
                 guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
                 let text = optimized.trimmingCharacters(in: .whitespacesAndNewlines)
                 if text.isEmpty {

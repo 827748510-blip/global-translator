@@ -442,9 +442,31 @@ struct SelectionTranslateControllerTests {
         try await waitUntil { popover.currentContent?.status == .optimized }
         #expect(translator.texts.isEmpty)
         #expect(translator.optimizedTexts == ["一个女孩站在雨里"])
+        #expect(translator.optimizedModes == [.generativePrompt])
         #expect(popover.currentContent?.displayTranslation == translator.optimizeResult)
         #expect(popover.currentContent?.allowsCopy == true)
         #expect(popover.currentContent?.copyText == translator.optimizeResult)
+    }
+
+    @Test
+    func optimizeUsesSelectedSceneMode() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("这段代码写得不清楚")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.optimizeResult = "这段实现把错误路径写清楚了。"
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        controller.setOptimizeMode(.technicalExpression)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .alreadyChinese }
+        popover.simulateOptimize()
+        try await waitUntil { popover.currentContent?.status == .optimized }
+        #expect(translator.optimizedModes == [.technicalExpression])
+        popover.simulateOptimizeMode(.professionalReply)
+        popover.simulateOptimize()
+        try await waitUntil { translator.optimizedModes.count == 2 }
+        #expect(translator.optimizedModes == [.technicalExpression, .professionalReply])
+        #expect(popover.optimizeMode == .professionalReply)
     }
 
     @Test
@@ -544,6 +566,28 @@ extension ApplicationControllerTests {
     }
 
     @Test
+    func promptOptimizeModePersistsLikeOtherSettings() async throws {
+        let store = RecordingConfigurationStore()
+        let popover = FakeSelectionPopover()
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, selectionPopover: popover)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        #expect(controller.configuration.promptOptimizeMode == .generativePrompt)
+        controller.setPromptOptimizeMode(.highEQ)
+        try await controller.persistence.flush()
+        #expect(controller.configuration.promptOptimizeMode == .highEQ)
+        #expect(await store.saved.last?.promptOptimizeMode == .highEQ)
+        popover.simulateOptimizeMode(.wordingFix)
+        try await controller.persistence.flush()
+        #expect(controller.configuration.promptOptimizeMode == .wordingFix)
+        #expect(await store.saved.last?.promptOptimizeMode == .wordingFix)
+        await controller.stop()
+    }
+
+    @Test
     func selectionTranslateWorksWhenChromeOverlayIsSkipped() async throws {
         let monitor = FakeWindowMonitor()
         let capture = CountingCapturePipeline()
@@ -616,6 +660,32 @@ extension ApplicationControllerTests {
         )
         #expect(try await session.optimizePrompt("一个女孩站在雨里") == "优化 一个女孩站在雨里")
         #expect(try await session.optimizePrompt("Swift 6 + SwiftUI + ScreenCaptureKit") == "优化 Swift 6 + SwiftUI + ScreenCaptureKit")
+        await controller.stop()
+    }
+
+    @Test
+    func optimizePromptSendsDistinctInstructionsPerMode() async throws {
+        let coordinator = RecordingPlainCoordinator()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: false, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, coordinator: coordinator)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        _ = try await session.optimizePrompt("把这段写清楚", mode: .technicalExpression)
+        _ = try await session.optimizePrompt("把这段写清楚", mode: .professionalReply)
+        let systems = await coordinator.systems
+        let users = await coordinator.users
+        #expect(systems.count == 2)
+        #expect(systems[0].contains("technical or code-related"))
+        #expect(systems[1].contains("professional workplace reply"))
+        #expect(systems[0] != systems[1])
+        #expect(users[0].contains("clearer technical expression"))
+        #expect(users[1].contains("professional workplace reply"))
+        #expect(systems.allSatisfy { $0.contains("untrusted data") })
         await controller.stop()
     }
 }

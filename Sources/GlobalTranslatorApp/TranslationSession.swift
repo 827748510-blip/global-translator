@@ -333,6 +333,10 @@ public final class TranslationSession {
     /// already-Chinese skip is translate-only). Uses the selection coordinator's
     /// `completePlain` so overlay/bridge JSON translation is not involved.
     public func optimizePrompt(_ text: String) async throws -> String {
+        try await optimizePrompt(text, mode: .generativePrompt)
+    }
+
+    public func optimizePrompt(_ text: String, mode: PromptOptimizeMode) async throws -> String {
         guard let coordinator = selectionCoordinator else { throw SelectionTranslateError.translatorUnavailable }
         let capped = SelectionTranslateSupport.cappedSource(text)
         guard TextFilter.shouldOfferPromptOptimization(capped) else {
@@ -340,8 +344,8 @@ public final class TranslationSession {
         }
         await coordinator.selectBackend(kind: backend, modelIdentifier: model)
         let optimized = try await coordinator.completePlain(
-            system: PromptOptimizationInstructions.system,
-            user: PromptOptimizationInstructions.userContent(for: capped),
+            system: PromptOptimizationInstructions.system(for: mode),
+            user: PromptOptimizationInstructions.userContent(for: capped, mode: mode),
             backend: backend
         )
         let trimmed = optimized.trimmingCharacters(in: .whitespacesAndNewlines)

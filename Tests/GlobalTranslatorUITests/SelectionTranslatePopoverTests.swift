@@ -37,6 +37,7 @@ struct SelectionTranslatePopoverTests {
         #expect(controller.currentContent?.copyText == "你好，世界")
         controller.copyCurrentTranslation()
         #expect(copied == ["你好，世界"])
+        #expect(controller.copyFeedback == .copied)
         let size = SelectionTranslatePanelController.contentSize(for: content)
         #expect(size.width == GTSelectionMetrics.width)
         #expect(size.height >= 44)
@@ -44,10 +45,59 @@ struct SelectionTranslatePopoverTests {
         #expect(controller.currentContent == nil)
         #expect(controller.panelFrame == nil)
         #expect(copied == ["你好，世界"])
+        #expect(controller.copyFeedback == .idle)
     }
 
     @Test
-    func contentSizeIncludesCopyButtonOnlyWhenAllowed() {
+    func copyButtonShowsCopiedThenReturnsToCopy() async throws {
+        var copied: [String] = []
+        let controller = SelectionTranslatePanelController(
+            visibleFramesProvider: { [CGRect(x: 0, y: 0, width: 1440, height: 875)] },
+            pasteboardWriter: { copied.append($0) },
+            copyFeedbackDelay: .milliseconds(40)
+        )
+        controller.show(.translated(
+            original: "Hello world",
+            translation: "你好，世界",
+            screenFrame: CGRect(x: 100, y: 300, width: 120, height: 18)
+        ))
+        #expect(controller.copyFeedback == .idle)
+        #expect(SelectionCopyFeedback.idle.title == "拷贝")
+        controller.copyCurrentTranslation()
+        #expect(copied == ["你好，世界"])
+        #expect(controller.copyFeedback == .copied)
+        #expect(SelectionCopyFeedback.copied.title == "已拷贝")
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(controller.copyFeedback == .idle)
+        controller.dismiss()
+    }
+
+    @Test
+    func copyFailureShowsFailedFeedbackOnCopyableStates() async throws {
+        struct WriteFailed: Error {}
+        let controller = SelectionTranslatePanelController(
+            visibleFramesProvider: { [CGRect(x: 0, y: 0, width: 1440, height: 875)] },
+            pasteboardWriter: { _ in throw WriteFailed() },
+            copyFeedbackDelay: .milliseconds(40)
+        )
+        let states: [SelectionPopoverContent] = [
+            .translated(original: "Hello", translation: "你好", screenFrame: .zero),
+            .optimized(original: "Hello", prompt: "电影感雨景", screenFrame: .zero),
+            .alreadyChinese(original: "一个女孩站在雨里", screenFrame: .zero),
+            .noTranslationNeeded(original: "Swift 6 + SwiftUI + ScreenCaptureKit", screenFrame: .zero)
+        ]
+        for content in states {
+            controller.show(content)
+            #expect(content.allowsCopy)
+            controller.copyCurrentTranslation()
+            #expect(controller.copyFeedback == .failed)
+            #expect(SelectionCopyFeedback.failed.title == "拷贝失败")
+        }
+        controller.dismiss()
+    }
+
+    @Test
+    func contentSizeIncludesModePickerAndCopyButton() {
         let loading = SelectionPopoverContent.loading(
             original: "Hello",
             screenFrame: CGRect(x: 0, y: 0, width: 10, height: 10)
@@ -125,6 +175,8 @@ struct SelectionTranslatePopoverTests {
             + originalHeight
             + GTSpacing.xSmall
             + body.height
+            + GTSpacing.xSmall
+            + GTSelectionMetrics.modePickerHeight
             + GTSpacing.xSmall
             + 28
         #expect(size.height >= expectedMin - 0.5)

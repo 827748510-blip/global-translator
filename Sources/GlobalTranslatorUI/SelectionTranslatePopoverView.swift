@@ -4,22 +4,31 @@ import GlobalTranslatorCore
 /// Interactive selection popover: truncated original, result, 翻译 / 优化提示词 / 拷贝.
 public struct SelectionTranslatePopoverView: View {
     let content: SelectionPopoverContent
+    var optimizeMode: PromptOptimizeMode = .generativePrompt
+    var copyFeedback: SelectionCopyFeedback = .idle
     var onCopy: () -> Void = {}
     var onTranslate: () -> Void = {}
     var onOptimize: () -> Void = {}
+    var onOptimizeModeChange: (PromptOptimizeMode) -> Void = { _ in }
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     public init(
         content: SelectionPopoverContent,
+        optimizeMode: PromptOptimizeMode = .generativePrompt,
+        copyFeedback: SelectionCopyFeedback = .idle,
         onCopy: @escaping () -> Void = {},
         onTranslate: @escaping () -> Void = {},
-        onOptimize: @escaping () -> Void = {}
+        onOptimize: @escaping () -> Void = {},
+        onOptimizeModeChange: @escaping (PromptOptimizeMode) -> Void = { _ in }
     ) {
         self.content = content
+        self.optimizeMode = optimizeMode
+        self.copyFeedback = copyFeedback
         self.onCopy = onCopy
         self.onTranslate = onTranslate
         self.onOptimize = onOptimize
+        self.onOptimizeModeChange = onOptimizeModeChange
     }
 
     public var body: some View {
@@ -43,6 +52,19 @@ public struct SelectionTranslatePopoverView: View {
                 .textSelection(.enabled)
                 .accessibilityLabel(resultAccessibilityLabel)
                 .accessibilityValue(content.displayTranslation)
+            if content.showsOptimizeAction {
+                Picker("优化场景", selection: modeBinding) {
+                    ForEach(PromptOptimizeMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.menu)
+                .controlSize(.small)
+                .labelsHidden()
+                .disabled(content.status == .optimizing)
+                .accessibilityLabel("优化场景")
+                .accessibilityValue(optimizeMode.title)
+            }
             if content.showsActionButtons {
                 HStack(spacing: GTSpacing.xSmall) {
                     if content.showsTranslateAction {
@@ -57,13 +79,22 @@ public struct SelectionTranslatePopoverView: View {
                             .buttonStyle(.bordered)
                             .controlSize(.small)
                             .disabled(content.status == .optimizing)
-                            .accessibilityHint("把草稿改写成通用生成提示词")
+                            .accessibilityHint(optimizeMode.optimizeAccessibilityHint)
                     }
                     if content.allowsCopy {
-                        Button("拷贝", action: onCopy)
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .accessibilityHint("将结果复制到剪贴板")
+                        Button(action: onCopy) {
+                            HStack(spacing: GTSpacing.xxSmall) {
+                                if copyFeedback == .copied {
+                                    Image(systemName: "checkmark")
+                                        .accessibilityHidden(true)
+                                }
+                                Text(copyFeedback.title)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .accessibilityLabel(copyFeedback.title)
+                        .accessibilityHint(copyFeedback == .idle ? "将结果复制到剪贴板" : copyFeedback.title)
                     }
                 }
             }
@@ -74,6 +105,13 @@ public struct SelectionTranslatePopoverView: View {
         .background(background)
         .clipShape(RoundedRectangle(cornerRadius: GTRadius.overlay, style: .continuous))
         .accessibilityElement(children: .contain)
+    }
+
+    private var modeBinding: Binding<PromptOptimizeMode> {
+        Binding(
+            get: { optimizeMode },
+            set: { onOptimizeModeChange($0) }
+        )
     }
 
     private var resultAccessibilityLabel: String {

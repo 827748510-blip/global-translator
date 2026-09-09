@@ -91,6 +91,9 @@ public protocol SelectionPopoverControlling: AnyObject {
     var onUserDismiss: (() -> Void)? { get set }
     var onTranslate: (() -> Void)? { get set }
     var onOptimize: (() -> Void)? { get set }
+    var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)? { get set }
+    var optimizeMode: PromptOptimizeMode { get set }
+    var copyFeedback: SelectionCopyFeedback { get }
     func show(_ content: SelectionPopoverContent)
     func dismiss()
 }
@@ -102,6 +105,9 @@ public final class NullSelectionPopover: SelectionPopoverControlling {
     public var onUserDismiss: (() -> Void)?
     public var onTranslate: (() -> Void)?
     public var onOptimize: (() -> Void)?
+    public var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
+    public var optimizeMode: PromptOptimizeMode = .generativePrompt
+    public var copyFeedback: SelectionCopyFeedback { .idle }
     public init() {}
     public func show(_ content: SelectionPopoverContent) { currentContent = content }
     public func dismiss() { currentContent = nil }
@@ -114,27 +120,48 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     public var onUserDismiss: (() -> Void)?
     public var onTranslate: (() -> Void)?
     public var onOptimize: (() -> Void)?
+    public var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
+    public var optimizeMode: PromptOptimizeMode = .generativePrompt {
+        didSet {
+            guard oldValue != optimizeMode, currentContent != nil else { return }
+            presentCurrent(resize: true)
+        }
+    }
+    public private(set) var copyFeedback: SelectionCopyFeedback = .idle
 
     private var panel: SelectionTranslatePanel?
     private let visibleFramesProvider: () -> [CGRect]
-    private let pasteboardWriter: (String) -> Void
+    private let pasteboardWriter: (String) throws -> Void
+    private let copyFeedbackDelay: Duration
+    private var copyFeedbackTask: Task<Void, Never>?
 
     public var panelFrame: CGRect? { panel?.isVisible == true ? panel?.frame : nil }
 
     public init(
         visibleFramesProvider: @escaping () -> [CGRect] = { NSScreen.screens.map(\.visibleFrame) },
-        pasteboardWriter: @escaping (String) -> Void = { text in
+        pasteboardWriter: @escaping (String) throws -> Void = { text in
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
-            pasteboard.setString(text, forType: .string)
-        }
+            guard pasteboard.setString(text, forType: .string) else {
+                throw SelectionCopyError.writeFailed
+            }
+        },
+        copyFeedbackDelay: Duration = .milliseconds(SelectionTranslateSupport.copyFeedbackMilliseconds)
     ) {
         self.visibleFramesProvider = visibleFramesProvider
         self.pasteboardWriter = pasteboardWriter
+        self.copyFeedbackDelay = copyFeedbackDelay
     }
 
     public func show(_ content: SelectionPopoverContent) {
+        copyFeedbackTask?.cancel()
+        copyFeedback = .idle
         currentContent = content
+        presentCurrent(resize: true)
+    }
+
+    private func presentCurrent(resize: Bool) {
+        guard let content = currentContent else { return }
         let visibleFrames = visibleFramesProvider()
         let origin = content.screenFrame.origin
         guard let visibleFrame = OverlayLayout.owningVisibleFrame(for: origin, in: visibleFrames) else {
@@ -149,13 +176,21 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
         )
         let hosting = NSHostingView(rootView: SelectionTranslatePopoverView(
             content: content,
+            optimizeMode: optimizeMode,
+            copyFeedback: copyFeedback,
             onCopy: { [weak self] in self?.copyCurrentTranslation() },
             onTranslate: { [weak self] in self?.onTranslate?() },
-            onOptimize: { [weak self] in self?.onOptimize?() }
+            onOptimize: { [weak self] in self?.onOptimize?() },
+            onOptimizeModeChange: { [weak self] mode in
+                self?.optimizeMode = mode
+                self?.onOptimizeModeChange?(mode)
+            }
         ))
         if let panel {
             panel.contentView = hosting
-            panel.setFrame(frame, display: true)
+            if resize {
+                panel.setFrame(frame, display: true)
+            }
             if !panel.isVisible {
                 panel.startDismissalMonitors()
                 panel.orderFrontRegardless()
@@ -172,6 +207,9 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     }
 
     public func dismiss() {
+        copyFeedbackTask?.cancel()
+        copyFeedbackTask = nil
+        copyFeedback = .idle
         currentContent = nil
         panel?.stopDismissalMonitors()
         panel?.orderOut(nil)
@@ -184,12 +222,32 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     }
 
     /// Test seam and Copy button path: writes the displayed translation
-    /// (or the original when the status is 已是中文).
+    /// (or the original when the status is 已是中文 / 无需翻译).
     public func copyCurrentTranslation() {
         guard let current = currentContent, current.allowsCopy else { return }
         let text = current.copyText
-        onCopy?(text)
-        pasteboardWriter(text)
+        do {
+            try pasteboardWriter(text)
+            onCopy?(text)
+            applyCopyFeedback(.copied)
+        } catch {
+            applyCopyFeedback(.failed)
+        }
+    }
+
+    private func applyCopyFeedback(_ feedback: SelectionCopyFeedback) {
+        copyFeedbackTask?.cancel()
+        copyFeedback = feedback
+        presentCurrent(resize: true)
+        copyFeedbackTask = Task { @MainActor [weak self] in
+            guard let delay = self?.copyFeedbackDelay else { return }
+            try? await Task.sleep(for: delay)
+            guard let self, !Task.isCancelled else { return }
+            self.copyFeedback = .idle
+            if self.currentContent != nil {
+                self.presentCurrent(resize: true)
+            }
+        }
     }
 
     public static func contentSize(for content: SelectionPopoverContent) -> CGSize {
@@ -210,6 +268,9 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
             maxLines: GTSelectionMetrics.maxTranslationLines,
             font: NSFont.preferredFont(forTextStyle: .body)
         ).height
+        if content.showsOptimizeAction {
+            height += GTSpacing.xSmall + GTSelectionMetrics.modePickerHeight
+        }
         if content.showsActionButtons {
             height += GTSpacing.xSmall + 28
         }

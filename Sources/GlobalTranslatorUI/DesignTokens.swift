@@ -66,4 +66,5 @@ public enum GTSelectionMetrics {
     public static let width: CGFloat = 280
     public static let maxOriginalLines = 2
     public static let maxTranslationLines = 8
+    public static let modePickerHeight: CGFloat = 22
 }

@@ -114,6 +114,16 @@ extension ApplicationController {
         queueSave()
     }
 
+    public func setPromptOptimizeMode(_ mode: PromptOptimizeMode) {
+        guard configuration.promptOptimizeMode != mode else {
+            selectionTranslate?.setOptimizeMode(mode)
+            return
+        }
+        configuration.promptOptimizeMode = mode
+        selectionTranslate?.setOptimizeMode(mode)
+        queueSave()
+    }
+
     public func selectBackend(_ kind: BackendKind) {
         guard configuration.backend != kind else { return }
         backendHealthToken &+= 1

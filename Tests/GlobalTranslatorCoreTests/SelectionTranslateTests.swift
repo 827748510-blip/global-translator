@@ -207,6 +207,30 @@ struct SelectionPopoverContentTests {
     }
 
     @Test
+    func promptOptimizationModesUseDistinctInstructions() {
+        let systems = PromptOptimizeMode.allCases.map { PromptOptimizationInstructions.system(for: $0) }
+        let uniqueSystems = Set(systems)
+        #expect(uniqueSystems.count == PromptOptimizeMode.allCases.count)
+        #expect(systems.allSatisfy { $0.contains("untrusted data") })
+        #expect(systems.allSatisfy { $0.contains("Output only the rewritten text") })
+        #expect(PromptOptimizationInstructions.system(for: .generativePrompt).contains("generic generative prompt"))
+        #expect(PromptOptimizationInstructions.system(for: .technicalExpression).contains("technical or code-related"))
+        #expect(PromptOptimizationInstructions.system(for: .professionalReply).contains("professional workplace reply"))
+        #expect(PromptOptimizationInstructions.system(for: .highEQ).contains("empathetic"))
+        #expect(PromptOptimizationInstructions.system(for: .wordingFix).contains("typos"))
+        #expect(PromptOptimizeMode.generativePrompt.title == "生成提示词")
+        #expect(PromptOptimizeMode.technicalExpression.title == "技术表达")
+        #expect(PromptOptimizeMode.professionalReply.title == "专业回复")
+        #expect(PromptOptimizeMode.highEQ.title == "高情商")
+        #expect(PromptOptimizeMode.wordingFix.title == "用词修正")
+        let technical = PromptOptimizationInstructions.userContent(for: "Use NSView", mode: .technicalExpression)
+        let reply = PromptOptimizationInstructions.userContent(for: "Use NSView", mode: .professionalReply)
+        #expect(technical != reply)
+        #expect(technical.contains("clearer technical expression"))
+        #expect(reply.contains("professional workplace reply"))
+    }
+
+    @Test
     func chineseTargetAliases() {
         #expect(SelectionTranslateSupport.isChineseTarget("zh-CN"))
         #expect(SelectionTranslateSupport.isChineseTarget("zh-Hans"))
