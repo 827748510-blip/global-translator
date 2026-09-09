@@ -14,6 +14,7 @@ private final class SpyActions: SettingsActions {
 
     var automaticValues: [Bool] = []
     var selectionTranslateValues: [Bool] = []
+    var videoTranslateValues: [Bool] = []
     var promptOptimizeModes: [PromptOptimizeMode] = []
     var selectedBackends: [BackendKind] = []
     var savedKeyDrafts: [String] = []
@@ -42,6 +43,10 @@ private final class SpyActions: SettingsActions {
 
     func setSelectionTranslate(_ enabled: Bool) {
         selectionTranslateValues.append(enabled)
+    }
+
+    func setVideoTranslate(_ enabled: Bool) {
+        videoTranslateValues.append(enabled)
     }
 
     func setPromptOptimizeMode(_ mode: PromptOptimizeMode) {
@@ -277,6 +282,20 @@ struct SettingsViewModelTests {
         #expect(actions.selectionTranslateValues == [false, true])
         viewModel.setSelectionTranslate(true)
         #expect(actions.selectionTranslateValues == [false, true])
+    }
+
+    @Test
+    func videoTranslateToggleDefaultsOffAndForwards() {
+        let (viewModel, actions) = makeViewModel()
+        #expect(!viewModel.isVideoTranslateEnabled)
+        viewModel.setVideoTranslate(true)
+        #expect(viewModel.isVideoTranslateEnabled)
+        #expect(actions.videoTranslateValues == [true])
+        viewModel.setVideoTranslate(false)
+        #expect(!viewModel.isVideoTranslateEnabled)
+        #expect(actions.videoTranslateValues == [true, false])
+        viewModel.setVideoTranslate(false)
+        #expect(actions.videoTranslateValues == [true, false])
     }
 
     @Test

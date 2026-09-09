@@ -29,7 +29,7 @@ public struct ExtensionBridgeTranslation: Equatable, Sendable {
 /// listener never leaves the loopback interface.
 ///
 /// Protocol:
-///   GET  /health     -> 200 {"ok":true}
+///   GET  /health     -> 200 {"ok":true,"videoTranslateEnabled":Bool}
 ///   POST /translate  {"texts":[String]} -> 200
 ///                     {"translations":[String?], "retry":[Int]}
 ///                     null is a deliberate skip; `retry` lists indexes
@@ -37,6 +37,7 @@ public struct ExtensionBridgeTranslation: Equatable, Sendable {
 ///   OPTIONS *        -> 204 with CORS headers for the extension origin.
 public final class ExtensionBridgeServer: @unchecked Sendable {
     public typealias TranslateHandler = @MainActor @Sendable ([String]) async throws -> ExtensionBridgeTranslation
+    public typealias VideoTranslateEnabledHandler = @MainActor @Sendable () -> Bool
 
     /// Origin produced by the extension whose manifest pins the bundled key.
     /// The ID is what Chrome actually derives from the manifest key —
@@ -57,6 +58,7 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
 
     private let requestedPort: UInt16
     private let logger: (any AppRuntimeLogger)?
+    private let videoTranslateEnabled: VideoTranslateEnabledHandler
     private let handler: TranslateHandler
     private let queue = DispatchQueue(label: "global-translator.extension-bridge")
     private var listener: NWListener?
@@ -68,10 +70,12 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
     public init(
         port: UInt16 = ExtensionBridgeServer.defaultPort,
         logger: (any AppRuntimeLogger)? = nil,
+        videoTranslateEnabled: @escaping VideoTranslateEnabledHandler = { false },
         handler: @escaping TranslateHandler
     ) {
         self.requestedPort = port
         self.logger = logger
+        self.videoTranslateEnabled = videoTranslateEnabled
         self.handler = handler
     }
 
@@ -194,7 +198,16 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         // POST as well as GET: browsers omit the Origin header on plain GET
         // fetches, so the extension pings with POST to prove its identity.
         case ("GET", "/health"), ("POST", "/health"):
-            send(.json(status: 200, object: ["ok": true]), on: connection, origin: request.origin)
+            Task { [weak self] in
+                guard let self else { return }
+                let enabled = await MainActor.run { self.videoTranslateEnabled() }
+                self.queue.async {
+                    self.send(.json(status: 200, object: [
+                        "ok": true,
+                        "videoTranslateEnabled": enabled
+                    ]), on: connection, origin: request.origin)
+                }
+            }
         case ("POST", "/translate"):
             handleTranslate(request.body, origin: request.origin, on: connection)
         default:

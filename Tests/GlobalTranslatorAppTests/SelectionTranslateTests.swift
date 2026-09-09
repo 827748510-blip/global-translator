@@ -694,6 +694,29 @@ extension ApplicationControllerTests {
     }
 
     @Test
+    func videoTranslateDefaultsOffAndTogglePersists() async throws {
+        let store = RecordingConfigurationStore()
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        #expect(!controller.configuration.videoTranslateEnabled)
+        #expect(!controller.viewModel.isVideoTranslateEnabled)
+        controller.setVideoTranslate(true)
+        try await controller.persistence.flush()
+        #expect(controller.configuration.videoTranslateEnabled)
+        #expect(controller.viewModel.isVideoTranslateEnabled)
+        #expect(await store.saved.last?.videoTranslateEnabled == true)
+        controller.setVideoTranslate(false)
+        try await controller.persistence.flush()
+        #expect(!controller.configuration.videoTranslateEnabled)
+        #expect(await store.saved.last?.videoTranslateEnabled == false)
+        await controller.stop()
+    }
+
+    @Test
     func promptOptimizeModePersistsLikeOtherSettings() async throws {
         let store = RecordingConfigurationStore()
         let popover = FakeSelectionPopover()

@@ -14,6 +14,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     public var translatedBundleIDs: [String]
     /// 划选文字后弹出译文。默认开启，与窗口覆盖层、扩展桥独立。
     public var selectionTranslateEnabled: Bool
+    /// Chrome 视频字幕叠中文。默认关闭；与滑词翻译并列，仅用户打开后才跑。
+    public var videoTranslateEnabled: Bool
     /// Last 优化提示词 scene. Default is workplace/social polish.
     public var promptOptimizeMode: PromptOptimizeMode
 
@@ -27,6 +29,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         deepSeekAPIKeyConfigured: Bool = false,
         translatedBundleIDs: [String] = [],
         selectionTranslateEnabled: Bool = true,
+        videoTranslateEnabled: Bool = false,
         promptOptimizeMode: PromptOptimizeMode = .communicationPolish
     ) {
         self.autoTranslateEnabled = autoTranslateEnabled
@@ -38,6 +41,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         self.deepSeekAPIKeyConfigured = deepSeekAPIKeyConfigured
         self.translatedBundleIDs = translatedBundleIDs
         self.selectionTranslateEnabled = selectionTranslateEnabled
+        self.videoTranslateEnabled = videoTranslateEnabled
         self.promptOptimizeMode = promptOptimizeMode
     }
 
@@ -66,6 +70,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         case deepSeekAPIKeyConfigured
         case translatedBundleIDs
         case selectionTranslateEnabled
+        case videoTranslateEnabled
         case promptOptimizeMode
     }
 
@@ -83,6 +88,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         // "translate nothing" until the user picks applications.
         translatedBundleIDs = try container.decodeIfPresent([String].self, forKey: .translatedBundleIDs) ?? []
         selectionTranslateEnabled = try container.decodeIfPresent(Bool.self, forKey: .selectionTranslateEnabled) ?? true
+        videoTranslateEnabled = try container.decodeIfPresent(Bool.self, forKey: .videoTranslateEnabled) ?? false
         promptOptimizeMode = try container.decodeIfPresent(PromptOptimizeMode.self, forKey: .promptOptimizeMode) ?? .communicationPolish
     }
 
@@ -97,6 +103,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         try container.encode(deepSeekAPIKeyConfigured, forKey: .deepSeekAPIKeyConfigured)
         try container.encode(translatedBundleIDs, forKey: .translatedBundleIDs)
         try container.encode(selectionTranslateEnabled, forKey: .selectionTranslateEnabled)
+        try container.encode(videoTranslateEnabled, forKey: .videoTranslateEnabled)
         try container.encode(promptOptimizeMode, forKey: .promptOptimizeMode)
     }
 }

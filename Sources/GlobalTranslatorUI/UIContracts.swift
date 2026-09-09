@@ -173,6 +173,7 @@ public struct TranslatedApplication: Identifiable, Equatable, Sendable {
 public protocol SettingsActions: AnyObject {
     func setAutomaticTranslation(_ enabled: Bool)
     func setSelectionTranslate(_ enabled: Bool)
+    func setVideoTranslate(_ enabled: Bool)
     func setPromptOptimizeMode(_ mode: PromptOptimizeMode)
     func selectBackend(_ kind: BackendKind)
     /// Persists the draft API key. The UI never logs or stores it; the draft is

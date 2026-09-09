@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>视频翻译 Phase A 演示</title>
+  <style>
+    body { font-family: -apple-system, "PingFang SC", sans-serif; max-width: 720px; margin: 24px auto; padding: 0 16px; }
+    video { width: 100%; background: #111; }
+    p { color: #444; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <h1>视频翻译 Phase A 演示</h1>
+  <p>请用 Chrome 加载已解包的 Global Translator Bridge 扩展，在<strong>菜单栏设置</strong>里打开与「滑词翻译」同一行的「视频翻译」，然后选择下方任意本地视频。页面会给该视频挂上标准 <code>textTracks</code> 英文 cue，扩展应叠加简体中文。关闭开关后叠层应消失，播放不应中断。</p>
+  <p>也可不依赖本页轨道，改用扩展弹窗选择 <code>sample.en.srt</code> / <code>sample.en.vtt</code> 作为侧车字幕。</p>
+  <input type="file" id="file" accept="video/*">
+  <p id="status">请选择本地视频文件（任意 mp4/webm）。</p>
+  <video id="video" controls playsinline></video>
+  <script>
+    const video = document.getElementById("video");
+    const status = document.getElementById("status");
+    document.getElementById("file").addEventListener("change", (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      video.src = URL.createObjectURL(file);
+      status.textContent = "已加载 " + file.name + "。打开扩展「视频翻译」后按播放。";
+      video.addEventListener("loadedmetadata", () => {
+        const existing = video.textTracks;
+        for (let i = 0; i < existing.length; i++) existing[i].mode = "hidden";
+        const track = video.addTextTrack("subtitles", "English", "en");
+        track.mode = "hidden";
+        track.addCue(new VTTCue(0, 3, "Hello, this is an English subtitle."));
+        track.addCue(new VTTCue(3, 6, "The weather is nice today."));
+        track.addCue(new VTTCue(6, 9, "Please translate this line."));
+        track.addCue(new VTTCue(9, 12, "这是中文，不应再译"));
+      }, { once: true });
+    });
+  </script>
+</body>
+</html>

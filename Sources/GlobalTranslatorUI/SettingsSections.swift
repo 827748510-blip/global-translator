@@ -52,16 +52,32 @@ struct SettingsHeaderSection: View {
 
             Divider()
 
-            Toggle(
-                "滑词翻译",
-                isOn: Binding(
-                    get: { viewModel.isSelectionTranslateEnabled },
-                    set: { viewModel.setSelectionTranslate($0) }
+            HStack(alignment: .center, spacing: GTSpacing.medium) {
+                Toggle(
+                    "滑词翻译",
+                    isOn: Binding(
+                        get: { viewModel.isSelectionTranslateEnabled },
+                        set: { viewModel.setSelectionTranslate($0) }
+                    )
                 )
-            )
-            .toggleStyle(.switch)
+                .toggleStyle(.switch)
+                .accessibilityHint("划选后显示译文，并可按场景优化措辞，默认开启")
+
+                Spacer(minLength: GTSpacing.small)
+
+                Toggle(
+                    "视频翻译",
+                    isOn: Binding(
+                        get: { viewModel.isVideoTranslateEnabled },
+                        set: { viewModel.setVideoTranslate($0) }
+                    )
+                )
+                .toggleStyle(.switch)
+                .accessibilityHint("启用后对网页视频字幕叠简体中文，默认关闭，不单独占一行")
+            }
             .frame(minHeight: GTPopoverMetrics.minRowHitHeight)
-            .accessibilityHint("划选后显示译文，并可按场景优化措辞，默认开启")
+            .frame(maxWidth: .infinity)
+            .accessibilityElement(children: .contain)
 
             if viewModel.isSelectionTranslateEnabled {
                 GTLabeledControl(title: "优化场景") {
