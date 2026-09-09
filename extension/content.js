@@ -41,6 +41,7 @@
     const element = node.parentElement;
     if (!element || SKIPPED_TAGS.indexOf(element.tagName) !== -1) return false;
     if (element.closest && element.closest('[contenteditable="true"], [contenteditable=""]')) return false;
+    if (element.closest && element.closest("[data-gt-video-translate], .ytp-caption-window-container, .ytp-caption-segment, .caption-window")) return false;
     const rect = element.getBoundingClientRect();
     if (rect.width < 4 || rect.height < 4) return false;
     const style = getComputedStyle(element);

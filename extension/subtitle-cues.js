@@ -14,11 +14,20 @@
     return String(value || "")
       .replace(/<[^>]+>/g, " ")
       .replace(/\{[^}]*\}/g, " ")
+      .replace(/&#x([0-9a-f]+);/gi, (_, hex) => {
+        const code = parseInt(hex, 16);
+        return Number.isFinite(code) ? String.fromCharCode(code) : "";
+      })
+      .replace(/&#(\d+);/g, (_, n) => {
+        const code = Number(n);
+        return Number.isFinite(code) ? String.fromCharCode(code) : "";
+      })
       .replace(/&nbsp;/gi, " ")
       .replace(/&amp;/gi, "&")
       .replace(/&lt;/gi, "<")
       .replace(/&gt;/gi, ">")
-      .replace(/&quot;/gi, "\"");
+      .replace(/&quot;/gi, "\"")
+      .replace(/&apos;/gi, "'");
   }
 
   function normalizeCueText(value) {
@@ -166,7 +175,11 @@
       return { show: false, cueText: "", message: "" };
     }
     if (probed && !hasForeignCues(cues)) {
-      return { show: true, cueText: "", message: MESSAGES.noForeign };
+      const empty = cues.length === 0;
+      const message = empty && input && input.noForeignMessage
+        ? input.noForeignMessage
+        : MESSAGES.noForeign;
+      return { show: true, cueText: "", message };
     }
     return { show: false, cueText: "", message: "" };
   }

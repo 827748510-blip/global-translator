@@ -37,7 +37,7 @@ global-translator stop
 
 ## Chrome 扩展
 
-仓库 `extension/` 是配套的 **Global Translator Bridge**。整页翻译默认开启；**视频翻译** 在菜单栏设置里与「滑词翻译」同一行，默认关闭。启用后把 HTML5 `video.textTracks`（或可选本地 SRT/VTT）译成简体中文叠在画面上，走桌面端已有 `POST /translate` 桥，不做语音识别。加载方式、限制与验收步骤见 [视频翻译 Phase A](docs/video-translate.md)。
+仓库 `extension/` 是配套的 **Global Translator Bridge**。整页翻译默认开启；**视频翻译** 在菜单栏设置里与「滑词翻译」同一行，默认关闭。启用后把 HTML5 `video.textTracks`、可选本地 SRT/VTT，或 YouTube 用户已打开的字幕 / 本会话 timedtext 译成简体中文叠在画面上，走桌面端已有 `POST /translate` 桥，不做语音识别。加载方式、YouTube 范围与验收步骤见 [视频翻译](docs/video-translate.md)。
 
 开发调试可执行：
 
@@ -76,7 +76,7 @@ global-translator run --foreground
 - 截图、原文、译文和翻译缓存均不持久化
 - 滑词翻译仅监听鼠标左键抬起以读取 Accessibility 选区；不注入键盘。AX 读不到字时，仅在真实拖选后（或 AX 报告有选区范围却无字符串）、且剪贴板能完整备份时才临时 ⌘C 并立即恢复；单击不拖选不发 ⌘C。备份不全、密码框、本应用窗口则跳过。弹层提供翻译与「优化提示词」（沟通润色 / 任务指令 / 用词修正，默认沟通润色；拷贝成功显示「已拷贝」）
 - 不修改第三方 App 中的文本（扩展桥 / CDP 入页翻译除外）
-- Chrome 扩展「视频翻译」只叠加中文，不改网页视频文件或字幕文件；开关在菜单栏设置与「滑词翻译」同一行，默认关闭，详见 [视频翻译 Phase A](docs/video-translate.md)
+- Chrome 扩展「视频翻译」只叠加中文，不改网页视频文件或字幕文件；开关在菜单栏设置与「滑词翻译」同一行，默认关闭；YouTube 仅在用户已开字幕时读取本会话字幕，详见 [视频翻译](docs/video-translate.md)
 
 ## 架构
 

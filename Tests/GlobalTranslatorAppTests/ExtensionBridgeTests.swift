@@ -78,7 +78,8 @@ struct ExtensionBridgeServerTests {
             .appendingPathComponent("extension/background.js")
         let source = try String(contentsOf: url, encoding: .utf8)
         #expect(source.contains("function enqueueBridgeFetch("))
-        #expect(source.contains("let bridgeChain = Promise.resolve();"))
+        #expect(source.contains("importScripts(\"bridge-queue.js\")"))
+        #expect(source.contains("message.lane === \"video\""))
         #expect(source.contains("enqueueBridgeFetch(() =>"))
         #expect(source.contains("retry: Array.isArray(payload.retry) ? payload.retry : []"))
         #expect(source.contains("payload.videoTranslateEnabled === true"))
@@ -92,9 +93,11 @@ struct ExtensionBridgeServerTests {
             .deletingLastPathComponent()
             .appendingPathComponent("extension/manifest.json")
         let source = try String(contentsOf: url, encoding: .utf8)
-        #expect(source.contains("\"version\": \"1.0.6\""))
-        #expect(!source.contains("\"version\": \"1.0.5\""))
-        #expect(source.contains("\"js\": [\"text-filter.js\", \"subtitle-cues.js\", \"content.js\", \"video-translate.js\"]"))
+        #expect(source.contains("\"version\": \"1.0.8\""))
+        #expect(!source.contains("\"version\": \"1.0.7\""))
+        #expect(source.contains("\"js\": [\"text-filter.js\", \"subtitle-cues.js\", \"youtube-captions.js\", \"content.js\", \"video-translate.js\"]"))
+        #expect(source.contains("youtube-captions-page.js"))
+        #expect(source.contains("\"world\": \"MAIN\""))
     }
 
     @Test
@@ -115,6 +118,9 @@ struct ExtensionBridgeServerTests {
             contentsOf: root.appendingPathComponent("Sources/GlobalTranslatorCapture/WindowVisualUpdates.swift"),
             encoding: .utf8
         )
+        let youtubeJs = try String(contentsOf: root.appendingPathComponent("extension/youtube-captions.js"), encoding: .utf8)
+        let youtubePage = try String(contentsOf: root.appendingPathComponent("extension/youtube-captions-page.js"), encoding: .utf8)
+        let contentJs = try String(contentsOf: root.appendingPathComponent("extension/content.js"), encoding: .utf8)
         #expect(settings.contains("\"滑词翻译\""))
         #expect(settings.contains("\"视频翻译\""))
         #expect(settings.contains("HStack(alignment: .center, spacing: GTSpacing.medium)"))
@@ -144,6 +150,22 @@ struct ExtensionBridgeServerTests {
         #expect(cuesJs.contains("videoTranslateEnabled: false"))
         #expect(visual.contains("configuration.capturesAudio = false"))
         #expect(!visual.contains("capturesAudio = true"))
+        #expect(videoJs.contains("GlobalTranslatorYouTubeCaptions"))
+        #expect(videoJs.contains("data-gt-video-translate"))
+        #expect(!videoJs.contains("#movie_player"))
+        #expect(!videoJs.contains("html5-main-video, video"))
+        #expect(videoJs.contains("syncFromDom"))
+        #expect(videoJs.contains("lane: \"video\""))
+        #expect(!videoJs.contains("all:initial"))
+        #expect(youtubePage.contains("data-gt-ytcap"))
+        #expect(youtubeJs.contains("adoptLiveCaption"))
+        #expect(contentJs.contains("ytp-caption-segment"))
+        #expect(!youtubeJs.lowercased().contains("whisper"))
+        #expect(!youtubePage.contains("setOption"))
+        #expect(!youtubePage.contains("loadModule"))
+        #expect(!youtubePage.contains("getUserMedia"))
+        #expect(youtubePage.contains("response.clone()"))
+        #expect(popupJs.contains("YouTube 请先打开播放器字幕"))
     }
 
     @Test

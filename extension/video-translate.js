@@ -1,9 +1,12 @@
-// Video translation Phase A — overlay Simplified Chinese from textTracks
-// or an optional local SRT/VTT sidecar. No ASR, no media capture, never
-// pauses playback or rewrites the original video / subtitle files.
+// Video translation Phase A + B1 — overlay Simplified Chinese from textTracks,
+// optional local SRT/VTT sidecar, or YouTube in-session captions. No ASR,
+// no media capture, never pauses playback or rewrites original media.
 (() => {
   const Cues = (typeof GlobalTranslatorSubtitleCues !== "undefined")
     ? GlobalTranslatorSubtitleCues
+    : null;
+  const Youtube = (typeof GlobalTranslatorYouTubeCaptions !== "undefined")
+    ? GlobalTranslatorYouTubeCaptions
     : null;
   if (!Cues) return;
 
@@ -12,6 +15,7 @@
   const PREFETCH = 4;
   const DESKTOP_SYNC_MS = 3000;
   const HOST_ATTR = "data-gt-video-translate";
+  const PAINT_MS = 250;
 
   let enabled = false;
   let sidecarCues = [];
@@ -20,6 +24,7 @@
   let serviceError = false;
   let runningTranslate = false;
   let observer = null;
+  let paintTimer = null;
   const translations = new Map();
   const originalTrackModes = new WeakMap();
   const overlays = new Map();
@@ -34,8 +39,21 @@
     }
   }
 
+  function isVisibleVideo(video) {
+    if (!video || !video.isConnected) return false;
+    const rect = video.getBoundingClientRect();
+    return rect.width >= 24 && rect.height >= 24;
+  }
+
   function listVideos() {
-    return Array.prototype.slice.call(document.querySelectorAll("video"));
+    const all = Array.prototype.slice.call(document.querySelectorAll("video"));
+    const main = document.querySelector("video.html5-main-video");
+    if (main) {
+      const rest = all.filter((video) => video !== main && isVisibleVideo(video));
+      return [main].concat(rest);
+    }
+    const visible = all.filter(isVisibleVideo);
+    return visible.length > 0 ? visible : all;
   }
 
   function restoreTrackModes(video) {
@@ -75,9 +93,37 @@
     return collected;
   }
 
+  function youtubeCues(video) {
+    if (!Youtube || typeof Youtube.cuesFor !== "function") return [];
+    if (!Youtube.isActivePage()) return [];
+    if (typeof Youtube.syncFromDom === "function") {
+      try { Youtube.syncFromDom(video); } catch (_error) {}
+    }
+    return Youtube.cuesFor(video) || [];
+  }
+
+  function youtubeNoForeignMessage() {
+    if (sidecarCues.length > 0) return "";
+    if (Youtube && Youtube.isActivePage() && Youtube.MESSAGES) {
+      return Youtube.MESSAGES.noYouTubeCaptions || "";
+    }
+    return "";
+  }
+
   function cuesFor(video) {
     if (sidecarCues.length > 0) return sidecarCues;
+    const fromYoutube = youtubeCues(video);
+    if (fromYoutube.length > 0) return fromYoutube;
     return collectTrackCues(video);
+  }
+
+  function overlayParent(_video) {
+    if (Youtube && typeof Youtube.overlayParentNode === "function") {
+      return Youtube.overlayParentNode(document);
+    }
+    const full = document.fullscreenElement;
+    if (full) return full;
+    return document.body || document.documentElement;
   }
 
   function translationObject() {
@@ -90,12 +136,34 @@
 
   function ensureOverlay(video) {
     let record = overlays.get(video);
-    if (record && record.host.isConnected) return record;
+    const parent = overlayParent(video);
+    if (record && record.host.isConnected) {
+      if (parent && record.host.parentNode !== parent) {
+        parent.appendChild(record.host);
+      }
+      return record;
+    }
     const host = document.createElement("div");
     host.setAttribute(HOST_ATTR, "");
-    host.style.all = "initial";
-    host.style.pointerEvents = "none";
-    host.style.zIndex = "2147483646";
+    host.style.cssText = [
+      "display:block",
+      "position:fixed",
+      "left:0",
+      "top:0",
+      "overflow:visible",
+      "opacity:1",
+      "visibility:visible",
+      "pointer-events:none",
+      "z-index:2147483646",
+      "transform:none",
+      "contain:none"
+    ].join(";");
+    host.style.setProperty("display", "block", "important");
+    host.style.setProperty("position", "fixed", "important");
+    host.style.setProperty("opacity", "1", "important");
+    host.style.setProperty("visibility", "visible", "important");
+    host.style.setProperty("z-index", "2147483646", "important");
+    host.style.setProperty("pointer-events", "none", "important");
     const shadow = host.attachShadow({ mode: "closed" });
     const box = document.createElement("div");
     box.setAttribute("part", "box");
@@ -120,7 +188,7 @@
     ].join(";");
     box.appendChild(pill);
     shadow.appendChild(box);
-    (document.documentElement || document.body).appendChild(host);
+    (parent || document.body || document.documentElement).appendChild(host);
     record = { host, box, pill };
     overlays.set(video, record);
     return record;
@@ -129,29 +197,62 @@
   function positionOverlay(record, video) {
     const rect = video.getBoundingClientRect();
     const host = record.host;
-    host.style.position = "fixed";
-    host.style.left = Math.max(0, rect.left) + "px";
-    host.style.width = Math.max(0, rect.width) + "px";
+    const parent = host.parentNode;
     const height = 56;
-    host.style.height = height + "px";
-    host.style.top = Math.max(0, rect.bottom - height - 8) + "px";
     const offscreen = rect.width < 24 || rect.height < 24 ||
       rect.bottom < 8 || rect.top > window.innerHeight - 8;
     host.style.display = offscreen ? "none" : "block";
+    host.style.setProperty("display", offscreen ? "none" : "block", "important");
+    host.style.pointerEvents = "none";
+    host.style.setProperty("z-index", "2147483646", "important");
+    host.style.setProperty("opacity", offscreen ? "0" : "1", "important");
+    host.style.setProperty("visibility", offscreen ? "hidden" : "visible", "important");
+    const useAbsolute = parent && parent !== document.documentElement && parent !== document.body;
+    if (useAbsolute) {
+      const parentRect = parent.getBoundingClientRect();
+      host.style.position = "absolute";
+      host.style.left = Math.max(0, rect.left - parentRect.left) + "px";
+      host.style.top = Math.max(0, rect.bottom - parentRect.top - height - 8) + "px";
+    } else {
+      host.style.position = "fixed";
+      host.style.left = Math.max(0, rect.left) + "px";
+      host.style.top = Math.max(0, rect.bottom - height - 8) + "px";
+    }
+    host.style.width = Math.max(0, rect.width) + "px";
+    host.style.height = height + "px";
   }
 
   function renderVideo(video) {
     if (!enabled || !video || !video.isConnected) return;
     const record = ensureOverlay(video);
     positionOverlay(record, video);
+    const cues = cuesFor(video);
+    const time = video.currentTime || 0;
+    const translationsNow = translationObject();
     const state = Cues.overlayState({
       enabled: true,
-      cues: cuesFor(video),
-      time: video.currentTime || 0,
-      translations: translationObject(),
+      cues,
+      time,
+      translations: translationsNow,
       serviceError,
-      probed
+      probed,
+      noForeignMessage: youtubeNoForeignMessage()
     });
+    if (Youtube && typeof Youtube.overlayDebugBits === "function") {
+      const bits = Youtube.overlayDebugBits({
+        cues,
+        time,
+        translations: translationsNow,
+        pageWorld: !!(Youtube.pageWorldAlive && Youtube.pageWorldAlive(document)),
+        dom: !!(Youtube.collectDomCaptionText && Youtube.collectDomCaptionText(document))
+      });
+      record.host.setAttribute("data-gt-vt", bits);
+      try {
+        if (typeof localStorage !== "undefined" && localStorage.getItem("gtVtDebug") === "1") {
+          console.debug("[gt-vt]", bits);
+        }
+      } catch (_error) {}
+    }
     if (!state.show || (!state.cueText && !state.message)) {
       record.box.style.display = "none";
       record.pill.textContent = "";
@@ -168,7 +269,7 @@
   function translateTexts(texts) {
     return new Promise((resolve) => {
       try {
-        chrome.runtime.sendMessage({ type: "translate", texts }, (response) => {
+        chrome.runtime.sendMessage({ type: "translate", texts, lane: "video" }, (response) => {
           if (chrome.runtime.lastError || !response || response.error) {
             resolve(null);
             return;
@@ -298,6 +399,22 @@
     observer = null;
   }
 
+  function startPaintLoop() {
+    if (paintTimer) return;
+    paintTimer = setInterval(() => {
+      safe(() => {
+        if (!enabled) return;
+        scan();
+        listVideos().forEach((video) => prefetch(video));
+      });
+    }, PAINT_MS);
+  }
+
+  function stopPaintLoop() {
+    if (paintTimer) clearInterval(paintTimer);
+    paintTimer = null;
+  }
+
   function clearOverlays() {
     boundList.slice().forEach((video) => {
       try { unbindVideo(video); } catch (_error) {}
@@ -311,9 +428,29 @@
     overlays.clear();
   }
 
+  function probeDelay() {
+    if (Youtube && Youtube.isActivePage() && Youtube.YOUTUBE_PROBE_MS) {
+      return Youtube.YOUTUBE_PROBE_MS;
+    }
+    return PROBE_MS;
+  }
+
+  function hasImmediateCues() {
+    if (sidecarCues.length > 0) return true;
+    const videos = listVideos();
+    for (let i = 0; i < videos.length; i++) {
+      if (youtubeCues(videos[i]).length > 0) return true;
+    }
+    if (Youtube && Youtube.isActivePage()) return false;
+    for (let i = 0; i < videos.length; i++) {
+      if (collectTrackCues(videos[i]).length > 0) return true;
+    }
+    return false;
+  }
+
   function markProbedSoon() {
     if (probeTimer) clearTimeout(probeTimer);
-    probed = sidecarCues.length > 0;
+    probed = hasImmediateCues();
     if (probed) {
       renderAll();
       return;
@@ -321,7 +458,7 @@
     probeTimer = setTimeout(() => {
       probed = true;
       renderAll();
-    }, PROBE_MS);
+    }, probeDelay());
   }
 
   function onViewportChange() {
@@ -329,18 +466,30 @@
   }
 
   function start() {
-    if (enabled) {
+    const already = enabled;
+    enabled = true;
+    serviceError = false;
+    if (Youtube && typeof Youtube.start === "function") {
+      Youtube.start(() => {
+        if (!enabled) return;
+        probed = true;
+        scan();
+        listVideos().forEach((video) => prefetch(video));
+        renderAll();
+      });
+    }
+    if (already) {
       scan();
       markProbedSoon();
       return;
     }
-    enabled = true;
-    serviceError = false;
     startObserver();
+    startPaintLoop();
     scan();
     markProbedSoon();
     window.addEventListener("scroll", onViewportChange, true);
     window.addEventListener("resize", onViewportChange);
+    document.addEventListener("fullscreenchange", onViewportChange);
   }
 
   function stop() {
@@ -350,8 +499,11 @@
     if (probeTimer) clearTimeout(probeTimer);
     probeTimer = null;
     stopObserver();
+    stopPaintLoop();
     window.removeEventListener("scroll", onViewportChange, true);
     window.removeEventListener("resize", onViewportChange);
+    document.removeEventListener("fullscreenchange", onViewportChange);
+    if (Youtube && typeof Youtube.stop === "function") Youtube.stop();
     clearOverlays();
     translations.clear();
   }
