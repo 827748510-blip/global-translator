@@ -9,7 +9,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     public var translatedBundleIDs: [String]
     /// 划选文字后弹出译文。默认开启，与窗口覆盖层、扩展桥独立。
     public var selectionTranslateEnabled: Bool
-    /// Last 优化提示词 scene. Default stays generative-image rewrite.
+    /// Last 优化提示词 scene. Default is workplace/social polish.
     public var promptOptimizeMode: PromptOptimizeMode
 
     public init(
@@ -20,7 +20,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         localModel: String = "",
         translatedBundleIDs: [String] = [],
         selectionTranslateEnabled: Bool = true,
-        promptOptimizeMode: PromptOptimizeMode = .generativePrompt
+        promptOptimizeMode: PromptOptimizeMode = .communicationPolish
     ) {
         self.autoTranslateEnabled = autoTranslateEnabled
         self.backend = backend
@@ -57,6 +57,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         // "translate nothing" until the user picks applications.
         translatedBundleIDs = try container.decodeIfPresent([String].self, forKey: .translatedBundleIDs) ?? []
         selectionTranslateEnabled = try container.decodeIfPresent(Bool.self, forKey: .selectionTranslateEnabled) ?? true
-        promptOptimizeMode = try container.decodeIfPresent(PromptOptimizeMode.self, forKey: .promptOptimizeMode) ?? .generativePrompt
+        promptOptimizeMode = try container.decodeIfPresent(PromptOptimizeMode.self, forKey: .promptOptimizeMode) ?? .communicationPolish
     }
 }

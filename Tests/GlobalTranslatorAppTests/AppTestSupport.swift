@@ -513,7 +513,7 @@ final class FakeSelectionPopover: SelectionPopoverControlling {
     var onTranslate: (() -> Void)?
     var onOptimize: (() -> Void)?
     var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
-    var optimizeMode: PromptOptimizeMode = .generativePrompt
+    var optimizeMode: PromptOptimizeMode = .communicationPolish
     var extraInteractionFrames: [CGRect] = []
     var copyFeedback: SelectionCopyFeedback = .idle
     func show(_ content: SelectionPopoverContent) {

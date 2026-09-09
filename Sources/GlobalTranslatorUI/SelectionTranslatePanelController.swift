@@ -188,7 +188,7 @@ public final class NullSelectionPopover: SelectionPopoverControlling {
     public var onTranslate: (() -> Void)?
     public var onOptimize: (() -> Void)?
     public var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
-    public var optimizeMode: PromptOptimizeMode = .generativePrompt
+    public var optimizeMode: PromptOptimizeMode = .communicationPolish
     public var copyFeedback: SelectionCopyFeedback { .idle }
     public init() {}
     public func show(_ content: SelectionPopoverContent) { currentContent = content }
