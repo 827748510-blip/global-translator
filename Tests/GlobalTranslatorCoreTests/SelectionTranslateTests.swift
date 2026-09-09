@@ -43,6 +43,30 @@ struct SelectionTranslateDecisionTests {
         #expect(!TextFilter.shouldOfferPromptOptimization("https://example.com/a"))
         #expect(!TextFilter.shouldOfferSelectionPopover(""))
     }
+
+    @Test(arguments: [
+        "Swift 6 + SwiftUI + ScreenCaptureKit",
+        "SwiftUI + ScreenCaptureKit",
+        "NSView / SwiftUI",
+        "Vision + OCR"
+    ])
+    func technicalTokenPhrasesDoNotCallTranslation(_ text: String) {
+        #expect(TextFilter.selectionDecision(text) == .noTranslationNeeded)
+        #expect(!TextFilter.shouldTranslate(text))
+        #expect(!TextFilter.shouldAutoTranslateSelection(text))
+        #expect(TextFilter.shouldOfferSelectionPopover(text))
+        #expect(TextFilter.shouldOfferPromptOptimization(text))
+    }
+
+    @Test(arguments: [
+        "Hello world", "Open", "Apply Settings", "Translate this sentence",
+        "File / Edit", "Copy + Paste", "Save / Export", "Xcode 16 + Swift 6",
+        "Sentence 0", "Sentence 1", "Sentence 6", "Hello from the page"
+    ])
+    func ordinaryEnglishStillTranslates(_ text: String) {
+        #expect(TextFilter.selectionDecision(text) == .translate)
+        #expect(TextFilter.shouldTranslate(text))
+    }
 }
 
 struct SelectionPointerAndDebounceTests {
@@ -74,7 +98,7 @@ struct SelectionPointerAndDebounceTests {
         var state = SelectionPointerState()
         #expect(state.handle(.dragged) == .ignore)
         #expect(!state.didDrag)
-        #expect(state.handle(.up) == .scheduleSettle)
+        #expect(state.handle(.up) == .ignore)
         #expect(!state.didDrag)
     }
 
@@ -152,6 +176,21 @@ struct SelectionPopoverContentTests {
     }
 
     @Test
+    func noTranslationNeededContentKeepsOriginalAndOptimize() {
+        let content = SelectionPopoverContent.noTranslationNeeded(
+            original: "Swift 6 + SwiftUI + ScreenCaptureKit",
+            screenFrame: CGRect(x: 10, y: 20, width: 40, height: 12)
+        )
+        #expect(content.status == .noTranslationNeeded)
+        #expect(content.displayTranslation == "专有名词，无需翻译")
+        #expect(content.allowsCopy)
+        #expect(content.copyText == "Swift 6 + SwiftUI + ScreenCaptureKit")
+        #expect(content.showsOptimizeAction)
+        #expect(content.showsTranslateAction)
+        #expect(content.displayTranslation != "服务返回异常，请稍后重试")
+    }
+
+    @Test
     func promptOptimizationInstructionsStayGeneric() {
         #expect(PromptOptimizationInstructions.system.contains("generic generative prompt"))
         #expect(PromptOptimizationInstructions.system.contains("untrusted data"))
@@ -165,6 +204,30 @@ struct SelectionPopoverContentTests {
         #expect(PromptOptimizationSupport.prefersEnglishOutput("A girl standing in the rain on a city street at night"))
         #expect(english.contains("Keep the output in English"))
         #expect(!PromptOptimizationSupport.prefersEnglishOutput("一个女孩站在雨里"))
+    }
+
+    @Test
+    func promptOptimizationModesUseDistinctInstructions() {
+        let systems = PromptOptimizeMode.allCases.map { PromptOptimizationInstructions.system(for: $0) }
+        let uniqueSystems = Set(systems)
+        #expect(uniqueSystems.count == PromptOptimizeMode.allCases.count)
+        #expect(systems.allSatisfy { $0.contains("untrusted data") })
+        #expect(systems.allSatisfy { $0.contains("Output only the rewritten text") })
+        #expect(PromptOptimizationInstructions.system(for: .generativePrompt).contains("generic generative prompt"))
+        #expect(PromptOptimizationInstructions.system(for: .technicalExpression).contains("technical or code-related"))
+        #expect(PromptOptimizationInstructions.system(for: .professionalReply).contains("professional workplace reply"))
+        #expect(PromptOptimizationInstructions.system(for: .highEQ).contains("empathetic"))
+        #expect(PromptOptimizationInstructions.system(for: .wordingFix).contains("typos"))
+        #expect(PromptOptimizeMode.generativePrompt.title == "生成提示词")
+        #expect(PromptOptimizeMode.technicalExpression.title == "技术表达")
+        #expect(PromptOptimizeMode.professionalReply.title == "专业回复")
+        #expect(PromptOptimizeMode.highEQ.title == "高情商")
+        #expect(PromptOptimizeMode.wordingFix.title == "用词修正")
+        let technical = PromptOptimizationInstructions.userContent(for: "Use NSView", mode: .technicalExpression)
+        let reply = PromptOptimizationInstructions.userContent(for: "Use NSView", mode: .professionalReply)
+        #expect(technical != reply)
+        #expect(technical.contains("clearer technical expression"))
+        #expect(reply.contains("professional workplace reply"))
     }
 
     @Test

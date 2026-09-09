@@ -13,6 +13,7 @@ struct GlobalTranslatorCoreTests {
         #expect(configuration.localModel.isEmpty)
         #expect(configuration.translatedBundleIDs.isEmpty)
         #expect(configuration.selectionTranslateEnabled)
+        #expect(configuration.promptOptimizeMode == .generativePrompt)
 
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = ConfigStore(url: path)
@@ -30,12 +31,18 @@ struct GlobalTranslatorCoreTests {
         #expect(decoded.translatedBundleIDs.isEmpty)
         #expect(decoded.autoTranslateEnabled)
         #expect(decoded.selectionTranslateEnabled)
+        #expect(decoded.promptOptimizeMode == .generativePrompt)
 
         let allowJSON = Data(#"{"translatedBundleIDs":["com.google.Chrome"]}"#.utf8)
         let allow = try JSONDecoder().decode(AppConfiguration.self, from: allowJSON)
         #expect(allow.translatedBundleIDs == ["com.google.Chrome"])
         #expect(!allow.autoTranslateEnabled)
         #expect(allow.selectionTranslateEnabled)
+        #expect(allow.promptOptimizeMode == .generativePrompt)
+
+        let modeJSON = Data(#"{"promptOptimizeMode":"highEQ"}"#.utf8)
+        let mode = try JSONDecoder().decode(AppConfiguration.self, from: modeJSON)
+        #expect(mode.promptOptimizeMode == .highEQ)
     }
 
     @Test

@@ -9,6 +9,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     public var translatedBundleIDs: [String]
     /// 划选文字后弹出译文。默认开启，与窗口覆盖层、扩展桥独立。
     public var selectionTranslateEnabled: Bool
+    /// Last 优化提示词 scene. Default stays generative-image rewrite.
+    public var promptOptimizeMode: PromptOptimizeMode
 
     public init(
         autoTranslateEnabled: Bool = false,
@@ -17,7 +19,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         localBaseURL: URL = Self.defaultLocalBaseURL,
         localModel: String = "",
         translatedBundleIDs: [String] = [],
-        selectionTranslateEnabled: Bool = true
+        selectionTranslateEnabled: Bool = true,
+        promptOptimizeMode: PromptOptimizeMode = .generativePrompt
     ) {
         self.autoTranslateEnabled = autoTranslateEnabled
         self.backend = backend
@@ -26,6 +29,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         self.localModel = localModel
         self.translatedBundleIDs = translatedBundleIDs
         self.selectionTranslateEnabled = selectionTranslateEnabled
+        self.promptOptimizeMode = promptOptimizeMode
     }
 
     public static let defaultLocalBaseURL = URL(string: "http://127.0.0.1:11434/v1")!
@@ -38,6 +42,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         case localModel
         case translatedBundleIDs
         case selectionTranslateEnabled
+        case promptOptimizeMode
     }
 
     public init(from decoder: Decoder) throws {
@@ -52,5 +57,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         // "translate nothing" until the user picks applications.
         translatedBundleIDs = try container.decodeIfPresent([String].self, forKey: .translatedBundleIDs) ?? []
         selectionTranslateEnabled = try container.decodeIfPresent(Bool.self, forKey: .selectionTranslateEnabled) ?? true
+        promptOptimizeMode = try container.decodeIfPresent(PromptOptimizeMode.self, forKey: .promptOptimizeMode) ?? .generativePrompt
     }
 }

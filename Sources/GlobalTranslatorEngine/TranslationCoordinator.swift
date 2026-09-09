@@ -111,6 +111,22 @@ public actor TranslationCoordinator {
         modelIdentifier: String,
         visionFallbackEnabled: Bool
     ) async throws -> EngineOutput {
+        try await translate(
+            snapshot: snapshot,
+            backend: kind,
+            modelIdentifier: modelIdentifier,
+            visionFallbackEnabled: visionFallbackEnabled,
+            includeIneligibleText: false
+        )
+    }
+
+    public func translate(
+        snapshot: CaptureSnapshot,
+        backend kind: BackendKind,
+        modelIdentifier: String,
+        visionFallbackEnabled: Bool,
+        includeIneligibleText: Bool
+    ) async throws -> EngineOutput {
         try Task.checkCancellation()
         try validateCapturePermission(snapshot)
         let model = modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -147,7 +163,7 @@ public actor TranslationCoordinator {
         emit(.snapshotReceived(regionCount: snapshot.regions.count, windowRevision: revision))
         let startedAt = clock.now()
 
-        let plan = batcher.plan(regions: snapshot.regions)
+        let plan = batcher.plan(regions: snapshot.regions, requireTranslatable: !includeIneligibleText)
         var textByRegionID: [UUID: String] = [:]
         var pendingEntries: [TranslationBatchEntry] = []
         var cacheHitCount = 0

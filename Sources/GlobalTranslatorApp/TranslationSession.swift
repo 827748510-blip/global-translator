@@ -252,7 +252,10 @@ public final class TranslationSession {
     public func translateSelection(_ text: String) async throws -> String {
         guard let coordinator = selectionCoordinator else { throw SelectionTranslateError.translatorUnavailable }
         let capped = SelectionTranslateSupport.cappedSource(text)
-        guard TextFilter.selectionDecision(capped) == .translate else {
+        switch TextFilter.selectionDecision(capped) {
+        case .translate, .noTranslationNeeded:
+            break
+        case .skip, .alreadyTargetLanguage:
             throw SelectionTranslateError.emptyResult
         }
         let region = TextRegion(
@@ -275,22 +278,65 @@ public final class TranslationSession {
             window: CapturedWindow(descriptor: descriptor, regions: [region], source: .pageText)
         )
         await coordinator.selectBackend(kind: backend, modelIdentifier: model)
-        let output = try await coordinator.translate(
-            snapshot: snapshot,
-            backend: backend,
-            modelIdentifier: model,
-            visionFallbackEnabled: false
-        )
+        let output: EngineOutput
+        do {
+            output = try await Self.runSelectionTranslate(
+                coordinator,
+                snapshot: snapshot,
+                backend: backend,
+                model: model
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as TranslationError {
+            throw Self.selectionError(from: error)
+        }
         let translated = output.translations.first(where: { !$0.text.isEmpty })?.text
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let translated, !translated.isEmpty else { throw SelectionTranslateError.emptyResult }
         return translated
     }
 
+    private static func runSelectionTranslate(
+        _ coordinator: any TranslationCoordinating,
+        snapshot: CaptureSnapshot,
+        backend: BackendKind,
+        model: String
+    ) async throws -> EngineOutput {
+        if let live = coordinator as? TranslationCoordinator {
+            return try await live.translate(
+                snapshot: snapshot,
+                backend: backend,
+                modelIdentifier: model,
+                visionFallbackEnabled: false,
+                includeIneligibleText: true
+            )
+        }
+        return try await coordinator.translate(
+            snapshot: snapshot,
+            backend: backend,
+            modelIdentifier: model,
+            visionFallbackEnabled: false
+        )
+    }
+
+    private static func selectionError(from error: TranslationError) -> Error {
+        switch error {
+        case .invalidResponse, .invalidRequest:
+            return SelectionTranslateError.emptyResult
+        default:
+            return error
+        }
+    }
+
     /// Generic prompt rewrite. Allows Simplified Chinese drafts (the
     /// already-Chinese skip is translate-only). Uses the selection coordinator's
     /// `completePlain` so overlay/bridge JSON translation is not involved.
     public func optimizePrompt(_ text: String) async throws -> String {
+        try await optimizePrompt(text, mode: .generativePrompt)
+    }
+
+    public func optimizePrompt(_ text: String, mode: PromptOptimizeMode) async throws -> String {
         guard let coordinator = selectionCoordinator else { throw SelectionTranslateError.translatorUnavailable }
         let capped = SelectionTranslateSupport.cappedSource(text)
         guard TextFilter.shouldOfferPromptOptimization(capped) else {
@@ -298,8 +344,8 @@ public final class TranslationSession {
         }
         await coordinator.selectBackend(kind: backend, modelIdentifier: model)
         let optimized = try await coordinator.completePlain(
-            system: PromptOptimizationInstructions.system,
-            user: PromptOptimizationInstructions.userContent(for: capped),
+            system: PromptOptimizationInstructions.system(for: mode),
+            user: PromptOptimizationInstructions.userContent(for: capped, mode: mode),
             backend: backend
         )
         let trimmed = optimized.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -59,7 +59,7 @@ public struct TranslationBatcher: Sendable {
         self.maximumSourceCharacters = min(max(maximumSourceCharacters, 1), 4_000)
     }
 
-    public func plan(regions: [TextRegion]) -> TranslationBatchPlan {
+    public func plan(regions: [TextRegion], requireTranslatable: Bool = true) -> TranslationBatchPlan {
         let sorted = regions.sorted(by: Self.readingOrder)
         var groups: [String: TranslationBatchEntry] = [:]
         var order: [String] = []
@@ -67,7 +67,8 @@ public struct TranslationBatcher: Sendable {
 
         for region in sorted {
             let source = region.sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard TextFilter.shouldTranslate(source), source.count <= maximumSourceCharacters else {
+            let translatable = !requireTranslatable || TextFilter.shouldTranslate(source)
+            guard translatable, source.count <= maximumSourceCharacters else {
                 filteredCount += 1
                 continue
             }

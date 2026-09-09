@@ -32,8 +32,8 @@ public protocol CopyKeystrokeIssuing: Sendable {
 }
 
 /// Saves the general pasteboard, posts ⌘C, reads the new string, then
-/// restores the previous contents. Used only when AX selectedText is empty
-/// but the selected range length is greater than zero.
+/// restores the previous contents. Used when AX selectedText is empty after
+/// a real drag, or when AX reports a non-empty range but no string.
 public struct RestoringClipboardSelectionFallback: ClipboardSelectionFallingBack, @unchecked Sendable {
     private let pasteboard: any PasteboardSnapshotting
     private let keystroke: any CopyKeystrokeIssuing

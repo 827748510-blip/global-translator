@@ -4,15 +4,27 @@ import GlobalTranslatorCapture
 import GlobalTranslatorCore
 import GlobalTranslatorUI
 
-public enum SelectionTranslateError: Error, Equatable, Sendable {
+public enum SelectionTranslateError: Error, Equatable, Sendable, UISafeError {
     case translatorUnavailable
     case emptyResult
+    case noTranslationNeeded
+
+    public var uiSafeDescription: String {
+        switch self {
+        case .translatorUnavailable:
+            return "翻译服务未就绪"
+        case .emptyResult:
+            return "翻译失败"
+        case .noTranslationNeeded:
+            return SelectionTranslateSupport.noTranslationNeededCopy
+        }
+    }
 }
 
 @MainActor
 public protocol SelectionTranslating: AnyObject {
     func translateSelection(_ text: String) async throws -> String
-    func optimizePrompt(_ text: String) async throws -> String
+    func optimizePrompt(_ text: String, mode: PromptOptimizeMode) async throws -> String
 }
 
 @MainActor
@@ -69,7 +81,9 @@ public final class SystemSelectionPointerMonitor: SelectionPointerMonitoring {
 
 /// Independent of window overlay capture and of the Chrome extension bridge.
 /// Mouse-up in any app (after a short settle) reads AX selected text and
-/// shows a nearby popover with the configured backend's translation.
+/// shows a nearby popover with the configured backend's translation. After a
+/// real drag, empty AX may steal-and-restore the clipboard (⌘C) so Electron
+/// apps such as Feishu still surface a popover.
 @MainActor
 public final class SelectionTranslateController {
     private let reader: any SelectedTextReading
@@ -79,12 +93,17 @@ public final class SelectionTranslateController {
     private let logger: any AppRuntimeLogger
     private let translator: () -> (any SelectionTranslating)?
     private let ownBundleIdentifiers: Set<String>
+    private let frontmostBundleIdentifier: () -> String
     private let targetLanguage: String
     private let settleDelay: Duration
     private let unavailableDismissDelay: Duration
 
     private var enabled = false
     private var pointer = SelectionPointerState()
+    /// Scene-menu / popover presses must still update `pointer`, but must not
+    /// settle or dismiss. The menu window often closes before mouse-up, so the
+    /// matching `.up` lands outside `containsInteraction`.
+    private var pointerPressBeganOnOwnedUI = false
     private var settleGate = SelectionSettleGate()
     private var settleTask: Task<Void, Never>?
     private var translateTask: Task<Void, Never>?
@@ -93,6 +112,8 @@ public final class SelectionTranslateController {
     /// Source text the user just dismissed (Esc / outside click / new press).
     /// Settle will not re-show it until the selection changes or becomes empty.
     private var suppressedSource: String?
+    private var optimizeMode: PromptOptimizeMode = .generativePrompt
+    public var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
 
     public var isEnabled: Bool { enabled }
 
@@ -104,6 +125,9 @@ public final class SelectionTranslateController {
         logger: any AppRuntimeLogger,
         translator: @escaping () -> (any SelectionTranslating)?,
         ownBundleIdentifiers: Set<String> = [],
+        frontmostBundleIdentifier: @escaping () -> String = {
+            AXSelectedTextReader.systemFrontmostApplication()?.bundleIdentifier ?? ""
+        },
         targetLanguage: String = SelectionTranslateSupport.defaultTargetLanguage,
         settleDelay: Duration = .milliseconds(SelectionTranslateSupport.settleDelayMilliseconds),
         unavailableDismissDelay: Duration = .milliseconds(
@@ -117,6 +141,7 @@ public final class SelectionTranslateController {
         self.logger = logger
         self.translator = translator
         self.ownBundleIdentifiers = ownBundleIdentifiers
+        self.frontmostBundleIdentifier = frontmostBundleIdentifier
         self.targetLanguage = targetLanguage
         self.settleDelay = settleDelay
         self.unavailableDismissDelay = unavailableDismissDelay
@@ -130,6 +155,15 @@ public final class SelectionTranslateController {
         wired.onOptimize = { [weak self] in
             self?.performOptimize()
         }
+        wired.onOptimizeModeChange = { [weak self] mode in
+            self?.handleOptimizeModeChange(mode)
+        }
+        wired.optimizeMode = optimizeMode
+    }
+
+    public func setOptimizeMode(_ mode: PromptOptimizeMode) {
+        optimizeMode = mode
+        popover.optimizeMode = mode
     }
 
     public func setEnabled(_ enabled: Bool) {
@@ -151,10 +185,17 @@ public final class SelectionTranslateController {
 
     public func handlePointer(_ phase: SelectionPointerPhase, location: CGPoint) {
         guard enabled else { return }
-        if let frame = popover.panelFrame, frame.contains(location) {
-            return
+        let onOwnedUI = popover.containsInteraction(at: location)
+        if phase == .down {
+            pointerPressBeganOnOwnedUI = onOwnedUI
         }
-        switch pointer.handle(phase) {
+        let action = pointer.handle(phase)
+        let swallow = pointerPressBeganOnOwnedUI || onOwnedUI
+        if phase == .up {
+            pointerPressBeganOnOwnedUI = false
+        }
+        guard !swallow else { return }
+        switch action {
         case .cancelPending:
             suppressCurrentSelectionIfShowing()
             cancelSettle()
@@ -181,6 +222,7 @@ public final class SelectionTranslateController {
 
     private func stopWork() {
         suppressedSource = nil
+        pointerPressBeganOnOwnedUI = false
         cancelSettle()
         cancelPresentation()
         popover.dismiss()
@@ -224,7 +266,10 @@ public final class SelectionTranslateController {
             popover.dismiss()
             return
         }
-        switch reader.readSelection(mouseLocation: location) {
+        switch reader.readSelection(
+            mouseLocation: location,
+            allowClipboardFallback: pointer.didDrag && !isOwnFrontmostApplication()
+        ) {
         case .empty:
             suppressedSource = nil
             cancelPresentation()
@@ -237,7 +282,7 @@ public final class SelectionTranslateController {
                 popover.dismiss()
             }
         case .snapshot(let snapshot):
-            if ownBundleIdentifiers.contains(snapshot.bundleIdentifier) {
+            if isOwnApplication(snapshot.bundleIdentifier) {
                 popover.dismiss()
                 return
             }
@@ -248,6 +293,10 @@ public final class SelectionTranslateController {
                 guard snapshot.text != suppressedSource else { return }
                 suppressedSource = nil
                 presentAlreadyChinese(snapshot)
+            case .noTranslationNeeded:
+                guard snapshot.text != suppressedSource else { return }
+                suppressedSource = nil
+                presentNoTranslationNeeded(snapshot)
             case .translate:
                 guard snapshot.text != suppressedSource else { return }
                 suppressedSource = nil
@@ -263,9 +312,16 @@ public final class SelectionTranslateController {
             return
         case .alreadyTargetLanguage:
             presentAlreadyChinese(snapshot(from: content))
-        case .translate:
+        case .noTranslationNeeded, .translate:
             presentTranslation(snapshot(from: content))
         }
+    }
+
+    private func handleOptimizeModeChange(_ mode: PromptOptimizeMode) {
+        guard optimizeMode != mode else { return }
+        optimizeMode = mode
+        popover.optimizeMode = mode
+        onOptimizeModeChange?(mode)
     }
 
     private func performOptimize() {
@@ -290,6 +346,15 @@ public final class SelectionTranslateController {
         }
         cancelPresentation()
         popover.show(.alreadyChinese(original: snapshot.text, screenFrame: snapshot.screenFrame))
+    }
+
+    private func presentNoTranslationNeeded(_ snapshot: SelectedTextSnapshot) {
+        if popover.currentContent?.original == snapshot.text,
+           popover.currentContent?.status == .noTranslationNeeded {
+            return
+        }
+        cancelPresentation()
+        popover.show(.noTranslationNeeded(original: snapshot.text, screenFrame: snapshot.screenFrame))
     }
 
     private func presentUnavailable(screenFrame: CGRect) {
@@ -340,6 +405,10 @@ public final class SelectionTranslateController {
                 return
             } catch {
                 guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
+                if let selection = error as? SelectionTranslateError, selection == .noTranslationNeeded {
+                    self.presentNoTranslationNeeded(snapshot)
+                    return
+                }
                 self.logger.event("selection_translate_failed", fields: ["status": "error"])
                 self.popover.show(.failed(
                     original: snapshot.text,
@@ -362,9 +431,10 @@ public final class SelectionTranslateController {
             ))
             return
         }
+        let mode = optimizeMode
         translateTask = Task { @MainActor [weak self] in
             do {
-                let optimized = try await translator.optimizePrompt(original)
+                let optimized = try await translator.optimizePrompt(original, mode: mode)
                 guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
                 let text = optimized.trimmingCharacters(in: .whitespacesAndNewlines)
                 if text.isEmpty {
@@ -390,17 +460,28 @@ public final class SelectionTranslateController {
         }
     }
 
+    private func isOwnFrontmostApplication() -> Bool {
+        isOwnApplication(frontmostBundleIdentifier())
+    }
+
+    private func isOwnApplication(_ bundleIdentifier: String) -> Bool {
+        !bundleIdentifier.isEmpty && ownBundleIdentifiers.contains(bundleIdentifier)
+    }
+
     private static func describe(_ error: Error) -> String {
+        if let selection = error as? SelectionTranslateError {
+            return selection.uiSafeDescription
+        }
+        if let translation = error as? TranslationError {
+            switch translation {
+            case .invalidResponse, .invalidRequest:
+                return SelectionTranslateError.emptyResult.uiSafeDescription
+            default:
+                return translation.uiSafeDescription
+            }
+        }
         if let safe = error as? UISafeError {
             return safe.uiSafeDescription
-        }
-        if let selection = error as? SelectionTranslateError {
-            switch selection {
-            case .translatorUnavailable:
-                return "翻译服务未就绪"
-            case .emptyResult:
-                return "翻译失败"
-            }
         }
         return UIFeedback.genericErrorMessage
     }

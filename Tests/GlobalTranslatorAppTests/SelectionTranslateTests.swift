@@ -23,7 +23,8 @@ struct SelectionTranslateControllerTests {
         reader: FakeSelectedTextReader,
         popover: FakeSelectionPopover,
         translator: StubSelectionTranslator,
-        permission: FakePermissionController = FakePermissionController(snapshot: .allGranted)
+        permission: FakePermissionController = FakePermissionController(snapshot: .allGranted),
+        frontmostBundleIdentifier: @escaping () -> String = { "com.apple.TextEdit" }
     ) -> SelectionTranslateController {
         SelectionTranslateController(
             reader: reader,
@@ -33,6 +34,7 @@ struct SelectionTranslateControllerTests {
             logger: RecordingLogger(),
             translator: { translator },
             ownBundleIdentifiers: ["com.maodashu.global-translator"],
+            frontmostBundleIdentifier: frontmostBundleIdentifier,
             settleDelay: .milliseconds(5),
             unavailableDismissDelay: .milliseconds(30)
         )
@@ -63,6 +65,54 @@ struct SelectionTranslateControllerTests {
         #expect(popover.currentContent?.displayTranslation == "你好，世界")
         #expect(popover.currentContent?.originalPreview == "Hello world")
         #expect(popover.currentContent?.allowsCopy == true)
+    }
+
+    @Test
+    func pointerOnSceneMenuDoesNotDismissPopover() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Hello world")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "你好，世界"
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .translated }
+        popover.extraInteractionFrames = [CGRect(x: 400, y: 400, width: 120, height: 80)]
+        let dismissesBefore = popover.dismissCount
+        controller.handlePointer(.down, location: CGPoint(x: 430, y: 430))
+        controller.handlePointer(.up, location: CGPoint(x: 430, y: 430))
+        #expect(popover.currentContent?.status == .translated)
+        #expect(popover.dismissCount == dismissesBefore)
+        controller.handlePointer(.down, location: CGPoint(x: 10, y: 10))
+        #expect(popover.currentContent == nil)
+        #expect(popover.dismissCount == dismissesBefore + 1)
+    }
+
+    @Test
+    func sceneMenuReleaseAfterMenuClosesDoesNotResettleSelection() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Hello world")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "你好，世界"
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        dragSelect(controller)
+        try await waitUntil { popover.currentContent?.status == .translated }
+        let readsBefore = reader.readCount
+        let clipboardBefore = reader.clipboardFallbackUseCount
+        let dismissesBefore = popover.dismissCount
+
+        popover.extraInteractionFrames = [CGRect(x: 400, y: 400, width: 120, height: 80)]
+        controller.handlePointer(.down, location: CGPoint(x: 430, y: 430))
+        popover.extraInteractionFrames = []
+        controller.handlePointer(.up, location: CGPoint(x: 430, y: 430))
+
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(popover.currentContent?.status == .translated)
+        #expect(popover.currentContent?.displayTranslation == "你好，世界")
+        #expect(popover.dismissCount == dismissesBefore)
+        #expect(reader.readCount == readsBefore)
+        #expect(reader.clipboardFallbackUseCount == clipboardBefore)
     }
 
     @Test
@@ -112,6 +162,81 @@ struct SelectionTranslateControllerTests {
         #expect(popover.currentContent?.showsOptimizeAction == true)
         try await Task.sleep(for: .milliseconds(40))
         #expect(popover.currentContent?.status == .alreadyChinese)
+    }
+
+    @Test
+    func technicalTokenPhraseShowsSoftCopyWithoutCallingBackend() async throws {
+        let phrase = "Swift 6 + SwiftUI + ScreenCaptureKit"
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot(phrase)))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.error = TranslationError.invalidResponse("translation copied the source")
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .noTranslationNeeded }
+        #expect(translator.texts.isEmpty)
+        #expect(popover.currentContent?.displayTranslation == "专有名词，无需翻译")
+        #expect(popover.currentContent?.displayTranslation != "服务返回异常，请稍后重试")
+        #expect(popover.currentContent?.showsOptimizeAction == true)
+        #expect(popover.currentContent?.status != .failed)
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(popover.currentContent?.status == .noTranslationNeeded)
+        popover.simulateTranslate()
+        try await waitUntil { popover.currentContent?.status == .failed }
+        #expect(translator.texts == [phrase])
+        #expect(popover.currentContent?.displayTranslation == "翻译失败")
+        #expect(popover.currentContent?.displayTranslation != "服务返回异常，请稍后重试")
+        #expect(popover.currentContent?.showsOptimizeAction == true)
+    }
+
+    @Test
+    func copiedSourceTranslationErrorShowsSoftFailureNotServiceException() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Hello world")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.error = TranslationError.invalidResponse("translation copied the source")
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .failed }
+        #expect(translator.texts == ["Hello world"])
+        #expect(popover.currentContent?.displayTranslation == "翻译失败")
+        #expect(popover.currentContent?.displayTranslation != "服务返回异常，请稍后重试")
+        #expect(popover.currentContent?.showsOptimizeAction == true)
+    }
+
+    @Test
+    func emptySelectionTranslateResultShowsSoftFailure() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Hello world")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.error = SelectionTranslateError.emptyResult
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .failed }
+        #expect(popover.currentContent?.displayTranslation == "翻译失败")
+        #expect(popover.currentContent?.displayTranslation != "服务返回异常，请稍后重试")
+        #expect(popover.currentContent?.showsOptimizeAction == true)
+    }
+
+    @Test
+    func clipboardFallbackTechnicalPhraseStillShowsSoftCopy() async throws {
+        let phrase = "Swift 6 + SwiftUI + ScreenCaptureKit"
+        let reader = FakeSelectedTextReader(result: .empty)
+        reader.clipboardFallbackSnapshot = snapshot(phrase, bundle: "com.electron.lark")
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        dragSelect(controller)
+        try await waitUntil { popover.currentContent?.status == .noTranslationNeeded }
+        #expect(reader.clipboardFallbackUseCount == 1)
+        #expect(translator.texts.isEmpty)
+        #expect(popover.currentContent?.displayTranslation == "专有名词，无需翻译")
+        #expect(popover.currentContent?.displayTranslation != "服务返回异常，请稍后重试")
+        #expect(popover.currentContent?.showsOptimizeAction == true)
     }
 
     @Test
@@ -245,8 +370,11 @@ struct SelectionTranslateControllerTests {
         reader.setResult(.snapshot(snapshot("Another sentence")))
         translator.result = "另一句"
         select(controller)
-        try await waitUntil { popover.currentContent?.original == "Another sentence" }
-        #expect(popover.currentContent?.displayTranslation == "另一句")
+        try await waitUntil({
+            popover.currentContent?.status == .translated
+                && popover.currentContent?.displayTranslation == "另一句"
+        }, timeout: 2)
+        #expect(popover.currentContent?.original == "Another sentence")
 
         popover.simulateUserDismiss()
         reader.setResult(.empty)
@@ -254,7 +382,10 @@ struct SelectionTranslateControllerTests {
         try await Task.sleep(for: .milliseconds(25))
         reader.setResult(.snapshot(snapshot("Another sentence")))
         select(controller)
-        try await waitUntil { popover.currentContent?.status == .translated }
+        try await waitUntil({
+            popover.currentContent?.status == .translated
+                && popover.currentContent?.displayTranslation == "另一句"
+        }, timeout: 2)
         #expect(popover.currentContent?.original == "Another sentence")
     }
 
@@ -278,6 +409,80 @@ struct SelectionTranslateControllerTests {
     }
 
     @Test
+    func dragWithEmptyAXShowsClipboardFallbackPopover() async throws {
+        let reader = FakeSelectedTextReader(result: .empty)
+        reader.clipboardFallbackSnapshot = snapshot("Hello from Feishu", bundle: "com.electron.lark")
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "你好，飞书"
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        dragSelect(controller)
+        try await waitUntil { popover.currentContent?.status == .translated }
+        #expect(reader.lastAllowClipboardFallback)
+        #expect(reader.clipboardFallbackUseCount == 1)
+        #expect(translator.texts == ["Hello from Feishu"])
+        #expect(popover.currentContent?.displayTranslation == "你好，飞书")
+    }
+
+    @Test
+    func dragWithEmptyAXChineseClipboardShowsAlreadyChinese() async throws {
+        let reader = FakeSelectedTextReader(result: .empty)
+        reader.clipboardFallbackSnapshot = snapshot("一个女孩站在雨里", bundle: "com.electron.lark")
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        dragSelect(controller)
+        try await waitUntil { popover.currentContent?.status == .alreadyChinese }
+        #expect(reader.clipboardFallbackUseCount == 1)
+        #expect(translator.texts.isEmpty)
+        #expect(popover.currentContent?.displayTranslation == "已是中文")
+        #expect(popover.currentContent?.showsOptimizeAction == true)
+    }
+
+    @Test
+    func clickWithoutDragAndEmptyAXDoesNotUseClipboardOrShowPopover() async throws {
+        let reader = FakeSelectedTextReader(result: .empty)
+        reader.clipboardFallbackSnapshot = snapshot("should-not-use", bundle: "com.electron.lark")
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        // Click-without-drag may still AX-poll (TextEdit / dismiss); it must not
+        // steal the clipboard or show a popover. Wait for settle so this is not a 25ms race.
+        try await waitUntil { reader.readCount >= 1 }
+        #expect(reader.clipboardFallbackUseCount == 0)
+        #expect(!reader.lastAllowClipboardFallback)
+        #expect(translator.texts.isEmpty)
+        #expect(popover.currentContent == nil)
+        #expect(popover.shown.isEmpty)
+    }
+
+    @Test
+    func ownAppClipboardFallbackIsStillSkipped() async throws {
+        let reader = FakeSelectedTextReader(result: .empty)
+        reader.clipboardFallbackSnapshot = snapshot("Hello from self", bundle: "com.maodashu.global-translator")
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        let controller = makeController(
+            reader: reader,
+            popover: popover,
+            translator: translator,
+            frontmostBundleIdentifier: { "com.maodashu.global-translator" }
+        )
+        controller.setEnabled(true)
+        dragSelect(controller)
+        try await waitUntil { reader.readCount >= 1 }
+        #expect(reader.clipboardFallbackUseCount == 0)
+        #expect(!reader.lastAllowClipboardFallback)
+        #expect(translator.texts.isEmpty)
+        #expect(popover.currentContent == nil)
+        #expect(popover.shown.isEmpty)
+    }
+
+    @Test
     func optimizeButtonRewritesChineseDraftWithoutTranslating() async throws {
         let reader = FakeSelectedTextReader(result: .snapshot(snapshot("一个女孩站在雨里")))
         let popover = FakeSelectionPopover()
@@ -291,9 +496,31 @@ struct SelectionTranslateControllerTests {
         try await waitUntil { popover.currentContent?.status == .optimized }
         #expect(translator.texts.isEmpty)
         #expect(translator.optimizedTexts == ["一个女孩站在雨里"])
+        #expect(translator.optimizedModes == [.generativePrompt])
         #expect(popover.currentContent?.displayTranslation == translator.optimizeResult)
         #expect(popover.currentContent?.allowsCopy == true)
         #expect(popover.currentContent?.copyText == translator.optimizeResult)
+    }
+
+    @Test
+    func optimizeUsesSelectedSceneMode() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("这段代码写得不清楚")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.optimizeResult = "这段实现把错误路径写清楚了。"
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        controller.setOptimizeMode(.technicalExpression)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .alreadyChinese }
+        popover.simulateOptimize()
+        try await waitUntil { popover.currentContent?.status == .optimized }
+        #expect(translator.optimizedModes == [.technicalExpression])
+        popover.simulateOptimizeMode(.professionalReply)
+        popover.simulateOptimize()
+        try await waitUntil { translator.optimizedModes.count == 2 }
+        #expect(translator.optimizedModes == [.technicalExpression, .professionalReply])
+        #expect(popover.optimizeMode == .professionalReply)
     }
 
     @Test
@@ -361,8 +588,8 @@ struct SelectionTranslateControllerTests {
         #expect(!popover.shown.contains(where: { $0.status == .optimized }))
     }
 
-    private func waitUntil(_ condition: @escaping () -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(1)
+    private func waitUntil(_ condition: @escaping () -> Bool, timeout: TimeInterval = 1) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
         while !condition(), Date() < deadline {
             try await Task.sleep(for: .milliseconds(5))
         }
@@ -389,6 +616,28 @@ extension ApplicationControllerTests {
         #expect(!controller.configuration.selectionTranslateEnabled)
         #expect(controller.selectionTranslate?.isEnabled == false)
         #expect(await store.saved.last?.selectionTranslateEnabled == false)
+        await controller.stop()
+    }
+
+    @Test
+    func promptOptimizeModePersistsLikeOtherSettings() async throws {
+        let store = RecordingConfigurationStore()
+        let popover = FakeSelectionPopover()
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, selectionPopover: popover)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        #expect(controller.configuration.promptOptimizeMode == .generativePrompt)
+        controller.setPromptOptimizeMode(.highEQ)
+        try await controller.persistence.flush()
+        #expect(controller.configuration.promptOptimizeMode == .highEQ)
+        #expect(await store.saved.last?.promptOptimizeMode == .highEQ)
+        popover.simulateOptimizeMode(.wordingFix)
+        try await controller.persistence.flush()
+        #expect(controller.configuration.promptOptimizeMode == .wordingFix)
+        #expect(await store.saved.last?.promptOptimizeMode == .wordingFix)
         await controller.stop()
     }
 
@@ -459,7 +708,38 @@ extension ApplicationControllerTests {
         #expect(!session.isRunning)
         #expect(!session.isBridgeActive)
         #expect(try await session.translateSelection("Hello there") == "你好 Hello there")
+        #expect(
+            try await session.translateSelection("Swift 6 + SwiftUI + ScreenCaptureKit")
+                == "你好 Swift 6 + SwiftUI + ScreenCaptureKit"
+        )
         #expect(try await session.optimizePrompt("一个女孩站在雨里") == "优化 一个女孩站在雨里")
+        #expect(try await session.optimizePrompt("Swift 6 + SwiftUI + ScreenCaptureKit") == "优化 Swift 6 + SwiftUI + ScreenCaptureKit")
+        await controller.stop()
+    }
+
+    @Test
+    func optimizePromptSendsDistinctInstructionsPerMode() async throws {
+        let coordinator = RecordingPlainCoordinator()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: false, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, coordinator: coordinator)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        _ = try await session.optimizePrompt("把这段写清楚", mode: .technicalExpression)
+        _ = try await session.optimizePrompt("把这段写清楚", mode: .professionalReply)
+        let systems = await coordinator.systems
+        let users = await coordinator.users
+        #expect(systems.count == 2)
+        #expect(systems[0].contains("technical or code-related"))
+        #expect(systems[1].contains("professional workplace reply"))
+        #expect(systems[0] != systems[1])
+        #expect(users[0].contains("clearer technical expression"))
+        #expect(users[1].contains("professional workplace reply"))
+        #expect(systems.allSatisfy { $0.contains("untrusted data") })
         await controller.stop()
     }
 }

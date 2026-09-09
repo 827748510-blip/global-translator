@@ -16,7 +16,10 @@ struct SelectedTextReaderTests {
             frontmostApplication: { FrontmostApplicationInfo(pid: 42, bundleIdentifier: "com.apple.TextEdit") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 1440, height: 900) }
         )
-        let result = reader.readSelection(mouseLocation: CGPoint(x: 40, y: 40))
+        let result = reader.readSelection(
+            mouseLocation: CGPoint(x: 40, y: 40),
+            allowClipboardFallback: true
+        )
         guard case .snapshot(let snapshot) = result else {
             Issue.record("expected snapshot")
             return
@@ -31,25 +34,131 @@ struct SelectedTextReaderTests {
     @Test
     func emptySelectionIsEmptyNotUnavailable() {
         let ax = FakeSelectionAXReader(selectedText: "", range: (0, 0), bounds: nil)
+        let clipboard = RecordingClipboardFallback(text: "clip")
         let reader = AXSelectedTextReader(
             attributeReader: ax,
-            clipboard: RecordingClipboardFallback(text: "clip"),
+            clipboard: clipboard,
             frontmostApplication: { FrontmostApplicationInfo(pid: 7, bundleIdentifier: "com.apple.Notes") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
         #expect(reader.readSelection(mouseLocation: .zero) == .empty)
+        #expect(clipboard.callCount == 0)
     }
 
     @Test
-    func missingFocusedElementIsUnavailable() {
-        let ax = FakeSelectionAXReader(hasFocus: false)
+    func dragWithEmptyAXUsesClipboardFallback() {
+        let ax = FakeSelectionAXReader(selectedText: "", range: (0, 0), bounds: nil)
+        let clipboard = RecordingClipboardFallback(text: "Feishu selected text")
         let reader = AXSelectedTextReader(
             attributeReader: ax,
-            clipboard: nil,
+            clipboard: clipboard,
+            frontmostApplication: { FrontmostApplicationInfo(pid: 21, bundleIdentifier: "com.electron.lark") },
+            primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
+        )
+        guard case .snapshot(let snapshot) = reader.readSelection(
+            mouseLocation: CGPoint(x: 40, y: 80),
+            allowClipboardFallback: true
+        ) else {
+            Issue.record("expected clipboard snapshot after drag")
+            return
+        }
+        #expect(snapshot.text == "Feishu selected text")
+        #expect(snapshot.source == .clipboardFallback)
+        #expect(snapshot.bundleIdentifier == "com.electron.lark")
+        #expect(clipboard.callCount == 1)
+        #expect(snapshot.screenFrame == SelectionTranslateSupport.fallbackFrame(at: CGPoint(x: 40, y: 80)))
+    }
+
+    @Test
+    func clickWithoutDragAndEmptyAXDoesNotUseClipboard() {
+        let ax = FakeSelectionAXReader(selectedText: "", range: (0, 0), bounds: nil)
+        let clipboard = RecordingClipboardFallback(text: "should-not-copy")
+        let reader = AXSelectedTextReader(
+            attributeReader: ax,
+            clipboard: clipboard,
+            frontmostApplication: { FrontmostApplicationInfo(pid: 21, bundleIdentifier: "com.electron.lark") },
+            primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
+        )
+        #expect(reader.readSelection(mouseLocation: .zero, allowClipboardFallback: false) == .empty)
+        #expect(clipboard.callCount == 0)
+    }
+
+    @Test
+    func dragWithEmptyAXAndEmptyClipboardIsUnavailable() {
+        let ax = FakeSelectionAXReader(selectedText: "", range: (0, 0), bounds: nil)
+        let clipboard = RecordingClipboardFallback(text: nil)
+        let reader = AXSelectedTextReader(
+            attributeReader: ax,
+            clipboard: clipboard,
+            frontmostApplication: { FrontmostApplicationInfo(pid: 21, bundleIdentifier: "com.electron.lark") },
+            primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
+        )
+        #expect(reader.readSelection(mouseLocation: .zero, allowClipboardFallback: true) == .unavailable)
+        #expect(clipboard.callCount == 1)
+    }
+
+    @Test
+    func missingFocusedElementStillUsesClipboardAfterDrag() {
+        let ax = FakeSelectionAXReader(hasFocus: false)
+        let clipboard = RecordingClipboardFallback(text: "copied from custom canvas")
+        let reader = AXSelectedTextReader(
+            attributeReader: ax,
+            clipboard: clipboard,
+            frontmostApplication: { FrontmostApplicationInfo(pid: 9, bundleIdentifier: "com.electron.lark") },
+            primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
+        )
+        guard case .snapshot(let snapshot) = reader.readSelection(
+            mouseLocation: CGPoint(x: 12, y: 18),
+            allowClipboardFallback: true
+        ) else {
+            Issue.record("expected clipboard snapshot without AX focus")
+            return
+        }
+        #expect(snapshot.text == "copied from custom canvas")
+        #expect(snapshot.source == .clipboardFallback)
+        #expect(clipboard.callCount == 1)
+        #expect(snapshot.screenFrame == SelectionTranslateSupport.fallbackFrame(at: CGPoint(x: 12, y: 18)))
+    }
+
+    @Test
+    func clipboardFallbackWithZeroRangeAnchorsNearMouseNotWebviewFrame() {
+        let mouse = CGPoint(x: 420, y: 310)
+        let ax = FakeSelectionAXReader(
+            selectedText: "",
+            range: (0, 0),
+            bounds: CGRect(x: 0, y: 0, width: 1_200, height: 800)
+        )
+        let clipboard = RecordingClipboardFallback(text: "bubble text")
+        let reader = AXSelectedTextReader(
+            attributeReader: ax,
+            clipboard: clipboard,
+            frontmostApplication: { FrontmostApplicationInfo(pid: 21, bundleIdentifier: "com.electron.lark") },
+            primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 1_440, height: 900) }
+        )
+        guard case .snapshot(let snapshot) = reader.readSelection(
+            mouseLocation: mouse,
+            allowClipboardFallback: true
+        ) else {
+            Issue.record("expected clipboard snapshot")
+            return
+        }
+        #expect(snapshot.screenFrame == SelectionTranslateSupport.fallbackFrame(at: mouse))
+        #expect(snapshot.screenFrame.width < 10)
+        #expect(snapshot.screenFrame.height < 20)
+    }
+
+    @Test
+    func missingFocusedElementWithoutDragDoesNotUseClipboard() {
+        let ax = FakeSelectionAXReader(hasFocus: false)
+        let clipboard = RecordingClipboardFallback(text: "should-not-copy")
+        let reader = AXSelectedTextReader(
+            attributeReader: ax,
+            clipboard: clipboard,
             frontmostApplication: { FrontmostApplicationInfo(pid: 9, bundleIdentifier: "com.apple.Safari") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
-        #expect(reader.readSelection(mouseLocation: .zero) == .unavailable)
+        #expect(reader.readSelection(mouseLocation: .zero, allowClipboardFallback: false) == .unavailable)
+        #expect(clipboard.callCount == 0)
     }
 
     @Test
@@ -69,6 +178,9 @@ struct SelectedTextReaderTests {
         #expect(snapshot.text == "Clipboard text")
         #expect(snapshot.source == .clipboardFallback)
         #expect(clipboard.callCount == 1)
+        #expect(snapshot.screenFrame.width == 40)
+        #expect(snapshot.screenFrame.height == 12)
+        #expect(snapshot.screenFrame != SelectionTranslateSupport.fallbackFrame(at: CGPoint(x: 5, y: 5)))
     }
 
     @Test
@@ -88,6 +200,7 @@ struct SelectedTextReaderTests {
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
         #expect(reader.readSelection(mouseLocation: .zero) == .empty)
+        #expect(reader.readSelection(mouseLocation: .zero, allowClipboardFallback: true) == .empty)
         #expect(clipboard.callCount == 0)
         #expect(ax.selectedTextCalls == 0)
     }

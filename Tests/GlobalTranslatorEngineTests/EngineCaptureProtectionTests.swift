@@ -41,6 +41,36 @@ struct EngineCaptureProtectionTests {
     }
 
     @Test
+    func includeIneligibleTextStillSendsTechnicalTokenPhraseToTheModel() async throws {
+        let backend = RecordingBackend(kind: .local) { request, _ in
+            TranslationResult(windowRevision: request.windowRevision, translations: request.items.map {
+                Translation(segmentId: $0.id, simplifiedChineseText: "样例")
+            })
+        }
+        let coordinator = TranslationCoordinator(
+            backends: [backend],
+            permissions: SystemPermissionController(snapshotProvider: { .allGranted })
+        )
+        let phrase = "Swift 6 + SwiftUI + ScreenCaptureKit"
+        #expect(!TextFilter.shouldTranslate(phrase))
+        let snapshot = makeSnapshot(regions: [makeRegion(text: phrase)], revision: 1)
+        let skipped = try await coordinator.translate(
+            snapshot: snapshot, backend: .local, modelIdentifier: "test", visionFallbackEnabled: false
+        )
+        #expect(skipped.translations.isEmpty)
+        #expect(await backend.requests.isEmpty)
+        let forced = try await coordinator.translate(
+            snapshot: snapshot,
+            backend: .local,
+            modelIdentifier: "test",
+            visionFallbackEnabled: false,
+            includeIneligibleText: true
+        )
+        #expect(forced.translations.count == 1)
+        #expect(await backend.requests.count == 1)
+    }
+
+    @Test
     func pageTextSnapshotIgnoresSecureInputAndMissingWindowPermissions() async throws {
         let backend = VisionRecordingBackend(kind: .local)
         let permissions = SystemPermissionController(snapshotProvider: {

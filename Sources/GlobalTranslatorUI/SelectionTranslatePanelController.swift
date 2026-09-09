@@ -38,10 +38,18 @@ public final class SelectionTranslatePanel: NSPanel {
     func startDismissalMonitors() {
         guard eventMonitors.isEmpty else { return }
         var monitors: [Any] = []
+        // NSEvent monitors run on the main thread. Never capture `event` inside
+        // assumeIsolated, and never hop a `work` closure across DispatchQueue.main.sync.
         let outside: (NSEvent) -> Void = { [weak self] _ in
-            guard let self, self.isVisible else { return }
-            if !self.frame.contains(NSEvent.mouseLocation) {
-                self.onOutsideClick?()
+            let location = NSEvent.mouseLocation
+            guard let self else { return }
+            assert(Thread.isMainThread)
+            let panel = self
+            _ = MainActor.assumeIsolated {
+                guard panel.isVisible else { return false }
+                if panel.containsOwnedUI(at: location) { return false }
+                panel.onOutsideClick?()
+                return true
             }
         }
         if let global = NSEvent.addGlobalMonitorForEvents(
@@ -53,23 +61,49 @@ public final class SelectionTranslatePanel: NSPanel {
         if let local = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown],
             handler: { [weak self] event in
-                guard let self, self.isVisible, !self.frame.contains(NSEvent.mouseLocation) else { return event }
-                self.onOutsideClick?()
+                let location = NSEvent.mouseLocation
+                guard let self else { return event }
+                assert(Thread.isMainThread)
+                let panel = self
+                _ = MainActor.assumeIsolated {
+                    guard panel.isVisible else { return false }
+                    if panel.containsOwnedUI(at: location) { return false }
+                    panel.onOutsideClick?()
+                    return true
+                }
                 return event
             }
         ) {
             monitors.append(local)
         }
         if let escapeGlobal = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
-            guard event.keyCode == 53 else { return }
-            self?.onEscape?()
+            let isEscape = event.keyCode == 53
+            guard isEscape else { return }
+            guard let self else { return }
+            assert(Thread.isMainThread)
+            let panel = self
+            _ = MainActor.assumeIsolated {
+                guard panel.isVisible else { return false }
+                if panel.hasOwnedMenuOpen() { return false }
+                panel.onEscape?()
+                return true
+            }
         }) {
             monitors.append(escapeGlobal)
         }
         if let escapeLocal = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
-            guard event.keyCode == 53 else { return event }
-            self?.onEscape?()
-            return nil
+            let isEscape = event.keyCode == 53
+            guard isEscape else { return event }
+            guard let self else { return event }
+            assert(Thread.isMainThread)
+            let panel = self
+            let consume = MainActor.assumeIsolated {
+                guard panel.isVisible else { return false }
+                if panel.hasOwnedMenuOpen() { return false }
+                panel.onEscape?()
+                return true
+            }
+            return consume ? nil : event
         }) {
             monitors.append(escapeLocal)
         }
@@ -82,6 +116,46 @@ public final class SelectionTranslatePanel: NSPanel {
     }
 
     var dismissalMonitorCount: Int { eventMonitors.count }
+
+    @MainActor
+    func containsOwnedUI(at location: CGPoint, windows: [NSWindow]? = nil) -> Bool {
+        SelectionPopoverHitTesting.containsInteraction(
+            panelFrame: frame,
+            location: location,
+            auxiliaryFrames: SelectionPopoverHitTesting.auxiliaryFrames(
+                from: windows ?? NSApp.windows,
+                excluding: self
+            )
+        )
+    }
+
+    @MainActor
+    func hasOwnedMenuOpen(windows: [NSWindow]? = nil) -> Bool {
+        let windows = windows ?? NSApp.windows
+        return windows.contains { $0.isVisible && $0 !== self && $0.level == .popUpMenu }
+    }
+}
+
+/// Picker menus render in a pop-up window outside the floating panel frame.
+/// Clicks there must not count as "outside" dismissal.
+public enum SelectionPopoverHitTesting {
+    public static func containsInteraction(
+        panelFrame: CGRect,
+        location: CGPoint,
+        auxiliaryFrames: [CGRect]
+    ) -> Bool {
+        if panelFrame.contains(location) { return true }
+        return auxiliaryFrames.contains { $0.contains(location) }
+    }
+
+    @MainActor
+    public static func auxiliaryFrames(from windows: [NSWindow], excluding panel: NSWindow) -> [CGRect] {
+        windows.compactMap { window in
+            guard window.isVisible, window !== panel else { return nil }
+            let owned = window.level == .popUpMenu || window.parent === panel
+            return owned ? window.frame : nil
+        }
+    }
 }
 
 @MainActor
@@ -91,8 +165,19 @@ public protocol SelectionPopoverControlling: AnyObject {
     var onUserDismiss: (() -> Void)? { get set }
     var onTranslate: (() -> Void)? { get set }
     var onOptimize: (() -> Void)? { get set }
+    var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)? { get set }
+    var optimizeMode: PromptOptimizeMode { get set }
+    var copyFeedback: SelectionCopyFeedback { get }
     func show(_ content: SelectionPopoverContent)
     func dismiss()
+    func containsInteraction(at location: CGPoint) -> Bool
+}
+
+@MainActor
+public extension SelectionPopoverControlling {
+    func containsInteraction(at location: CGPoint) -> Bool {
+        panelFrame?.contains(location) == true
+    }
 }
 
 @MainActor
@@ -102,6 +187,9 @@ public final class NullSelectionPopover: SelectionPopoverControlling {
     public var onUserDismiss: (() -> Void)?
     public var onTranslate: (() -> Void)?
     public var onOptimize: (() -> Void)?
+    public var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
+    public var optimizeMode: PromptOptimizeMode = .generativePrompt
+    public var copyFeedback: SelectionCopyFeedback { .idle }
     public init() {}
     public func show(_ content: SelectionPopoverContent) { currentContent = content }
     public func dismiss() { currentContent = nil }
@@ -114,27 +202,66 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     public var onUserDismiss: (() -> Void)?
     public var onTranslate: (() -> Void)?
     public var onOptimize: (() -> Void)?
+    public var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
+    public var optimizeMode: PromptOptimizeMode {
+        get { chrome.optimizeMode }
+        set { chrome.optimizeMode = newValue }
+    }
+    public var copyFeedback: SelectionCopyFeedback { chrome.copyFeedback }
 
+    private let chrome = SelectionPopoverChrome()
     private var panel: SelectionTranslatePanel?
     private let visibleFramesProvider: () -> [CGRect]
-    private let pasteboardWriter: (String) -> Void
+    private let pasteboardWriter: (String) throws -> Void
+    private let copyFeedbackDelay: Duration
+    private var copyFeedbackTask: Task<Void, Never>?
+    private var copyFeedbackGeneration: UInt64 = 0
 
     public var panelFrame: CGRect? { panel?.isVisible == true ? panel?.frame : nil }
 
+    public func containsInteraction(at location: CGPoint) -> Bool {
+        guard let panel, panel.isVisible else { return false }
+        return panel.containsOwnedUI(at: location)
+    }
+
+    /// Test seam: same path as mouse-down monitors.
+    public func handlePotentialOutsideClick(at location: CGPoint, auxiliaryFrames: [CGRect]? = nil) {
+        guard let panel, panel.isVisible else { return }
+        let extra = auxiliaryFrames ?? SelectionPopoverHitTesting.auxiliaryFrames(from: NSApp.windows, excluding: panel)
+        if SelectionPopoverHitTesting.containsInteraction(
+            panelFrame: panel.frame,
+            location: location,
+            auxiliaryFrames: extra
+        ) {
+            return
+        }
+        notifyUserDismiss()
+    }
+
     public init(
         visibleFramesProvider: @escaping () -> [CGRect] = { NSScreen.screens.map(\.visibleFrame) },
-        pasteboardWriter: @escaping (String) -> Void = { text in
+        pasteboardWriter: @escaping (String) throws -> Void = { text in
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
-            pasteboard.setString(text, forType: .string)
-        }
+            guard pasteboard.setString(text, forType: .string) else {
+                throw SelectionCopyError.writeFailed
+            }
+        },
+        copyFeedbackDelay: Duration = .milliseconds(SelectionTranslateSupport.copyFeedbackMilliseconds)
     ) {
         self.visibleFramesProvider = visibleFramesProvider
         self.pasteboardWriter = pasteboardWriter
+        self.copyFeedbackDelay = copyFeedbackDelay
     }
 
     public func show(_ content: SelectionPopoverContent) {
+        resetCopyFeedback(.idle)
         currentContent = content
+        presentCurrent(resize: true)
+    }
+
+    private func presentCurrent(resize: Bool) {
+        guard let content = currentContent else { return }
         let visibleFrames = visibleFramesProvider()
         let origin = content.screenFrame.origin
         guard let visibleFrame = OverlayLayout.owningVisibleFrame(for: origin, in: visibleFrames) else {
@@ -149,13 +276,20 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
         )
         let hosting = NSHostingView(rootView: SelectionTranslatePopoverView(
             content: content,
+            chrome: chrome,
             onCopy: { [weak self] in self?.copyCurrentTranslation() },
             onTranslate: { [weak self] in self?.onTranslate?() },
-            onOptimize: { [weak self] in self?.onOptimize?() }
+            onOptimize: { [weak self] in self?.onOptimize?() },
+            onOptimizeModeChange: { [weak self] mode in
+                self?.optimizeMode = mode
+                self?.onOptimizeModeChange?(mode)
+            }
         ))
         if let panel {
             panel.contentView = hosting
-            panel.setFrame(frame, display: true)
+            if resize {
+                panel.setFrame(frame, display: true)
+            }
             if !panel.isVisible {
                 panel.startDismissalMonitors()
                 panel.orderFrontRegardless()
@@ -172,6 +306,7 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     }
 
     public func dismiss() {
+        resetCopyFeedback(.idle)
         currentContent = nil
         panel?.stopDismissalMonitors()
         panel?.orderOut(nil)
@@ -184,17 +319,48 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     }
 
     /// Test seam and Copy button path: writes the displayed translation
-    /// (or the original when the status is 已是中文).
+    /// (or the original when the status is 已是中文 / 无需翻译).
     public func copyCurrentTranslation() {
         guard let current = currentContent, current.allowsCopy else { return }
         let text = current.copyText
-        onCopy?(text)
-        pasteboardWriter(text)
+        do {
+            try pasteboardWriter(text)
+            onCopy?(text)
+            applyCopyFeedback(.copied)
+        } catch {
+            applyCopyFeedback(.failed)
+        }
+    }
+
+    private func resetCopyFeedback(_ feedback: SelectionCopyFeedback) {
+        copyFeedbackGeneration &+= 1
+        copyFeedbackTask?.cancel()
+        copyFeedbackTask = nil
+        chrome.copyFeedback = feedback
+    }
+
+    /// Sets copy-button chrome immediately. Does not rebuild the panel — that
+    /// was resetting feedback to idle via dismissal / hosting-view replacement.
+    private func applyCopyFeedback(_ feedback: SelectionCopyFeedback) {
+        copyFeedbackGeneration &+= 1
+        let token = copyFeedbackGeneration
+        copyFeedbackTask?.cancel()
+        chrome.copyFeedback = feedback
+        let delay = copyFeedbackDelay
+        copyFeedbackTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled, self.copyFeedbackGeneration == token else { return }
+            self.chrome.copyFeedback = .idle
+        }
     }
 
     public static func contentSize(for content: SelectionPopoverContent) -> CGSize {
-        let textWidth = GTSelectionMetrics.width - GTOverlayMetrics.horizontalPadding * 2
-        var height = GTOverlayMetrics.verticalPadding * 2
+        let textWidth = GTSelectionMetrics.width - GTSelectionMetrics.horizontalPadding * 2
+        var height = GTSelectionMetrics.verticalPadding * 2
         if !content.originalPreview.isEmpty {
             height += OverlayLayout.estimatedTextSize(
                 for: content.originalPreview,
@@ -202,16 +368,26 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
                 maxLines: GTSelectionMetrics.maxOriginalLines,
                 font: NSFont.preferredFont(forTextStyle: .caption1)
             ).height
-            height += GTSpacing.xSmall
+            height += GTSelectionMetrics.textBlockSpacing
         }
         height += OverlayLayout.estimatedTextSize(
             for: content.displayTranslation,
             maxWidth: textWidth,
             maxLines: GTSelectionMetrics.maxTranslationLines,
-            font: NSFont.preferredFont(forTextStyle: .body)
+            font: SelectionPopoverLayout.resultMeasuringFont(for: content.status)
         ).height
-        if content.showsActionButtons {
-            height += GTSpacing.xSmall + 28
+        let hasActions = content.showsOptimizeAction || content.showsActionButtons
+        if hasActions {
+            height += GTSelectionMetrics.sectionSpacing
+            if content.showsOptimizeAction {
+                height += GTSelectionMetrics.modePickerHeight
+            }
+            if content.showsActionButtons {
+                if content.showsOptimizeAction {
+                    height += GTSelectionMetrics.actionsSpacing
+                }
+                height += GTSelectionMetrics.actionRowHeight
+            }
         }
         return CGSize(width: GTSelectionMetrics.width, height: max(height, 44))
     }

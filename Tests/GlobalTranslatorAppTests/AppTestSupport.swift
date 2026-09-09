@@ -365,6 +365,41 @@ actor TranslatingCoordinator: TranslationCoordinating {
     }
 }
 
+actor RecordingPlainCoordinator: TranslationCoordinating {
+    private(set) var systems: [String] = []
+    private(set) var users: [String] = []
+
+    func selectBackend(kind: BackendKind, modelIdentifier: String) async {}
+    func clearCache() async {}
+    func cancelPendingRequests() async {}
+    func translate(
+        snapshot: CaptureSnapshot,
+        backend: BackendKind,
+        modelIdentifier: String,
+        visionFallbackEnabled: Bool
+    ) async throws -> EngineOutput {
+        EngineOutput(
+            windowRevision: snapshot.descriptor.revision,
+            translations: [],
+            metrics: EngineMetrics(
+                inputRegionCount: 0,
+                eligibleRegionCount: 0,
+                cacheHitCount: 0,
+                batchCount: 0,
+                translatedRegionCount: 0,
+                durationMilliseconds: 0,
+                status: .cacheOnly
+            )
+        )
+    }
+
+    func completePlain(system: String, user: String, backend _: BackendKind) async throws -> String {
+        systems.append(system)
+        users.append(user)
+        return "rewritten"
+    }
+}
+
 /// Fails if the bridge still dumps a dense page into one coordinator call.
 actor OneItemCoordinator: TranslationCoordinating {
     private(set) var itemCounts: [Int] = []
@@ -477,6 +512,10 @@ final class FakeSelectionPopover: SelectionPopoverControlling {
     var onUserDismiss: (() -> Void)?
     var onTranslate: (() -> Void)?
     var onOptimize: (() -> Void)?
+    var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
+    var optimizeMode: PromptOptimizeMode = .generativePrompt
+    var extraInteractionFrames: [CGRect] = []
+    var copyFeedback: SelectionCopyFeedback = .idle
     func show(_ content: SelectionPopoverContent) {
         currentContent = content
         shown.append(content)
@@ -498,12 +537,23 @@ final class FakeSelectionPopover: SelectionPopoverControlling {
     }
     func simulateTranslate() { onTranslate?() }
     func simulateOptimize() { onOptimize?() }
+    func simulateOptimizeMode(_ mode: PromptOptimizeMode) {
+        optimizeMode = mode
+        onOptimizeModeChange?(mode)
+    }
+    func containsInteraction(at location: CGPoint) -> Bool {
+        if panelFrame?.contains(location) == true { return true }
+        return extraInteractionFrames.contains { $0.contains(location) }
+    }
 }
 
 final class FakeSelectedTextReader: SelectedTextReading, @unchecked Sendable {
     private let lock = NSLock()
     private var result: SelectedTextReadResult
     private(set) var readCount = 0
+    private(set) var lastAllowClipboardFallback = false
+    private(set) var clipboardFallbackUseCount = 0
+    var clipboardFallbackSnapshot: SelectedTextSnapshot?
 
     init(result: SelectedTextReadResult = .empty) {
         self.result = result
@@ -515,11 +565,21 @@ final class FakeSelectedTextReader: SelectedTextReading, @unchecked Sendable {
         lock.unlock()
     }
 
-    func readSelection(mouseLocation: CGPoint) -> SelectedTextReadResult {
+    func readSelection(mouseLocation: CGPoint, allowClipboardFallback: Bool) -> SelectedTextReadResult {
         lock.lock()
         defer { lock.unlock() }
         readCount += 1
-        return result
+        lastAllowClipboardFallback = allowClipboardFallback
+        switch result {
+        case .snapshot:
+            return result
+        case .empty, .unavailable:
+            if allowClipboardFallback, let clipboardFallbackSnapshot {
+                clipboardFallbackUseCount += 1
+                return .snapshot(clipboardFallbackSnapshot)
+            }
+            return result
+        }
     }
 }
 
@@ -531,6 +591,7 @@ final class StubSelectionTranslator: SelectionTranslating {
     var delay: Duration?
     private(set) var texts: [String] = []
     private(set) var optimizedTexts: [String] = []
+    private(set) var optimizedModes: [PromptOptimizeMode] = []
 
     func translateSelection(_ text: String) async throws -> String {
         texts.append(text)
@@ -541,8 +602,9 @@ final class StubSelectionTranslator: SelectionTranslating {
         return result
     }
 
-    func optimizePrompt(_ text: String) async throws -> String {
+    func optimizePrompt(_ text: String, mode: PromptOptimizeMode) async throws -> String {
         optimizedTexts.append(text)
+        optimizedModes.append(mode)
         if let delay {
             try await Task.sleep(for: delay)
         }
