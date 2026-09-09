@@ -28,6 +28,12 @@ struct ReviewFixTests {
         let userItems = try #require(try JSONSerialization.jsonObject(with: userData) as? [[String: Any]])
         #expect(userItems.count == 1)
         #expect(Set(userItems[0].keys) == Set(["segmentId", "sourceText"]))
+        expectNestedReasoningNone(payload)
+        if let temperature = payload["temperature"] as? Double {
+            #expect(abs(temperature - 0.1) < 0.001)
+        } else {
+            Issue.record("missing temperature")
+        }
     }
 
     @Test
@@ -46,15 +52,92 @@ struct ReviewFixTests {
         let payload = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
         #expect(payload["text"] == nil)
         if let tokens = payload["max_output_tokens"] as? Int {
-            #expect(tokens == 1_024)
+            #expect(tokens == 2_048)
         } else if let tokens = payload["max_output_tokens"] as? Double {
-            #expect(Int(tokens) == 1_024)
+            #expect(Int(tokens) == 2_048)
         } else {
             Issue.record("missing max_output_tokens")
         }
+        expectNestedReasoningNone(payload)
         let input = try #require(payload["input"] as? [[String: Any]])
         #expect((input[0]["content"] as? String)?.contains("workplace or social communication") == true)
         #expect((input[1]["content"] as? String)?.contains("一个女孩站在雨里") == true)
+        if let temperature = payload["temperature"] as? Double {
+            #expect(abs(temperature - 0.3) < 0.001)
+        } else {
+            Issue.record("missing temperature")
+        }
+    }
+
+    @Test
+    func deepSeekResponsesPayloadsEncodeNestedReasoningNoneForChatAndV4() async throws {
+        let models = ["deepseek-chat", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"]
+        let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let translateOutput = #"{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"translations\":[{\"segmentId\":\"00000000-0000-0000-0000-000000000001\",\"text\":\"你好\"}]}"}]}]}"#
+        let plainOutput = #"{"output":[{"type":"message","content":[{"type":"output_text","text":"优化后"}]}]}"#
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        let request = TranslationRequest(windowRevision: 1, items: [TranslationItem(id: id, sourceText: "hello")])
+
+        for model in models {
+            let translateTransport = ReviewTransport(responses: [
+                HTTPResponse(statusCode: 200, headers: [:], body: Data(translateOutput.utf8))
+            ])
+            let translateBackend = DeepSeekBackend(
+                transport: translateTransport,
+                credentialStore: ReviewCredentials(value: "key"),
+                model: model
+            )
+            _ = try await translateBackend.translate(request)
+            let translatePayload = try #require(
+                try JSONSerialization.jsonObject(with: try #require(await translateTransport.requests.first?.httpBody)) as? [String: Any]
+            )
+            #expect(translatePayload["model"] as? String == model)
+            expectNestedReasoningNone(translatePayload)
+            #expect(translatePayload["text"] != nil)
+
+            let plainTransport = ReviewTransport(responses: [
+                HTTPResponse(statusCode: 200, headers: [:], body: Data(plainOutput.utf8))
+            ])
+            let plainBackend = DeepSeekBackend(
+                transport: plainTransport,
+                credentialStore: ReviewCredentials(value: "key"),
+                model: model
+            )
+            _ = try await plainBackend.completePlain(system: "sys", user: "draft")
+            let plainPayload = try #require(
+                try JSONSerialization.jsonObject(with: try #require(await plainTransport.requests.first?.httpBody)) as? [String: Any]
+            )
+            #expect(plainPayload["model"] as? String == model)
+            expectNestedReasoningNone(plainPayload)
+            #expect(plainPayload["text"] == nil)
+            if let tokens = plainPayload["max_output_tokens"] as? Int {
+                #expect(tokens == 2_048)
+            } else if let tokens = plainPayload["max_output_tokens"] as? Double {
+                #expect(Int(tokens) == 2_048)
+            } else {
+                Issue.record("missing max_output_tokens for \(model)")
+            }
+
+            let visionTransport = ReviewTransport(responses: [
+                HTTPResponse(statusCode: 200, headers: [:], body: Data(translateOutput.utf8))
+            ])
+            let visionBackend = DeepSeekBackend(
+                transport: visionTransport,
+                credentialStore: ReviewCredentials(value: "key"),
+                model: model
+            )
+            _ = try await visionBackend.translate(
+                request,
+                images: [VisionTranslationImage(segmentId: id, pngData: png)]
+            )
+            let visionPayload = try #require(
+                try JSONSerialization.jsonObject(with: try #require(await visionTransport.requests.first?.httpBody)) as? [String: Any]
+            )
+            #expect(visionPayload["model"] as? String == model)
+            expectNestedReasoningNone(visionPayload)
+            let serialized = String(decoding: try JSONSerialization.data(withJSONObject: visionPayload), as: UTF8.self)
+            #expect(serialized.contains("input_image"))
+        }
     }
 
     @Test
@@ -222,6 +305,16 @@ struct ReviewFixTests {
         expectInvalidCredential {
             try store.save(apiKey: String(repeating: "x", count: 4_097))
         }
+    }
+
+    private func expectNestedReasoningNone(_ payload: [String: Any]) {
+        #expect(payload["reasoning_effort"] == nil)
+        guard let reasoning = payload["reasoning"] as? [String: Any] else {
+            Issue.record("missing nested reasoning object")
+            return
+        }
+        #expect(reasoning["effort"] as? String == "none")
+        #expect(Set(reasoning.keys) == Set(["effort"]))
     }
 
     private func expectInvalidCredential(_ operation: () throws -> Void) {

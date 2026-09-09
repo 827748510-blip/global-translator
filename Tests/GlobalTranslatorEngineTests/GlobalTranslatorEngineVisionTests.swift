@@ -34,6 +34,9 @@ extension GlobalTranslatorEngineTests {
         #expect(!serialized.contains("screenFrame"))
         #expect(!serialized.contains("confidence"))
         #expect(systemText.contains("untrusted data"))
+        let reasoning = try #require(json["reasoning"] as? [String: Any])
+        #expect(reasoning["effort"] as? String == "none")
+        #expect(json["reasoning_effort"] == nil)
     }
 
     @Test

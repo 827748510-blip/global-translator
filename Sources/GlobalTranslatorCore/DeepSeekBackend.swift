@@ -295,22 +295,20 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
     }
 }
 
+/// DeepSeek Responses API: nested `reasoning.effort` disables thinking.
+/// A flat `reasoning_effort` is ignored by V4 / vision models, which then
+/// burn `max_output_tokens` on reasoning and return no `message`.
+private struct ResponsesReasoning: Encodable {
+    let effort = "none"
+}
+
 private struct ResponsesPayload: Encodable {
     let model: String
     let input: [ResponseInputMessage]
     let stream = false
-    let reasoningEffort = "none"
+    let reasoning = ResponsesReasoning()
     let temperature = 0.1
     let text: ResponsesText
-
-    private enum CodingKeys: String, CodingKey {
-        case model
-        case input
-        case stream
-        case reasoningEffort = "reasoning_effort"
-        case temperature
-        case text
-    }
 }
 
 private struct ResponsesText: Encodable {
@@ -321,15 +319,15 @@ private struct PlainResponsesPayload: Encodable {
     let model: String
     let input: [ResponseInputMessage]
     let stream = false
-    let reasoningEffort = "none"
+    let reasoning = ResponsesReasoning()
     let temperature = 0.3
-    let maxOutputTokens = 1_024
+    let maxOutputTokens = 2_048
 
     private enum CodingKeys: String, CodingKey {
         case model
         case input
         case stream
-        case reasoningEffort = "reasoning_effort"
+        case reasoning
         case temperature
         case maxOutputTokens = "max_output_tokens"
     }
@@ -339,18 +337,9 @@ private struct VisionResponsesPayload: Encodable {
     let model: String
     let input: [VisionResponseInputMessage]
     let stream = false
-    let reasoningEffort = "none"
+    let reasoning = ResponsesReasoning()
     let temperature = 0.1
     let text: ResponsesText
-
-    private enum CodingKeys: String, CodingKey {
-        case model
-        case input
-        case stream
-        case reasoningEffort = "reasoning_effort"
-        case temperature
-        case text
-    }
 }
 
 private struct VisionResponseInputMessage: Encodable {
