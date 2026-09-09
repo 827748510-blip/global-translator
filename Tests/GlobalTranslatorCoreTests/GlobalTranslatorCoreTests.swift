@@ -411,6 +411,27 @@ struct GlobalTranslatorCoreTests {
     }
 
     @Test
+    func localKeepsCopiedSourceForPageBridgePolicy() async throws {
+        let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let transport = FakeTransport(responses: [
+            HTTPResponse(statusCode: 200, headers: [:], body: try chatEnvelope(["0": "Hello world"]))
+        ])
+        let backend = try LocalOpenAIBackend(
+            baseURL: URL(string: "http://127.0.0.1:11434/v1")!,
+            model: "qwen-local",
+            transport: transport
+        )
+        let result = try await backend.translate(TranslationRequest(
+            windowRevision: 7,
+            items: [TranslationItem(id: id, sourceText: "Hello world")],
+            copiedSourcePolicy: .keep
+        ))
+        #expect(result.translations.first?.simplifiedChineseText == "Hello world")
+        #expect(result.translations.first?.segmentId == id)
+        #expect(await transport.requests.count == 1)
+    }
+
+    @Test
     func localParserStripsCompactKeyLeakAndAcceptsThreeItemBlobs() async throws {
         let first = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         let second = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!

@@ -128,13 +128,45 @@ public struct TranslationItem: Codable, Equatable, Sendable {
     }
 }
 
+/// How local backends treat a translation that copies the Latin source.
+public enum CopiedSourcePolicy: String, Codable, Equatable, Sendable {
+    /// Overlay, 滑词, and health checks: echo is `invalidResponse`.
+    case reject
+    /// Webpage / extension-bridge batches: keep the source as success.
+    case keep
+}
+
 public struct TranslationRequest: Codable, Equatable, Sendable {
     public let windowRevision: UInt64
     public let items: [TranslationItem]
+    public let copiedSourcePolicy: CopiedSourcePolicy
 
-    public init(windowRevision: UInt64, items: [TranslationItem]) {
+    public init(
+        windowRevision: UInt64,
+        items: [TranslationItem],
+        copiedSourcePolicy: CopiedSourcePolicy = .reject
+    ) {
         self.windowRevision = windowRevision
         self.items = items
+        self.copiedSourcePolicy = copiedSourcePolicy
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        windowRevision = try container.decode(UInt64.self, forKey: .windowRevision)
+        items = try container.decode([TranslationItem].self, forKey: .items)
+        copiedSourcePolicy = try container.decodeIfPresent(CopiedSourcePolicy.self, forKey: .copiedSourcePolicy) ?? .reject
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(windowRevision, forKey: .windowRevision)
+        try container.encode(items, forKey: .items)
+        try container.encode(copiedSourcePolicy, forKey: .copiedSourcePolicy)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case windowRevision, items, copiedSourcePolicy
     }
 }
 

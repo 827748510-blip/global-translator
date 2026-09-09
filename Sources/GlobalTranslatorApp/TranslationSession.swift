@@ -173,9 +173,11 @@ public final class TranslationSession {
     /// window tracking entirely — no overlays, no revisions — and uses a
     /// dedicated coordinator so the window pipeline's revision gate cannot
     /// reject these unversioned requests. The returned batch is aligned with
-    /// the input order. `nil` marks entries filtered out (already Chinese).
-    /// Transient local-backend failures are also `nil` and listed in
-    /// `retryIndexes` so the extension does not treat them as already asked.
+    /// the input order. Ineligible fragments (already Chinese, URLs,
+    /// identifiers) return their source text as a successful keep-source
+    /// result and never reach the backend. Transient local-backend failures
+    /// are `nil` and listed in `retryIndexes` so the extension does not
+    /// treat them as already asked.
     /// Gated on `isBridgeActive` (the menu-bar master switch) rather than
     /// `isRunning`, so Chrome in-page translation works without Accessibility
     /// or Screen Recording. The coordinator itself outlives stop/start;
@@ -227,7 +229,8 @@ public final class TranslationSession {
                        confidence: 1, source: .accessibility, windowRevision: 0)
         }
         let eligible = regions.filter { TextFilter.shouldTranslate($0.sourceText) && $0.sourceText.count <= 4_000 }
-        guard !eligible.isEmpty else { return texts.map { _ in nil } }
+        let eligibleIDs = Set(eligible.map(\.id))
+        guard !eligible.isEmpty else { return texts.map { $0 as String? } }
         let descriptor = ActiveWindowDescriptor(
             pid: 0, bundleIdentifier: "extension.bridge", windowID: nil,
             frame: .zero, revision: 0, invalidatesOverlay: false)
@@ -243,7 +246,11 @@ public final class TranslationSession {
         for translation in output.translations where !translation.text.isEmpty {
             translated[translation.region.id] = translation.text
         }
-        return regions.map { translated[$0.id] }
+        return regions.map { region in
+            if let text = translated[region.id] { return text }
+            if !eligibleIDs.contains(region.id) { return region.sourceText }
+            return nil
+        }
     }
 
     /// Single-string 滑词翻译. Not gated on overlay `isRunning` or the

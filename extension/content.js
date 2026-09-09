@@ -35,8 +35,9 @@
 
   function isEligible(node) {
     const text = textOf(node);
-    if (text.length < 2) return false;
-    if (!/[A-Za-z]/.test(text) || /[一-鿿]/.test(text)) return false;
+    // Skip URLs, emails, identifiers, already-Chinese, and other fragments
+    // Core.TextFilter would drop — they stay as original and never hit Ollama.
+    if (!GlobalTranslatorTextFilter.shouldSendForPageTranslate(text)) return false;
     const element = node.parentElement;
     if (!element || SKIPPED_TAGS.indexOf(element.tagName) !== -1) return false;
     if (element.closest && element.closest('[contenteditable="true"], [contenteditable=""]')) return false;

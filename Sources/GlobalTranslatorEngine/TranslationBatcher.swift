@@ -18,11 +18,16 @@ public struct TranslationBatch: Equatable, Sendable {
     public let request: TranslationRequest
     public let sourceCharacterCount: Int
 
-    public init(entries: [TranslationBatchEntry], windowRevision: UInt64) {
+    public init(
+        entries: [TranslationBatchEntry],
+        windowRevision: UInt64,
+        copiedSourcePolicy: CopiedSourcePolicy = .reject
+    ) {
         self.entries = entries
         request = TranslationRequest(
             windowRevision: windowRevision,
-            items: entries.map(\.item)
+            items: entries.map(\.item),
+            copiedSourcePolicy: copiedSourcePolicy
         )
         sourceCharacterCount = entries.reduce(into: 0) { result, entry in
             result += entry.sourceText.count
@@ -96,7 +101,8 @@ public struct TranslationBatcher: Sendable {
 
     public func makeBatches(
         from entries: [TranslationBatchEntry],
-        windowRevision: UInt64
+        windowRevision: UInt64,
+        copiedSourcePolicy: CopiedSourcePolicy = .reject
     ) -> [TranslationBatch] {
         var batches: [TranslationBatch] = []
         var current: [TranslationBatchEntry] = []
@@ -106,7 +112,11 @@ public struct TranslationBatcher: Sendable {
             let wouldExceedCount = current.count >= maximumItems
             let wouldExceedCharacters = currentCharacters + entry.sourceText.count > maximumSourceCharacters
             if !current.isEmpty && (wouldExceedCount || wouldExceedCharacters) {
-                batches.append(TranslationBatch(entries: current, windowRevision: windowRevision))
+                batches.append(TranslationBatch(
+                    entries: current,
+                    windowRevision: windowRevision,
+                    copiedSourcePolicy: copiedSourcePolicy
+                ))
                 current.removeAll(keepingCapacity: true)
                 currentCharacters = 0
             }
@@ -114,17 +124,26 @@ public struct TranslationBatcher: Sendable {
             currentCharacters += entry.sourceText.count
         }
         if !current.isEmpty {
-            batches.append(TranslationBatch(entries: current, windowRevision: windowRevision))
+            batches.append(TranslationBatch(
+                entries: current,
+                windowRevision: windowRevision,
+                copiedSourcePolicy: copiedSourcePolicy
+            ))
         }
         return batches
     }
 
     public func makeBatches(
         from regions: [TextRegion],
-        windowRevision: UInt64
+        windowRevision: UInt64,
+        copiedSourcePolicy: CopiedSourcePolicy = .reject
     ) -> [TranslationBatch] {
         let plan = plan(regions: regions)
-        return makeBatches(from: plan.entries, windowRevision: windowRevision)
+        return makeBatches(
+            from: plan.entries,
+            windowRevision: windowRevision,
+            copiedSourcePolicy: copiedSourcePolicy
+        )
     }
 
     private static func readingOrder(_ lhs: TextRegion, _ rhs: TextRegion) -> Bool {

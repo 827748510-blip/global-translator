@@ -198,7 +198,11 @@ public actor TranslationCoordinator {
         } else {
             requestBatcher = batcher
         }
-        let batches = requestBatcher.makeBatches(from: pendingEntries, windowRevision: revision)
+        let batches = requestBatcher.makeBatches(
+            from: pendingEntries,
+            windowRevision: revision,
+            copiedSourcePolicy: Self.copiedSourcePolicy(for: snapshot)
+        )
         let vision = makeVisionImages(
             snapshot: snapshot,
             backendKind: kind,
@@ -307,6 +311,16 @@ public actor TranslationCoordinator {
         setState(.listening)
         emit(.completed(metrics: metrics))
         return EngineOutput(windowRevision: revision, translations: rendered, metrics: metrics)
+    }
+
+    /// 滑词 keeps echo-as-failure. Webpage/bridge page text keeps the source
+    /// so a copied Ollama response does not retry or open the circuit.
+    private static func copiedSourcePolicy(for snapshot: CaptureSnapshot) -> CopiedSourcePolicy {
+        guard snapshot.source == .pageText else { return .reject }
+        if snapshot.descriptor.bundleIdentifier == "selection.translate" {
+            return .reject
+        }
+        return .keep
     }
 
     private func validateCapturePermission(_ snapshot: CaptureSnapshot) throws {

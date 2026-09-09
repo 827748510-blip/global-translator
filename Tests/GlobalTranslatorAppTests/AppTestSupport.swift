@@ -457,6 +457,55 @@ actor FlakySecondItemCoordinator: TranslationCoordinating {
     }
 }
 
+actor RecordingBridgeCoordinator: TranslationCoordinating {
+    private(set) var sources: [[String]] = []
+
+    func selectBackend(kind: BackendKind, modelIdentifier: String) async {}
+    func clearCache() async {}
+    func cancelPendingRequests() async {}
+    func translate(
+        snapshot: CaptureSnapshot,
+        backend: BackendKind,
+        modelIdentifier: String,
+        visionFallbackEnabled: Bool
+    ) async throws -> EngineOutput {
+        sources.append(snapshot.regions.map(\.sourceText))
+        let translations = snapshot.regions.map { region in
+            RenderedTranslation(region: region, text: "你好 " + region.sourceText)
+        }
+        return EngineOutput(
+            windowRevision: snapshot.descriptor.revision,
+            translations: translations,
+            metrics: EngineMetrics(inputRegionCount: translations.count, eligibleRegionCount: translations.count,
+                cacheHitCount: 0, batchCount: 1, translatedRegionCount: translations.count,
+                durationMilliseconds: 1, status: .success)
+        )
+    }
+}
+
+actor EchoingCoordinator: TranslationCoordinating {
+    func selectBackend(kind: BackendKind, modelIdentifier: String) async {}
+    func clearCache() async {}
+    func cancelPendingRequests() async {}
+    func translate(
+        snapshot: CaptureSnapshot,
+        backend: BackendKind,
+        modelIdentifier: String,
+        visionFallbackEnabled: Bool
+    ) async throws -> EngineOutput {
+        let translations = snapshot.regions.map { region in
+            RenderedTranslation(region: region, text: region.sourceText)
+        }
+        return EngineOutput(
+            windowRevision: snapshot.descriptor.revision,
+            translations: translations,
+            metrics: EngineMetrics(inputRegionCount: translations.count, eligibleRegionCount: translations.count,
+                cacheHitCount: 0, batchCount: 1, translatedRegionCount: translations.count,
+                durationMilliseconds: 1, status: .success)
+        )
+    }
+}
+
 final class EngineEventBox: @unchecked Sendable {
     private let lock = NSLock()
     private var sink: EngineEventSink?
