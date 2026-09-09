@@ -241,6 +241,52 @@ enum TranslationResponseParser {
         }
     }
 
+    static func parsePlainChatCompletions(_ data: Data) throws -> String {
+        let root: Any
+        do {
+            root = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            throw TranslationError.invalidResponse("chat response JSON is invalid")
+        }
+        return try parsePlainCompletionText(extractAssistantContent(from: root))
+    }
+
+    static func parsePlainResponses(_ data: Data) throws -> String {
+        do {
+            let envelope = try JSONDecoder().decode(ResponsesEnvelope.self, from: data)
+            let messages = envelope.output.filter { $0.type == "message" }
+            guard envelope.output.allSatisfy({ $0.type == "message" || $0.type == "reasoning" }),
+                  messages.count == 1, let output = messages.first else {
+                throw TranslationError.invalidResponse("response output message is missing or ambiguous")
+            }
+            guard output.content.count == 1, let content = output.content.first, content.type == "output_text" else {
+                throw TranslationError.invalidResponse("response output_text is missing or ambiguous")
+            }
+            return try parsePlainCompletionText(content.text)
+        } catch let error as TranslationError {
+            throw error
+        } catch {
+            throw TranslationError.invalidResponse("response JSON is invalid")
+        }
+    }
+
+    static func parsePlainCompletionText(_ raw: String) throws -> String {
+        var text = stripThinkTags(raw).trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("```") {
+            if let newline = text.firstIndex(of: "\n") {
+                text = String(text[text.index(after: newline)...])
+            }
+            if let fence = text.range(of: "```", options: .backwards) {
+                text = String(text[..<fence.lowerBound])
+            }
+            text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard !text.isEmpty else {
+            throw TranslationError.invalidResponse("plain completion is empty")
+        }
+        return text
+    }
+
     private static func parseLocalChatCompletions(
         _ data: Data,
         expectedIDs: [UUID],

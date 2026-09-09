@@ -89,6 +89,8 @@ public protocol SelectionPopoverControlling: AnyObject {
     var currentContent: SelectionPopoverContent? { get }
     var panelFrame: CGRect? { get }
     var onUserDismiss: (() -> Void)? { get set }
+    var onTranslate: (() -> Void)? { get set }
+    var onOptimize: (() -> Void)? { get set }
     func show(_ content: SelectionPopoverContent)
     func dismiss()
 }
@@ -98,6 +100,8 @@ public final class NullSelectionPopover: SelectionPopoverControlling {
     public private(set) var currentContent: SelectionPopoverContent?
     public var panelFrame: CGRect? { nil }
     public var onUserDismiss: (() -> Void)?
+    public var onTranslate: (() -> Void)?
+    public var onOptimize: (() -> Void)?
     public init() {}
     public func show(_ content: SelectionPopoverContent) { currentContent = content }
     public func dismiss() { currentContent = nil }
@@ -108,6 +112,8 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     public private(set) var currentContent: SelectionPopoverContent?
     public var onCopy: ((String) -> Void)?
     public var onUserDismiss: (() -> Void)?
+    public var onTranslate: (() -> Void)?
+    public var onOptimize: (() -> Void)?
 
     private var panel: SelectionTranslatePanel?
     private let visibleFramesProvider: () -> [CGRect]
@@ -141,9 +147,12 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
             contentSize: size,
             screenVisibleFrame: visibleFrame
         )
-        let hosting = NSHostingView(rootView: SelectionTranslatePopoverView(content: content, onCopy: { [weak self] in
-            self?.copyCurrentTranslation()
-        }))
+        let hosting = NSHostingView(rootView: SelectionTranslatePopoverView(
+            content: content,
+            onCopy: { [weak self] in self?.copyCurrentTranslation() },
+            onTranslate: { [weak self] in self?.onTranslate?() },
+            onOptimize: { [weak self] in self?.onOptimize?() }
+        ))
         if let panel {
             panel.contentView = hosting
             panel.setFrame(frame, display: true)
@@ -201,7 +210,7 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
             maxLines: GTSelectionMetrics.maxTranslationLines,
             font: NSFont.preferredFont(forTextStyle: .body)
         ).height
-        if content.allowsCopy {
+        if content.showsActionButtons {
             height += GTSpacing.xSmall + 28
         }
         return CGSize(width: GTSelectionMetrics.width, height: max(height, 44))

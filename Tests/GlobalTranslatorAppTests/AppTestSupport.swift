@@ -358,6 +358,13 @@ actor TranslatingCoordinator: TranslationCoordinating {
                 durationMilliseconds: 1, status: .success)
         )
     }
+
+    func completePlain(system: String, user: String, backend: BackendKind) async throws -> String {
+        _ = system
+        _ = backend
+        let source = user.split(separator: "\n").last.map(String.init) ?? user
+        return "优化 " + source
+    }
 }
 
 /// Fails if the bridge still dumps a dense page into one coordinator call.
@@ -470,6 +477,8 @@ final class FakeSelectionPopover: SelectionPopoverControlling {
     var currentContent: SelectionPopoverContent?
     var panelFrame: CGRect?
     var onUserDismiss: (() -> Void)?
+    var onTranslate: (() -> Void)?
+    var onOptimize: (() -> Void)?
     func show(_ content: SelectionPopoverContent) {
         currentContent = content
         shown.append(content)
@@ -489,6 +498,8 @@ final class FakeSelectionPopover: SelectionPopoverControlling {
         onUserDismiss?()
         dismiss()
     }
+    func simulateTranslate() { onTranslate?() }
+    func simulateOptimize() { onOptimize?() }
 }
 
 final class FakeSelectedTextReader: SelectedTextReading, @unchecked Sendable {
@@ -517,9 +528,11 @@ final class FakeSelectedTextReader: SelectedTextReading, @unchecked Sendable {
 @MainActor
 final class StubSelectionTranslator: SelectionTranslating {
     var result = "你好世界"
+    var optimizeResult = "优化后的提示词"
     var error: Error?
     var delay: Duration?
     private(set) var texts: [String] = []
+    private(set) var optimizedTexts: [String] = []
 
     func translateSelection(_ text: String) async throws -> String {
         texts.append(text)
@@ -528,6 +541,15 @@ final class StubSelectionTranslator: SelectionTranslating {
         }
         if let error { throw error }
         return result
+    }
+
+    func optimizePrompt(_ text: String) async throws -> String {
+        optimizedTexts.append(text)
+        if let delay {
+            try await Task.sleep(for: delay)
+        }
+        if let error { throw error }
+        return optimizeResult
     }
 }
 

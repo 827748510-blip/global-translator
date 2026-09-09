@@ -33,8 +33,7 @@ struct SelectionTranslateControllerTests {
             logger: RecordingLogger(),
             translator: { translator },
             ownBundleIdentifiers: ["com.maodashu.global-translator"],
-            settleDelay: .milliseconds(5),
-            alreadyChineseDismissDelay: .milliseconds(30)
+            settleDelay: .milliseconds(5)
         )
     }
 
@@ -103,7 +102,9 @@ struct SelectionTranslateControllerTests {
         try await waitUntil { popover.currentContent?.status == .alreadyChinese }
         #expect(translator.texts.isEmpty)
         #expect(popover.currentContent?.displayTranslation == "已是中文")
-        try await waitUntil { popover.currentContent == nil }
+        #expect(popover.currentContent?.showsOptimizeAction == true)
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(popover.currentContent?.status == .alreadyChinese)
     }
 
     @Test
@@ -199,6 +200,68 @@ struct SelectionTranslateControllerTests {
         try await Task.sleep(for: .milliseconds(300))
         #expect(popover.currentContent == nil)
         #expect(!popover.shown.contains(where: { $0.status == .translated }))
+    }
+
+    @Test
+    func optimizeButtonRewritesChineseDraftWithoutTranslating() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("一个女孩站在雨里")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.optimizeResult = "主体：一位女孩站在雨中街道，电影感布光，中景，约束：写实、无字幕。"
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .alreadyChinese }
+        popover.simulateOptimize()
+        try await waitUntil { popover.currentContent?.status == .optimized }
+        #expect(translator.texts.isEmpty)
+        #expect(translator.optimizedTexts == ["一个女孩站在雨里"])
+        #expect(popover.currentContent?.displayTranslation == translator.optimizeResult)
+        #expect(popover.currentContent?.allowsCopy == true)
+        #expect(popover.currentContent?.copyText == translator.optimizeResult)
+    }
+
+    @Test
+    func optimizeAfterTranslateDoesNotRecallTranslate() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Hello world")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "你好，世界"
+        translator.optimizeResult = "A young woman in rain, cinematic lighting, medium shot."
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .translated }
+        popover.simulateOptimize()
+        try await waitUntil { popover.currentContent?.status == .optimized }
+        #expect(translator.texts == ["Hello world"])
+        #expect(translator.optimizedTexts == ["Hello world"])
+        #expect(popover.currentContent?.displayTranslation == translator.optimizeResult)
+        popover.simulateTranslate()
+        try await waitUntil { popover.currentContent?.status == .translated }
+        #expect(translator.texts == ["Hello world", "Hello world"])
+        #expect(translator.optimizedTexts == ["Hello world"])
+        #expect(popover.currentContent?.displayTranslation == "你好，世界")
+    }
+
+    @Test
+    func delayedTranslateDoesNotOverwriteOptimize() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Hello world")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.delay = .milliseconds(250)
+        translator.result = "你好，世界"
+        translator.optimizeResult = "cinematic rain portrait, medium shot"
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .loading }
+        popover.simulateOptimize()
+        try await waitUntil { popover.currentContent?.status == .optimized }
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(popover.currentContent?.status == .optimized)
+        #expect(popover.currentContent?.displayTranslation == translator.optimizeResult)
+        #expect(!popover.shown.suffix(2).contains(where: { $0.status == .translated }))
     }
 
     private func waitUntil(_ condition: @escaping () -> Bool) async throws {
@@ -299,6 +362,7 @@ extension ApplicationControllerTests {
         #expect(!session.isRunning)
         #expect(!session.isBridgeActive)
         #expect(try await session.translateSelection("Hello there") == "你好 Hello there")
+        #expect(try await session.optimizePrompt("一个女孩站在雨里") == "优化 一个女孩站在雨里")
         await controller.stop()
     }
 }

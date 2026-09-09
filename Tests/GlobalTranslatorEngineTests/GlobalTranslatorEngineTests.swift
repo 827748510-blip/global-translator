@@ -20,6 +20,38 @@ struct GlobalTranslatorEngineTests {
     }
 
     @Test
+    func completePlainDoesNotTranslateOrAdvanceOverlayRevision() async throws {
+        let backend = PlainRecordingBackend()
+        let coordinator = TranslationCoordinator(
+            backends: [backend],
+            permissions: SystemPermissionController(snapshotProvider: { .allGranted })
+        )
+        let regions = [makeRegion(text: "Visible English label", y: 100)]
+        let output = try await coordinator.translate(
+            snapshot: makeSnapshot(regions: regions, revision: 4),
+            backend: .local,
+            modelIdentifier: "test",
+            visionFallbackEnabled: false
+        )
+        #expect(output.windowRevision == 4)
+        let prompt = try await coordinator.completePlain(
+            system: PromptOptimizationInstructions.system,
+            user: PromptOptimizationInstructions.userContent(for: "一个女孩站在雨里"),
+            backend: .local
+        )
+        #expect(prompt == "optimized")
+        #expect(await backend.translateCount == 1)
+        #expect(await backend.plains.count == 1)
+        let later = try await coordinator.translate(
+            snapshot: makeSnapshot(regions: regions, revision: 4),
+            backend: .local,
+            modelIdentifier: "test",
+            visionFallbackEnabled: false
+        )
+        #expect(later.windowRevision == 4)
+    }
+
+    @Test
     func pageTextLocalBatchesStaySmallSoDensePagesDoNotTripTheCircuit() async throws {
         let regions = (0..<30).map { makeRegion(text: "Visible label \($0)", y: CGFloat(100 + $0 * 25)) }
         let backend = RecordingBackend(kind: .local) { request, _ in

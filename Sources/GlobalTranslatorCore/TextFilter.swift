@@ -22,8 +22,29 @@ public enum TextFilter {
     }
 
     /// Overlay/bridge keep using `shouldTranslate`. Selection UX distinguishes
-    /// “already Simplified Chinese” (brief 已是中文) from identifiers/URLs
-    /// that must not spawn a popover.
+    /// “already Simplified Chinese” (skip auto-translate, still offer 优化提示词)
+    /// from identifiers/URLs that must not spawn a popover.
+    public static func shouldOfferSelectionPopover(
+        _ text: String,
+        targetLanguage: String = SelectionTranslateSupport.defaultTargetLanguage
+    ) -> Bool {
+        selectionDecision(text, targetLanguage: targetLanguage) != .skip
+    }
+
+    public static func shouldAutoTranslateSelection(
+        _ text: String,
+        targetLanguage: String = SelectionTranslateSupport.defaultTargetLanguage
+    ) -> Bool {
+        selectionDecision(text, targetLanguage: targetLanguage) == .translate
+    }
+
+    public static func shouldOfferPromptOptimization(
+        _ text: String,
+        targetLanguage: String = SelectionTranslateSupport.defaultTargetLanguage
+    ) -> Bool {
+        selectionDecision(text, targetLanguage: targetLanguage) != .skip
+    }
+
     public static func selectionDecision(
         _ text: String,
         targetLanguage: String = SelectionTranslateSupport.defaultTargetLanguage

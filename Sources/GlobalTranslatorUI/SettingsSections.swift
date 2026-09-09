@@ -57,7 +57,13 @@ struct SettingsHeaderSection: View {
                 )
             )
             .toggleStyle(.switch)
-            .accessibilityHint("划选文字后在附近显示译文，默认开启")
+            .accessibilityHint("划选后显示译文，并可优化成通用提示词，默认开启")
+            if viewModel.isSelectionTranslateEnabled {
+                Text("含「优化提示词」：把划选草稿改写成通用生成提示词。")
+                    .font(GTType.secondary)
+                    .foregroundStyle(GTColor.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }

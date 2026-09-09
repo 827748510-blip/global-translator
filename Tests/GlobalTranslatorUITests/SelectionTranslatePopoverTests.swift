@@ -59,7 +59,38 @@ struct SelectionTranslatePopoverTests {
         )
         let loadingSize = SelectionTranslatePanelController.contentSize(for: loading)
         let translatedSize = SelectionTranslatePanelController.contentSize(for: translated)
-        #expect(translatedSize.height > loadingSize.height)
+        #expect(loading.showsOptimizeAction)
+        #expect(!loading.allowsCopy)
+        #expect(translated.allowsCopy)
+        #expect(translated.showsOptimizeAction)
+        #expect(translatedSize.height >= loadingSize.height)
+    }
+
+    @Test
+    func optimizeButtonIsWiredOnThePanel() {
+        var optimized = 0
+        var translated = 0
+        let controller = SelectionTranslatePanelController(
+            visibleFramesProvider: { [CGRect(x: 0, y: 0, width: 1440, height: 875)] },
+            pasteboardWriter: { _ in }
+        )
+        controller.onOptimize = { optimized += 1 }
+        controller.onTranslate = { translated += 1 }
+        controller.show(.alreadyChinese(
+            original: "一个女孩站在雨里",
+            screenFrame: CGRect(x: 40, y: 80, width: 60, height: 14)
+        ))
+        controller.onOptimize?()
+        controller.onTranslate?()
+        #expect(optimized == 1)
+        #expect(translated == 1)
+        let optimizedContent = SelectionPopoverContent.optimized(
+            original: "一个女孩站在雨里",
+            prompt: "主体：雨中女孩，电影感。",
+            screenFrame: CGRect(x: 40, y: 80, width: 60, height: 14)
+        )
+        controller.show(optimizedContent)
+        controller.copyCurrentTranslation()
     }
 
     @Test

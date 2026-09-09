@@ -206,6 +206,7 @@ public protocol TranslationCoordinating: Sendable {
         modelIdentifier: String,
         visionFallbackEnabled: Bool
     ) async throws -> EngineOutput
+    func completePlain(system: String, user: String, backend: BackendKind) async throws -> String
 }
 
 extension TranslationCoordinator: TranslationCoordinating {}
@@ -214,6 +215,9 @@ extension TranslationSession: SelectionTranslating {}
 
 public extension TranslationCoordinating {
     func cancelPendingRequests() async {}
+    func completePlain(system: String, user: String, backend: BackendKind) async throws -> String {
+        throw TranslationError.invalidConfiguration("plain completion is not supported")
+    }
 }
 
 @MainActor

@@ -287,6 +287,26 @@ public final class TranslationSession {
         return translated
     }
 
+    /// Generic prompt rewrite. Allows Simplified Chinese drafts (the
+    /// already-Chinese skip is translate-only). Uses the selection coordinator's
+    /// `completePlain` so overlay/bridge JSON translation is not involved.
+    public func optimizePrompt(_ text: String) async throws -> String {
+        guard let coordinator = selectionCoordinator else { throw SelectionTranslateError.translatorUnavailable }
+        let capped = SelectionTranslateSupport.cappedSource(text)
+        guard TextFilter.shouldOfferPromptOptimization(capped) else {
+            throw SelectionTranslateError.emptyResult
+        }
+        await coordinator.selectBackend(kind: backend, modelIdentifier: model)
+        let optimized = try await coordinator.completePlain(
+            system: PromptOptimizationInstructions.system,
+            user: PromptOptimizationInstructions.userContent(for: capped),
+            backend: backend
+        )
+        let trimmed = optimized.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw SelectionTranslateError.emptyResult }
+        return trimmed
+    }
+
     public func handleWindow(_ descriptor: ActiveWindowDescriptor?) {
         guard isRunning else { return }
         protectionTask?.cancel()

@@ -1,16 +1,25 @@
 import SwiftUI
 import GlobalTranslatorCore
 
-/// Interactive selection popover: truncated original, translation, Copy.
+/// Interactive selection popover: truncated original, result, 翻译 / 优化提示词 / 拷贝.
 public struct SelectionTranslatePopoverView: View {
     let content: SelectionPopoverContent
     var onCopy: () -> Void = {}
+    var onTranslate: () -> Void = {}
+    var onOptimize: () -> Void = {}
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
-    public init(content: SelectionPopoverContent, onCopy: @escaping () -> Void = {}) {
+    public init(
+        content: SelectionPopoverContent,
+        onCopy: @escaping () -> Void = {},
+        onTranslate: @escaping () -> Void = {},
+        onOptimize: @escaping () -> Void = {}
+    ) {
         self.content = content
         self.onCopy = onCopy
+        self.onTranslate = onTranslate
+        self.onOptimize = onOptimize
     }
 
     public var body: some View {
@@ -32,12 +41,31 @@ public struct SelectionTranslatePopoverView: View {
                 .truncationMode(.tail)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
-                .accessibilityLabel("翻译结果")
+                .accessibilityLabel(resultAccessibilityLabel)
                 .accessibilityValue(content.displayTranslation)
-            if content.allowsCopy {
-                Button("拷贝", action: onCopy)
-                    .buttonStyle(.bordered)
-                    .accessibilityHint("将译文复制到剪贴板")
+            if content.showsActionButtons {
+                HStack(spacing: GTSpacing.xSmall) {
+                    if content.showsTranslateAction {
+                        Button("翻译", action: onTranslate)
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(content.status == .loading)
+                            .accessibilityHint("把选区译成简体中文")
+                    }
+                    if content.showsOptimizeAction {
+                        Button("优化提示词", action: onOptimize)
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(content.status == .optimizing)
+                            .accessibilityHint("把草稿改写成通用生成提示词")
+                    }
+                    if content.allowsCopy {
+                        Button("拷贝", action: onCopy)
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .accessibilityHint("将结果复制到剪贴板")
+                    }
+                }
             }
         }
         .padding(.horizontal, GTOverlayMetrics.horizontalPadding)
@@ -46,6 +74,15 @@ public struct SelectionTranslatePopoverView: View {
         .background(background)
         .clipShape(RoundedRectangle(cornerRadius: GTRadius.overlay, style: .continuous))
         .accessibilityElement(children: .contain)
+    }
+
+    private var resultAccessibilityLabel: String {
+        switch content.status {
+        case .optimized, .optimizing:
+            return "优化后的提示词"
+        default:
+            return "翻译结果"
+        }
     }
 
     @ViewBuilder

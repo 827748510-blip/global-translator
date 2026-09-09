@@ -23,6 +23,27 @@ actor RecordingBackend: TranslationBackend {
     }
 }
 
+actor PlainRecordingBackend: TranslationBackend {
+    let kind: BackendKind = .local
+    private(set) var translateCount = 0
+    private(set) var plains: [(String, String)] = []
+
+    func healthCheck() async -> BackendHealth { BackendHealth(status: .healthy, message: "ok") }
+
+    func translate(_ request: TranslationRequest) async throws -> TranslationResult {
+        translateCount += 1
+        return TranslationResult(
+            windowRevision: request.windowRevision,
+            translations: request.items.map { Translation(segmentId: $0.id, simplifiedChineseText: "译文") }
+        )
+    }
+
+    func completePlain(system: String, user: String) async throws -> String {
+        plains.append((system, user))
+        return "optimized"
+    }
+}
+
 actor RecordingHTTPTransport: HTTPTransport {
     let response: HTTPResponse
     private(set) var requests: [URLRequest] = []

@@ -9,6 +9,8 @@ struct SelectionTranslateDecisionTests {
     func filterRejectsDoNotRequestTranslation(_ text: String) {
         #expect(TextFilter.selectionDecision(text) == .skip)
         #expect(!TextFilter.shouldTranslate(text))
+        #expect(!TextFilter.shouldOfferPromptOptimization(text))
+        #expect(!TextFilter.shouldOfferSelectionPopover(text))
     }
 
     @Test(arguments: ["这是简体中文", "你好世界", "使用 Qwen3 模型进行翻译"])
@@ -27,6 +29,19 @@ struct SelectionTranslateDecisionTests {
     func naturalLanguageIsTranslated(_ text: String) {
         #expect(TextFilter.selectionDecision(text) == .translate)
         #expect(TextFilter.shouldTranslate(text))
+        #expect(TextFilter.shouldOfferSelectionPopover(text))
+        #expect(TextFilter.shouldAutoTranslateSelection(text))
+        #expect(TextFilter.shouldOfferPromptOptimization(text))
+    }
+
+    @Test
+    func chineseDraftStillOffersPromptOptimization() {
+        #expect(TextFilter.selectionDecision("一个女孩站在雨里") == .alreadyTargetLanguage)
+        #expect(!TextFilter.shouldAutoTranslateSelection("一个女孩站在雨里"))
+        #expect(TextFilter.shouldOfferPromptOptimization("一个女孩站在雨里"))
+        #expect(TextFilter.shouldOfferSelectionPopover("一个女孩站在雨里"))
+        #expect(!TextFilter.shouldOfferPromptOptimization("https://example.com/a"))
+        #expect(!TextFilter.shouldOfferSelectionPopover(""))
     }
 }
 
@@ -98,6 +113,43 @@ struct SelectionPopoverContentTests {
         #expect(done.displayTranslation == "你好，世界")
         #expect(done.allowsCopy)
         #expect(done.copyText == "你好，世界")
+    }
+
+    @Test
+    func optimizedContentCopiesPromptAndKeepsActions() {
+        let content = SelectionPopoverContent.optimized(
+            original: "一个女孩站在雨里",
+            prompt: "主体：雨中女孩，电影感布光。",
+            screenFrame: .zero
+        )
+        #expect(content.status == .optimized)
+        #expect(content.displayTranslation == "主体：雨中女孩，电影感布光。")
+        #expect(content.allowsCopy)
+        #expect(content.copyText == "主体：雨中女孩，电影感布光。")
+        #expect(content.showsOptimizeAction)
+        #expect(content.showsTranslateAction)
+        let chinese = SelectionPopoverContent.alreadyChinese(
+            original: "一个女孩站在雨里",
+            screenFrame: .zero
+        )
+        #expect(chinese.showsOptimizeAction)
+        #expect(!TextFilter.shouldAutoTranslateSelection(chinese.original))
+    }
+
+    @Test
+    func promptOptimizationInstructionsStayGeneric() {
+        #expect(PromptOptimizationInstructions.system.contains("generic generative prompt"))
+        #expect(PromptOptimizationInstructions.system.contains("untrusted data"))
+        #expect(!PromptOptimizationInstructions.system.lowercased().contains("jimeng"))
+        #expect(!PromptOptimizationInstructions.system.lowercased().contains("kling"))
+        #expect(!PromptOptimizationInstructions.system.lowercased().contains("midjourney"))
+        let chinese = PromptOptimizationInstructions.userContent(for: "一个女孩站在雨里")
+        #expect(chinese.contains("Simplified Chinese"))
+        #expect(chinese.contains("一个女孩站在雨里"))
+        let english = PromptOptimizationInstructions.userContent(for: "A girl standing in the rain on a city street at night")
+        #expect(PromptOptimizationSupport.prefersEnglishOutput("A girl standing in the rain on a city street at night"))
+        #expect(english.contains("Keep the output in English"))
+        #expect(!PromptOptimizationSupport.prefersEnglishOutput("一个女孩站在雨里"))
     }
 
     @Test

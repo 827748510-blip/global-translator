@@ -31,6 +31,33 @@ struct ReviewFixTests {
     }
 
     @Test
+    func deepSeekPlainCompletionOmitsTranslationSchema() async throws {
+        let output = #"{"output":[{"type":"message","content":[{"type":"output_text","text":"主体：雨中女孩"}]}]}"#
+        let transport = ReviewTransport(responses: [
+            HTTPResponse(statusCode: 200, headers: [:], body: Data(output.utf8))
+        ])
+        let backend = DeepSeekBackend(transport: transport, credentialStore: ReviewCredentials(value: "key"))
+        let text = try await backend.completePlain(
+            system: PromptOptimizationInstructions.system,
+            user: PromptOptimizationInstructions.userContent(for: "一个女孩站在雨里")
+        )
+        #expect(text == "主体：雨中女孩")
+        let body = try #require(await transport.requests.first?.httpBody)
+        let payload = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(payload["text"] == nil)
+        if let tokens = payload["max_output_tokens"] as? Int {
+            #expect(tokens == 1_024)
+        } else if let tokens = payload["max_output_tokens"] as? Double {
+            #expect(Int(tokens) == 1_024)
+        } else {
+            Issue.record("missing max_output_tokens")
+        }
+        let input = try #require(payload["input"] as? [[String: Any]])
+        #expect((input[0]["content"] as? String)?.contains("generic generative prompt") == true)
+        #expect((input[1]["content"] as? String)?.contains("一个女孩站在雨里") == true)
+    }
+
+    @Test
     func deepSeekHealthDiscoversFixedModelAndReadFailureIsUnavailable() async {
         let models = Data(#"{"data":[{"id":"deepseek-v4-flash-vision-exp"}]}"#.utf8)
         let transport = ReviewTransport(responses: [HTTPResponse(statusCode: 200, headers: [:], body: models)])

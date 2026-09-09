@@ -63,7 +63,9 @@ public struct SelectionSettleGate: Equatable, Sendable {
 
 public enum SelectionPopoverStatus: Equatable, Sendable {
     case loading
+    case optimizing
     case translated
+    case optimized
     case alreadyChinese
     case unavailable
     case failed
@@ -94,24 +96,38 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         switch status {
         case .loading:
             return "翻译中…"
+        case .optimizing:
+            return SelectionTranslateSupport.optimizingCopy
         case .alreadyChinese:
             return SelectionTranslateSupport.alreadyChineseCopy
         case .unavailable:
             return translation.isEmpty ? "无法读取所选文字" : translation
         case .failed:
             return translation.isEmpty ? "翻译失败" : translation
-        case .translated:
+        case .translated, .optimized:
             return translation
         }
     }
 
     public var allowsCopy: Bool {
         switch status {
-        case .translated, .alreadyChinese:
+        case .translated, .alreadyChinese, .optimized:
             return !copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        case .loading, .unavailable, .failed:
+        case .loading, .optimizing, .unavailable, .failed:
             return false
         }
+    }
+
+    public var showsTranslateAction: Bool {
+        !original.isEmpty && status != .unavailable
+    }
+
+    public var showsOptimizeAction: Bool {
+        !original.isEmpty && status != .unavailable
+    }
+
+    public var showsActionButtons: Bool {
+        showsTranslateAction || showsOptimizeAction || allowsCopy
     }
 
     public var copyText: String {
@@ -134,6 +150,26 @@ public struct SelectionPopoverContent: Equatable, Sendable {
             originalPreview: SelectionTranslateSupport.truncatedOriginal(original),
             translation: translation,
             status: .translated,
+            screenFrame: screenFrame
+        )
+    }
+
+    public static func optimizing(original: String, screenFrame: CGRect) -> SelectionPopoverContent {
+        SelectionPopoverContent(
+            original: original,
+            originalPreview: SelectionTranslateSupport.truncatedOriginal(original),
+            translation: "",
+            status: .optimizing,
+            screenFrame: screenFrame
+        )
+    }
+
+    public static func optimized(original: String, prompt: String, screenFrame: CGRect) -> SelectionPopoverContent {
+        SelectionPopoverContent(
+            original: original,
+            originalPreview: SelectionTranslateSupport.truncatedOriginal(original),
+            translation: prompt,
+            status: .optimized,
             screenFrame: screenFrame
         )
     }
@@ -176,6 +212,8 @@ public enum SelectionTranslateSupport {
     public static let originalPreviewLimit = 80
     public static let alreadyChineseCopy = "已是中文"
     public static let defaultTargetLanguage = "zh-Hans"
+    public static let optimizingCopy = "优化中…"
+    public static let optimizeFailedCopy = "优化失败"
 
     public static func truncatedOriginal(_ text: String, limit: Int = originalPreviewLimit) -> String {
         let compact = text.split(whereSeparator: { $0.isNewline }).joined(separator: " ")

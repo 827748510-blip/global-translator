@@ -106,12 +106,43 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
         )
     }
 
+    public func completePlain(system: String, user: String) async throws -> String {
+        let trimmedSystem = system.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedUser = user.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSystem.isEmpty, !trimmedUser.isEmpty else {
+            throw TranslationError.invalidRequest("plain completion is empty")
+        }
+        guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw TranslationError.invalidConfiguration("local model is not configured")
+        }
+        let body = try makePlainPayload(system: trimmedSystem, user: trimmedUser)
+        var urlRequest = URLRequest(url: baseURL.appendingPathComponent("chat/completions"))
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = body
+        let response: HTTPResponse
+        do {
+            response = try await transport.send(urlRequest)
+        } catch {
+            throw AdapterHTTPMapping.error(for: error)
+        }
+        if let error = AdapterHTTPMapping.error(for: response) {
+            throw error
+        }
+        guard (200..<300).contains(response.statusCode) else {
+            throw TranslationError.invalidResponse("unexpected local HTTP status")
+        }
+        return try TranslationResponseParser.parsePlainChatCompletions(response.body)
+    }
+
     /// Caps generation so a short UI string does not walk toward the
     /// Modelfile `num_predict` default. One translation JSON object fits in
     /// 128 tokens; three items still fit in 256.
     static func maxTokens(itemCount: Int) -> Int {
         min(256, 64 + 64 * max(itemCount, 1))
     }
+
+    static let plainCompletionMaxTokens = 1_024
 
     private func listModels() async throws -> [String] {
         var request = URLRequest(url: baseURL.appendingPathComponent("models"))
@@ -155,6 +186,24 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
         }
     }
 
+    private func makePlainPayload(system: String, user: String) throws -> Data {
+        let payload = PlainChatPayload(
+            model: model,
+            messages: [
+                ChatPrompt(role: "system", content: system),
+                ChatPrompt(role: "user", content: user)
+            ],
+            maxTokens: Self.plainCompletionMaxTokens
+        )
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            return try encoder.encode(payload)
+        } catch {
+            throw TranslationError.invalidRequest("unable to encode plain completion")
+        }
+    }
+
     private func health(for error: TranslationError) -> BackendHealth {
         switch error {
         case .unauthorized, .forbidden:
@@ -184,6 +233,22 @@ private struct ChatPayload: Encodable {
         case temperature
         case maxTokens = "max_tokens"
         case responseFormat = "response_format"
+    }
+}
+
+private struct PlainChatPayload: Encodable {
+    let model: String
+    let messages: [ChatPrompt]
+    let stream = false
+    let temperature = 0.3
+    let maxTokens: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case model
+        case messages
+        case stream
+        case temperature
+        case maxTokens = "max_tokens"
     }
 }
 

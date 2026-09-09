@@ -12,6 +12,7 @@ public enum SelectionTranslateError: Error, Equatable, Sendable {
 @MainActor
 public protocol SelectionTranslating: AnyObject {
     func translateSelection(_ text: String) async throws -> String
+    func optimizePrompt(_ text: String) async throws -> String
 }
 
 @MainActor
@@ -80,14 +81,12 @@ public final class SelectionTranslateController {
     private let ownBundleIdentifiers: Set<String>
     private let targetLanguage: String
     private let settleDelay: Duration
-    private let alreadyChineseDismissDelay: Duration
 
     private var enabled = false
     private var pointer = SelectionPointerState()
     private var settleGate = SelectionSettleGate()
     private var settleTask: Task<Void, Never>?
     private var translateTask: Task<Void, Never>?
-    private var alreadyChineseTask: Task<Void, Never>?
     private var presentationGeneration: UInt64 = 0
     /// Source text the user just dismissed (Esc / outside click / new press).
     /// Settle will not re-show it until the selection changes or becomes empty.
@@ -104,10 +103,7 @@ public final class SelectionTranslateController {
         translator: @escaping () -> (any SelectionTranslating)?,
         ownBundleIdentifiers: Set<String> = [],
         targetLanguage: String = SelectionTranslateSupport.defaultTargetLanguage,
-        settleDelay: Duration = .milliseconds(SelectionTranslateSupport.settleDelayMilliseconds),
-        alreadyChineseDismissDelay: Duration = .milliseconds(
-            SelectionTranslateSupport.alreadyChineseDismissMilliseconds
-        )
+        settleDelay: Duration = .milliseconds(SelectionTranslateSupport.settleDelayMilliseconds)
     ) {
         self.reader = reader
         self.popover = popover
@@ -118,10 +114,15 @@ public final class SelectionTranslateController {
         self.ownBundleIdentifiers = ownBundleIdentifiers
         self.targetLanguage = targetLanguage
         self.settleDelay = settleDelay
-        self.alreadyChineseDismissDelay = alreadyChineseDismissDelay
         var wired = self.popover
         wired.onUserDismiss = { [weak self] in
             self?.handleUserDismiss()
+        }
+        wired.onTranslate = { [weak self] in
+            self?.performTranslate()
+        }
+        wired.onOptimize = { [weak self] in
+            self?.performOptimize()
         }
         self.popover = wired
     }
@@ -184,8 +185,6 @@ public final class SelectionTranslateController {
         presentationGeneration &+= 1
         translateTask?.cancel()
         translateTask = nil
-        alreadyChineseTask?.cancel()
-        alreadyChineseTask = nil
     }
 
     private func cancelSettle() {
@@ -240,25 +239,48 @@ public final class SelectionTranslateController {
             case .translate:
                 guard snapshot.text != suppressedSource else { return }
                 suppressedSource = nil
-                await presentTranslation(snapshot)
+                presentTranslation(snapshot)
             }
         }
+    }
+
+    private func performTranslate() {
+        guard enabled, let content = popover.currentContent, !content.original.isEmpty else { return }
+        switch TextFilter.selectionDecision(content.original, targetLanguage: targetLanguage) {
+        case .skip:
+            return
+        case .alreadyTargetLanguage:
+            popover.show(.alreadyChinese(original: content.original, screenFrame: content.screenFrame))
+        case .translate:
+            presentTranslation(snapshot(from: content))
+        }
+    }
+
+    private func performOptimize() {
+        guard enabled, let content = popover.currentContent, !content.original.isEmpty else { return }
+        guard TextFilter.shouldOfferPromptOptimization(content.original, targetLanguage: targetLanguage) else { return }
+        presentOptimize(original: content.original, screenFrame: content.screenFrame)
+    }
+
+    private func snapshot(from content: SelectionPopoverContent) -> SelectedTextSnapshot {
+        SelectedTextSnapshot(
+            text: content.original,
+            screenFrame: content.screenFrame,
+            source: .accessibility,
+            bundleIdentifier: ""
+        )
     }
 
     private func presentAlreadyChinese(_ snapshot: SelectedTextSnapshot) {
-        cancelPresentation()
-        let generation = presentationGeneration
-        popover.show(.alreadyChinese(original: snapshot.text, screenFrame: snapshot.screenFrame))
-        alreadyChineseTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: self?.alreadyChineseDismissDelay ?? .milliseconds(1_500))
-            guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
-            if self.popover.currentContent?.status == .alreadyChinese {
-                self.popover.dismiss()
-            }
+        if popover.currentContent?.original == snapshot.text,
+           popover.currentContent?.status == .alreadyChinese {
+            return
         }
+        cancelPresentation()
+        popover.show(.alreadyChinese(original: snapshot.text, screenFrame: snapshot.screenFrame))
     }
 
-    private func presentTranslation(_ snapshot: SelectedTextSnapshot) async {
+    private func presentTranslation(_ snapshot: SelectedTextSnapshot) {
         if popover.currentContent?.original == snapshot.text,
            popover.currentContent?.status == .translated {
             return
@@ -297,6 +319,46 @@ public final class SelectionTranslateController {
                     original: snapshot.text,
                     message: Self.describe(error),
                     screenFrame: snapshot.screenFrame
+                ))
+            }
+        }
+    }
+
+    private func presentOptimize(original: String, screenFrame: CGRect) {
+        cancelPresentation()
+        let generation = presentationGeneration
+        popover.show(.optimizing(original: original, screenFrame: screenFrame))
+        guard let translator = translator() else {
+            popover.show(.failed(
+                original: original,
+                message: "翻译服务未就绪",
+                screenFrame: screenFrame
+            ))
+            return
+        }
+        translateTask = Task { @MainActor [weak self] in
+            do {
+                let optimized = try await translator.optimizePrompt(original)
+                guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
+                let text = optimized.trimmingCharacters(in: .whitespacesAndNewlines)
+                if text.isEmpty {
+                    self.popover.show(.failed(
+                        original: original,
+                        message: SelectionTranslateSupport.optimizeFailedCopy,
+                        screenFrame: screenFrame
+                    ))
+                    return
+                }
+                self.popover.show(.optimized(original: original, prompt: text, screenFrame: screenFrame))
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
+                self.logger.event("selection_optimize_failed", fields: ["status": "error"])
+                self.popover.show(.failed(
+                    original: original,
+                    message: SelectionTranslateSupport.optimizeFailedCopy,
+                    screenFrame: screenFrame
                 ))
             }
         }
