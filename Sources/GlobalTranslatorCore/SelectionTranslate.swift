@@ -24,7 +24,8 @@ public enum SelectionPointerAction: Equatable, Sendable {
 public struct SelectionPointerState: Equatable, Sendable {
     public private(set) var isButtonDown = false
     /// True when this press included a drag. Click-without-drag is not a
-    /// selection, so AX `.unavailable` should not spawn a sticky status.
+    /// selection: no clipboard fallback, and AX `.unavailable` must not spawn
+    /// a sticky status.
     public private(set) var didDrag = false
 
     public init() {}

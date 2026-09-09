@@ -504,6 +504,9 @@ final class FakeSelectedTextReader: SelectedTextReading, @unchecked Sendable {
     private let lock = NSLock()
     private var result: SelectedTextReadResult
     private(set) var readCount = 0
+    private(set) var lastAllowClipboardFallback = false
+    private(set) var clipboardFallbackUseCount = 0
+    var clipboardFallbackSnapshot: SelectedTextSnapshot?
 
     init(result: SelectedTextReadResult = .empty) {
         self.result = result
@@ -515,11 +518,21 @@ final class FakeSelectedTextReader: SelectedTextReading, @unchecked Sendable {
         lock.unlock()
     }
 
-    func readSelection(mouseLocation: CGPoint) -> SelectedTextReadResult {
+    func readSelection(mouseLocation: CGPoint, allowClipboardFallback: Bool) -> SelectedTextReadResult {
         lock.lock()
         defer { lock.unlock() }
         readCount += 1
-        return result
+        lastAllowClipboardFallback = allowClipboardFallback
+        switch result {
+        case .snapshot:
+            return result
+        case .empty, .unavailable:
+            if allowClipboardFallback, let clipboardFallbackSnapshot {
+                clipboardFallbackUseCount += 1
+                return .snapshot(clipboardFallbackSnapshot)
+            }
+            return result
+        }
     }
 }
 

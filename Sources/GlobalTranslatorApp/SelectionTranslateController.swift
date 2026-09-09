@@ -69,7 +69,9 @@ public final class SystemSelectionPointerMonitor: SelectionPointerMonitoring {
 
 /// Independent of window overlay capture and of the Chrome extension bridge.
 /// Mouse-up in any app (after a short settle) reads AX selected text and
-/// shows a nearby popover with the configured backend's translation.
+/// shows a nearby popover with the configured backend's translation. After a
+/// real drag, empty AX may steal-and-restore the clipboard (⌘C) so Electron
+/// apps such as Feishu still surface a popover.
 @MainActor
 public final class SelectionTranslateController {
     private let reader: any SelectedTextReading
@@ -224,7 +226,7 @@ public final class SelectionTranslateController {
             popover.dismiss()
             return
         }
-        switch reader.readSelection(mouseLocation: location) {
+        switch reader.readSelection(mouseLocation: location, allowClipboardFallback: pointer.didDrag) {
         case .empty:
             suppressedSource = nil
             cancelPresentation()

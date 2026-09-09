@@ -278,6 +278,72 @@ struct SelectionTranslateControllerTests {
     }
 
     @Test
+    func dragWithEmptyAXShowsClipboardFallbackPopover() async throws {
+        let reader = FakeSelectedTextReader(result: .empty)
+        reader.clipboardFallbackSnapshot = snapshot("Hello from Feishu", bundle: "com.electron.lark")
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "你好，飞书"
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        dragSelect(controller)
+        try await waitUntil { popover.currentContent?.status == .translated }
+        #expect(reader.lastAllowClipboardFallback)
+        #expect(reader.clipboardFallbackUseCount == 1)
+        #expect(translator.texts == ["Hello from Feishu"])
+        #expect(popover.currentContent?.displayTranslation == "你好，飞书")
+    }
+
+    @Test
+    func dragWithEmptyAXChineseClipboardShowsAlreadyChinese() async throws {
+        let reader = FakeSelectedTextReader(result: .empty)
+        reader.clipboardFallbackSnapshot = snapshot("一个女孩站在雨里", bundle: "com.electron.lark")
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        dragSelect(controller)
+        try await waitUntil { popover.currentContent?.status == .alreadyChinese }
+        #expect(reader.clipboardFallbackUseCount == 1)
+        #expect(translator.texts.isEmpty)
+        #expect(popover.currentContent?.displayTranslation == "已是中文")
+        #expect(popover.currentContent?.showsOptimizeAction == true)
+    }
+
+    @Test
+    func clickWithoutDragAndEmptyAXDoesNotUseClipboardOrShowPopover() async throws {
+        let reader = FakeSelectedTextReader(result: .empty)
+        reader.clipboardFallbackSnapshot = snapshot("should-not-use", bundle: "com.electron.lark")
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await Task.sleep(for: .milliseconds(25))
+        #expect(reader.readCount == 1)
+        #expect(!reader.lastAllowClipboardFallback)
+        #expect(reader.clipboardFallbackUseCount == 0)
+        #expect(translator.texts.isEmpty)
+        #expect(popover.currentContent == nil)
+        #expect(popover.shown.isEmpty)
+    }
+
+    @Test
+    func ownAppClipboardFallbackIsStillSkipped() async throws {
+        let reader = FakeSelectedTextReader(result: .empty)
+        reader.clipboardFallbackSnapshot = snapshot("Hello from self", bundle: "com.maodashu.global-translator")
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        dragSelect(controller)
+        try await Task.sleep(for: .milliseconds(25))
+        #expect(reader.clipboardFallbackUseCount == 1)
+        #expect(translator.texts.isEmpty)
+        #expect(popover.currentContent == nil)
+    }
+
+    @Test
     func optimizeButtonRewritesChineseDraftWithoutTranslating() async throws {
         let reader = FakeSelectedTextReader(result: .snapshot(snapshot("一个女孩站在雨里")))
         let popover = FakeSelectionPopover()
