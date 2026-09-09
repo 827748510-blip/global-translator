@@ -14,6 +14,7 @@
   const PROBE_MS = 4000;
   const PREFETCH = 4;
   const DESKTOP_SYNC_MS = 3000;
+  const CUE_WAIT_MS = 8000;
   const HOST_ATTR = "data-gt-video-translate";
   const PAINT_MS = 250;
 
@@ -30,6 +31,8 @@
   const overlays = new Map();
   const boundVideos = new WeakSet();
   const boundList = [];
+  let cueWaitText = "";
+  let cueWaitSince = 0;
 
   function safe(fn) {
     try {
@@ -222,6 +225,23 @@
     host.style.height = height + "px";
   }
 
+  function cueWaitTimedOut(cues, time, translationsNow) {
+    const cue = Cues.activeCue(cues, time);
+    const source = cue ? Cues.normalizeCueText(cue.text) : "";
+    const foreign = !!(source && Cues.shouldSendForVideoTranslate(source));
+    const hasZh = !!(source && translationsNow[source]);
+    if (!foreign || hasZh || serviceError) {
+      cueWaitText = "";
+      cueWaitSince = 0;
+      return false;
+    }
+    if (cueWaitText !== source) {
+      cueWaitText = source;
+      cueWaitSince = Date.now();
+    }
+    return cueWaitSince > 0 && (Date.now() - cueWaitSince) >= CUE_WAIT_MS;
+  }
+
   function renderVideo(video) {
     if (!enabled || !video || !video.isConnected) return;
     const record = ensureOverlay(video);
@@ -229,12 +249,14 @@
     const cues = cuesFor(video);
     const time = video.currentTime || 0;
     const translationsNow = translationObject();
+    const waitTimedOut = cueWaitTimedOut(cues, time, translationsNow);
     const state = Cues.overlayState({
       enabled: true,
       cues,
       time,
       translations: translationsNow,
       serviceError,
+      waitTimedOut,
       probed,
       noForeignMessage: youtubeNoForeignMessage()
     });
@@ -506,6 +528,8 @@
     if (Youtube && typeof Youtube.stop === "function") Youtube.stop();
     clearOverlays();
     translations.clear();
+    cueWaitText = "";
+    cueWaitSince = 0;
   }
 
   function applySidecar(payload) {
@@ -534,18 +558,29 @@
     }
   }
 
+  function applyDesktopVideoPref(on) {
+    try {
+      chrome.storage.local.set({ videoTranslateEnabled: on });
+    } catch (_error) {}
+    if (on) {
+      if (!enabled) start();
+    } else if (enabled) {
+      stop();
+    }
+  }
+
   function syncDesktopPref() {
     try {
       chrome.runtime.sendMessage({ type: "ping" }, (response) => {
-        if (chrome.runtime.lastError) {
-          chrome.storage.local.set({ videoTranslateEnabled: false });
-          return;
-        }
-        const on = !!(response && response.ok && response.videoTranslateEnabled === true);
-        chrome.storage.local.set({ videoTranslateEnabled: on });
+        const lastError = chrome.runtime.lastError;
+        const decision = Cues.desktopVideoPrefFromPing
+          ? Cues.desktopVideoPrefFromPing(response, lastError)
+          : null;
+        if (!decision || !decision.write) return;
+        applyDesktopVideoPref(decision.enabled === true);
       });
     } catch (_error) {
-      try { chrome.storage.local.set({ videoTranslateEnabled: false }); } catch (_ignored) {}
+      // Transient channel errors must not force the default-profile pref off.
     }
   }
 

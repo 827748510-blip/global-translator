@@ -386,6 +386,44 @@ enum TranslationResponseParser {
         if mode == .localRelaxed {
             return try parseLocalTranslationJSON(data, expectedIDs: expectedIDs, windowRevision: windowRevision)
         }
+        let candidates = translationJSONCandidates(data)
+        var recoverable: TranslationError?
+        for candidate in candidates {
+            do {
+                return try parseStrictTranslationJSON(
+                    candidate,
+                    expectedIDs: expectedIDs,
+                    windowRevision: windowRevision
+                )
+            } catch let error as TranslationError {
+                if isRecoverableTranslationJSONError(error) {
+                    recoverable = error
+                    continue
+                }
+                throw error
+            } catch {
+                recoverable = TranslationError.invalidResponse("translation JSON is invalid")
+            }
+        }
+        for candidate in candidates {
+            do {
+                return try parseLocalTranslationJSON(
+                    candidate,
+                    expectedIDs: expectedIDs,
+                    windowRevision: windowRevision
+                )
+            } catch {
+                continue
+            }
+        }
+        throw recoverable ?? TranslationError.invalidResponse("translation JSON is invalid")
+    }
+
+    private static func parseStrictTranslationJSON(
+        _ data: Data,
+        expectedIDs: [UUID],
+        windowRevision: UInt64
+    ) throws -> TranslationResult {
         do {
             let envelope = try JSONDecoder().decode(TranslationEnvelope.self, from: data)
             guard envelope.translations.count == expectedIDs.count else {
@@ -414,6 +452,87 @@ enum TranslationResponseParser {
         } catch {
             throw TranslationError.invalidResponse("translation JSON is invalid")
         }
+    }
+
+    /// Markdown fences, compact `{"0":"..."}` keys, and extra wrapper fields
+    /// used to surface as `translation JSON is invalid` and 500 the video cue
+    /// batch. Semantic mismatches (count / IDs / empty text) stay fatal.
+    private static func isRecoverableTranslationJSONError(_ error: TranslationError) -> Bool {
+        guard case .invalidResponse(let message) = error else { return false }
+        return message == "translation JSON is invalid"
+            || message == "translation response contains unknown fields"
+            || message == "translation item contains unknown fields"
+    }
+
+    private static func translationJSONCandidates(_ data: Data) -> [Data] {
+        var seen = Set<Data>()
+        var list: [Data] = []
+        func add(_ next: Data) {
+            guard !next.isEmpty, seen.insert(next).inserted else { return }
+            list.append(next)
+        }
+        add(data)
+        let raw = String(decoding: data, as: UTF8.self)
+        if let stripped = stripMarkdownFence(raw) {
+            add(Data(stripped.utf8))
+        }
+        if let object = firstJSONValue(in: raw) {
+            add(Data(object.utf8))
+        }
+        return list
+    }
+
+    private static func stripMarkdownFence(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("```") else { return nil }
+        var body = trimmed.dropFirst(3)
+        let lowered = body.lowercased()
+        if lowered.hasPrefix("json") {
+            body = body.dropFirst(4)
+        }
+        if let end = body.range(of: "```") {
+            body = body[..<end.lowerBound]
+        }
+        let inner = String(body).trimmingCharacters(in: .whitespacesAndNewlines)
+        return inner.isEmpty ? nil : inner
+    }
+
+    private static func firstJSONValue(in text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let start = trimmed.firstIndex(where: { $0 == "{" || $0 == "[" }) else { return nil }
+        let opening = trimmed[start]
+        let closing: Character = opening == "{" ? "}" : "]"
+        var depth = 0
+        var inString = false
+        var escape = false
+        var end = start
+        var index = start
+        while index < trimmed.endIndex {
+            let character = trimmed[index]
+            if inString {
+                if escape {
+                    escape = false
+                } else if character == "\\" {
+                    escape = true
+                } else if character == "\"" {
+                    inString = false
+                }
+            } else if character == "\"" {
+                inString = true
+            } else if character == opening {
+                depth += 1
+            } else if character == closing {
+                depth -= 1
+                if depth == 0 {
+                    end = index
+                    break
+                }
+            }
+            index = trimmed.index(after: index)
+        }
+        guard depth == 0 else { return nil }
+        let value = String(trimmed[start...end]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty || value == trimmed ? nil : value
     }
 
     private static func parseLocalTranslationJSON(

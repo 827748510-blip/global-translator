@@ -502,6 +502,20 @@ actor FlakySecondItemCoordinator: TranslationCoordinating {
     }
 }
 
+actor ThrowingJSONCoordinator: TranslationCoordinating {
+    func selectBackend(kind: BackendKind, modelIdentifier: String) async {}
+    func clearCache() async {}
+    func cancelPendingRequests() async {}
+    func translate(
+        snapshot: CaptureSnapshot,
+        backend: BackendKind,
+        modelIdentifier: String,
+        visionFallbackEnabled: Bool
+    ) async throws -> EngineOutput {
+        throw TranslationError.invalidResponse("translation JSON is invalid")
+    }
+}
+
 actor RecordingBridgeCoordinator: TranslationCoordinating {
     private(set) var sources: [[String]] = []
 

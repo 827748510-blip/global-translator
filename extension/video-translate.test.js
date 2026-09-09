@@ -71,9 +71,18 @@ assert(youtubePage.indexOf("setOption") === -1, "never enable captions via playe
 assert(youtubePage.indexOf("loadModule") === -1, "never load caption module");
 assert(background.indexOf("ENDPOINT + \"/translate\"") !== -1, "backend translate path unchanged");
 
-assert(manifest.indexOf("\"version\": \"1.0.8\"") !== -1, "manifest version");
+assert(manifest.indexOf("\"version\": \"1.0.9\"") !== -1, "manifest version");
 assert(background.indexOf("importScripts(\"bridge-queue.js\")") !== -1, "background loads bridge queue");
 assert(background.indexOf("message.lane === \"video\"") !== -1, "background honors video lane");
+assert(background.indexOf("message.type === \"ping\"") !== -1, "background health ping");
+assert(background.indexOf("enqueueBridgeFetch(() =>\n      fetch(ENDPOINT + \"/health\"") === -1, "health ping is not queued behind translate");
+assert(videoJs.indexOf("desktopVideoPrefFromPing") !== -1, "content uses ping decision helper");
+assert(videoJs.indexOf("applyDesktopVideoPref") !== -1, "content applies desktop pref immediately");
+assert(videoJs.indexOf("if (!enabled) start()") !== -1, "repeated health true does not restart probe");
+assert(videoJs.indexOf("CUE_WAIT_MS") !== -1, "foreign cue wait timeout");
+assert(videoJs.indexOf("waitTimedOut") !== -1, "overlay gets wait timeout");
+assert(cuesSource.indexOf("desktopVideoPrefFromPing") !== -1, "ping helper is shared");
+assert(youtubeJs.indexOf("\"skip\"") !== -1, "debug bits can skip chinese cues");
 assert(youtubePage.indexOf("data-gt-ytcap") !== -1, "page script marks injection");
 assert(manifest.indexOf("subtitle-cues.js") !== -1, "manifest loads cue helper");
 assert(manifest.indexOf("youtube-captions.js") !== -1, "manifest loads youtube helper");

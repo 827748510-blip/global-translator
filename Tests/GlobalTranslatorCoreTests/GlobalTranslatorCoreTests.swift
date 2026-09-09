@@ -221,6 +221,34 @@ struct GlobalTranslatorCoreTests {
     }
 
     @Test
+    func deepSeekAcceptsMarkdownAndCompactTranslationJSON() async throws {
+        let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let fenced = #"{"output":[{"type":"message","content":[{"type":"output_text","text":"```json\n{\"translations\":[{\"segmentId\":\"00000000-0000-0000-0000-000000000001\",\"text\":\"你好\"}]}\n```"}]}]}"#
+        let fencedBackend = DeepSeekBackend(
+            transport: FakeTransport(responses: [
+                HTTPResponse(statusCode: 200, headers: [:], body: Data(fenced.utf8))
+            ]),
+            credentialStore: FakeCredentialStore(value: "key")
+        )
+        let fencedResult = try await fencedBackend.translate(
+            TranslationRequest(windowRevision: 11, items: [TranslationItem(id: id, sourceText: "hello")])
+        )
+        #expect(fencedResult.translations.first?.simplifiedChineseText == "你好")
+
+        let compact = #"{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"0\":\"你好\"}"}]}]}"#
+        let compactBackend = DeepSeekBackend(
+            transport: FakeTransport(responses: [
+                HTTPResponse(statusCode: 200, headers: [:], body: Data(compact.utf8))
+            ]),
+            credentialStore: FakeCredentialStore(value: "key")
+        )
+        let compactResult = try await compactBackend.translate(
+            TranslationRequest(windowRevision: 11, items: [TranslationItem(id: id, sourceText: "hello")])
+        )
+        #expect(compactResult.translations.first?.simplifiedChineseText == "你好")
+    }
+
+    @Test
     func cloudRejectsDuplicateOrMissingResultIdsAndMapsRateLimit() async throws {
         let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         let duplicateText = #"{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"translations\":[{\"segmentId\":\"00000000-0000-0000-0000-000000000001\",\"text\":\"一\"},{\"segmentId\":\"00000000-0000-0000-0000-000000000001\",\"text\":\"二\"}]}"}]}]}"#
