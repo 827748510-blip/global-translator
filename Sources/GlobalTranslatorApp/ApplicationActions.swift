@@ -226,11 +226,20 @@ extension ApplicationController {
             credentials: components.credentialStore
         )
         applyHealth(health)
-        // Do not `applySessionBackends` here: `configure()` always `stop()`s
-        // overlay capture and does not restart. A live auto-translate session
-        // would go dark until the user toggled the switch. Health/migrate is
-        // enough; backends are wired on start/switch without this path.
+        rewireDeepSeekSessionIfAdoptedModelDiffers(from: health)
         return health
+    }
+
+    /// After a successful DeepSeek health, `applyHealth` may adopt a different
+    /// model id. Rewire backends to that id without leaving overlay stopped.
+    func rewireDeepSeekSessionIfAdoptedModelDiffers(from health: BackendHealth) {
+        guard configuration.backend == .deepSeekCloud else { return }
+        let healthOK = health.status == .healthy
+            || (health.status == .modelUnavailable && !health.availableModels.isEmpty)
+        guard healthOK else { return }
+        let adopted = AppConfiguration.resolvedDeepSeekModel(configuration.deepSeekModel)
+        guard session?.configuredModel != adopted else { return }
+        rewireDeepSeekBackendsPreservingCapture()
     }
 
     public func setVisionFallback(_ enabled: Bool) {

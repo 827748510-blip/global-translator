@@ -711,6 +711,57 @@ struct ApplicationControllerTests {
     }
 
     @Test
+    func testConnectionAfterSwitchAdoptsDeepSeekModelAndKeepsOverlayRunning() async throws {
+        let factory = RecordingModelBackendFactory(healthResults: [
+            BackendHealth(status: .healthy, message: "ok", availableModels: ["model-b"])
+        ])
+        let credentials = RecordingCredentialStore(value: "stored-key")
+        let monitor = FakeWindowMonitor()
+        let overlay = FakeOverlay()
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: RecordingConfigurationStore(configuration: AppConfiguration(
+                    backend: .local,
+                    localModel: "test",
+                    deepSeekModel: "model-a",
+                    deepSeekAPIKeyConfigured: true
+                )),
+                credentials: credentials,
+                backendFactory: factory,
+                monitor: monitor,
+                overlay: overlay
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        controller.selectBackend(.deepSeekCloud)
+        #expect(credentials.readCount == 0)
+        #expect(controller.session?.configuredModel == "model-a")
+        #expect(factory.madeDeepSeekModels.last == "model-a")
+
+        controller.configuration.autoTranslateEnabled = true
+        controller.viewModel.isAutomaticTranslationEnabled = true
+        controller.viewModel.backendReady = true
+        controller.session?.setBridgeActive(true)
+        controller.session?.start()
+        #expect(controller.session?.isRunning == true)
+        #expect(controller.session?.isBridgeActive == true)
+
+        _ = try await controller.testConnection()
+
+        #expect(controller.configuration.deepSeekModel == "model-b")
+        #expect(controller.viewModel.deepSeekModel == "model-b")
+        #expect(controller.session?.configuredModel == "model-b")
+        #expect(factory.madeDeepSeekModels.last == "model-b")
+        #expect(controller.session?.isRunning == true)
+        #expect(controller.session?.isBridgeActive == true)
+        #expect(controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(credentials.readCount == 1)
+        await controller.stop()
+    }
+
+    @Test
     func savingAndDeletingAPIKeyUpdatesConfiguredFlagWithoutStoringSecret() async throws {
         let store = RecordingConfigurationStore()
         let credentials = RecordingCredentialStore(value: nil)

@@ -10,6 +10,9 @@ public final class TranslationSession {
     /// Menu-bar master switch for the extension bridge. Independent of
     /// `isRunning`, which only tracks window overlay capture.
     public private(set) var isBridgeActive = false
+    /// Model id last passed to `configure`. Used to detect a stale
+    /// `DeepSeekBackend` after health adopts a different identifier.
+    public var configuredModel: String { model }
     public private(set) var activeRevision: UInt64 = 0
 
     private let monitor: any ActiveWindowMonitoring

@@ -110,6 +110,41 @@ final class GatedBackendFactory: TranslationBackendFactory, @unchecked Sendable 
     }
 }
 
+final class RecordingModelBackendFactory: TranslationBackendFactory, @unchecked Sendable {
+    private var healthResults: [BackendHealth]
+    private(set) var madeDeepSeekModels: [String] = []
+
+    init(healthResults: [BackendHealth]) {
+        self.healthResults = healthResults
+    }
+
+    func makeBackend(
+        kind: BackendKind,
+        configuration: AppConfiguration,
+        credentials: any CredentialStoring
+    ) throws -> any TranslationBackend {
+        if kind == .deepSeekCloud {
+            madeDeepSeekModels.append(configuration.deepSeekModel)
+        }
+        return StubBackend(kind: kind)
+    }
+
+    func healthCheck(
+        kind: BackendKind,
+        configuration: AppConfiguration,
+        credentials: any CredentialStoring
+    ) async -> BackendHealth {
+        if kind != .deepSeekCloud {
+            return BackendHealth(status: .healthy, message: "ok")
+        }
+        _ = try? credentials.read()
+        guard !healthResults.isEmpty else {
+            return BackendHealth(status: .healthy, message: "ok")
+        }
+        return healthResults.removeFirst()
+    }
+}
+
 actor CompletionProbe {
     private(set) var completed = false
     func markCompleted() { completed = true }

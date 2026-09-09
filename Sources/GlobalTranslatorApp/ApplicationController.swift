@@ -193,6 +193,20 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         applySessionBackends(overlay: backend, configuration: configuration)
     }
 
+    /// `configure()` always `stop()`s overlay capture. Snapshot running/bridge
+    /// state, rewire DeepSeek backends to the current model, then restore.
+    func rewireDeepSeekBackendsPreservingCapture() {
+        let wasRunning = session?.isRunning == true
+        let wasBridgeActive = session?.isBridgeActive == true
+        applyDeepSeekSessionBackendsWithoutHealthCheck()
+        if wasBridgeActive {
+            session?.setBridgeActive(true)
+        }
+        if wasRunning {
+            startWindowSessionIfPermitted()
+        }
+    }
+
     func makeSession() {
         guard session == nil, let overlay else { return }
         let allowed = Set(configuration.translatedBundleIDs)
