@@ -92,12 +92,7 @@ struct BackendPickerSection: View {
                     get: { viewModel.selectedBackend },
                     set: { viewModel.selectBackend($0) }
                 ),
-                title: { kind in
-                    switch kind {
-                    case .deepSeekCloud: return "DeepSeek 云端"
-                    case .local: return "本地模型"
-                    }
-                },
+                title: { $0.displayTitle },
                 accessibilityLabelText: "翻译后端"
             )
 

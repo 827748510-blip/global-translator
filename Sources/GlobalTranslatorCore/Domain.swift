@@ -5,11 +5,11 @@ public enum BackendKind: String, Codable, Sendable, Equatable, Hashable {
     case deepSeekCloud
     case local
 
-    /// Compact labels for the selection popover. Settings keeps the longer names.
-    public var selectionPickerTitle: String {
+    /// Same copy as Settings 「翻译后端」. Popup and settings must stay in sync.
+    public var displayTitle: String {
         switch self {
-        case .local: return "本地"
-        case .deepSeekCloud: return "DeepSeek"
+        case .deepSeekCloud: return "DeepSeek 云端"
+        case .local: return "本地模型"
         }
     }
 }

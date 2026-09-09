@@ -310,7 +310,7 @@ struct GTEqualWidthSegmentedPicker<Value: Hashable>: View {
     }
 }
 
-/// Compact Local / DeepSeek control for the selection popover.
+/// Same segmented control as Settings 「翻译后端」: DeepSeek 云端 | 本地模型.
 struct GTSelectionBackendPicker: View {
     @Binding var selection: BackendKind
     var isEnabled: Bool = true
@@ -319,11 +319,11 @@ struct GTSelectionBackendPicker: View {
         GTEqualWidthSegmentedPicker(
             options: [BackendKind.deepSeekCloud, .local],
             selection: $selection,
-            title: { $0.selectionPickerTitle },
+            title: { $0.displayTitle },
             isEnabled: isEnabled,
             accessibilityLabelText: "翻译后端"
         )
-        .accessibilityValue(selection.selectionPickerTitle)
+        .accessibilityValue(selection.displayTitle)
         .accessibilityHint("与设置页共用，切换后翻译和优化都走当前后端")
     }
 }

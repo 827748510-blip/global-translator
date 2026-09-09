@@ -275,8 +275,8 @@ struct SelectionTranslatePopoverTests {
             + GTSelectionMetrics.actionsSpacing
             + GTSelectionMetrics.actionRowHeight
         #expect(size.height >= expectedMin - 0.5)
-        #expect(BackendKind.local.selectionPickerTitle == "本地")
-        #expect(BackendKind.deepSeekCloud.selectionPickerTitle == "DeepSeek")
+        #expect(BackendKind.local.displayTitle == "本地模型")
+        #expect(BackendKind.deepSeekCloud.displayTitle == "DeepSeek 云端")
     }
 
     @Test
