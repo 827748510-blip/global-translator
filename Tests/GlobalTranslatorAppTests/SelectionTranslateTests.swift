@@ -343,10 +343,10 @@ struct SelectionTranslateControllerTests {
         reader.setResult(.snapshot(snapshot("Another sentence")))
         translator.result = "另一句"
         select(controller)
-        try await waitUntil(timeout: 2) {
+        try await waitUntil({
             popover.currentContent?.status == .translated
                 && popover.currentContent?.displayTranslation == "另一句"
-        }
+        }, timeout: 2)
         #expect(popover.currentContent?.original == "Another sentence")
 
         popover.simulateUserDismiss()
@@ -355,10 +355,10 @@ struct SelectionTranslateControllerTests {
         try await Task.sleep(for: .milliseconds(25))
         reader.setResult(.snapshot(snapshot("Another sentence")))
         select(controller)
-        try await waitUntil(timeout: 2) {
+        try await waitUntil({
             popover.currentContent?.status == .translated
                 && popover.currentContent?.displayTranslation == "另一句"
-        }
+        }, timeout: 2)
         #expect(popover.currentContent?.original == "Another sentence")
     }
 
