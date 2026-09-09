@@ -181,7 +181,7 @@ public final class SelectionTranslateController {
 
     public func handlePointer(_ phase: SelectionPointerPhase, location: CGPoint) {
         guard enabled else { return }
-        if let frame = popover.panelFrame, frame.contains(location) {
+        if popover.containsInteraction(at: location) {
             return
         }
         switch pointer.handle(phase) {

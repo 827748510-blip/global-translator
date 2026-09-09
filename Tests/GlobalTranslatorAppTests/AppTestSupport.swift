@@ -514,6 +514,7 @@ final class FakeSelectionPopover: SelectionPopoverControlling {
     var onOptimize: (() -> Void)?
     var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
     var optimizeMode: PromptOptimizeMode = .generativePrompt
+    var extraInteractionFrames: [CGRect] = []
     var copyFeedback: SelectionCopyFeedback = .idle
     func show(_ content: SelectionPopoverContent) {
         currentContent = content
@@ -539,6 +540,10 @@ final class FakeSelectionPopover: SelectionPopoverControlling {
     func simulateOptimizeMode(_ mode: PromptOptimizeMode) {
         optimizeMode = mode
         onOptimizeModeChange?(mode)
+    }
+    func containsInteraction(at location: CGPoint) -> Bool {
+        if panelFrame?.contains(location) == true { return true }
+        return extraInteractionFrames.contains { $0.contains(location) }
     }
 }
 

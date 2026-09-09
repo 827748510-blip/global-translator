@@ -68,6 +68,27 @@ struct SelectionTranslateControllerTests {
     }
 
     @Test
+    func pointerOnSceneMenuDoesNotDismissPopover() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Hello world")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "你好，世界"
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .translated }
+        popover.extraInteractionFrames = [CGRect(x: 400, y: 400, width: 120, height: 80)]
+        let dismissesBefore = popover.dismissCount
+        controller.handlePointer(.down, location: CGPoint(x: 430, y: 430))
+        controller.handlePointer(.up, location: CGPoint(x: 430, y: 430))
+        #expect(popover.currentContent?.status == .translated)
+        #expect(popover.dismissCount == dismissesBefore)
+        controller.handlePointer(.down, location: CGPoint(x: 10, y: 10))
+        #expect(popover.currentContent == nil)
+        #expect(popover.dismissCount == dismissesBefore + 1)
+    }
+
+    @Test
     func draggingDoesNotReadUntilMouseUpSettles() async throws {
         let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Hello world")))
         let popover = FakeSelectionPopover()

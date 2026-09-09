@@ -40,9 +40,8 @@ public final class SelectionTranslatePanel: NSPanel {
         var monitors: [Any] = []
         let outside: (NSEvent) -> Void = { [weak self] _ in
             guard let self, self.isVisible else { return }
-            if !self.frame.contains(NSEvent.mouseLocation) {
-                self.onOutsideClick?()
-            }
+            if self.containsOwnedUI(at: NSEvent.mouseLocation) { return }
+            self.onOutsideClick?()
         }
         if let global = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown],
@@ -53,7 +52,8 @@ public final class SelectionTranslatePanel: NSPanel {
         if let local = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown],
             handler: { [weak self] event in
-                guard let self, self.isVisible, !self.frame.contains(NSEvent.mouseLocation) else { return event }
+                guard let self, self.isVisible else { return event }
+                if self.containsOwnedUI(at: NSEvent.mouseLocation) { return event }
                 self.onOutsideClick?()
                 return event
             }
@@ -62,13 +62,16 @@ public final class SelectionTranslatePanel: NSPanel {
         }
         if let escapeGlobal = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
             guard event.keyCode == 53 else { return }
-            self?.onEscape?()
+            guard let self, self.isVisible, !self.hasOwnedMenuOpen() else { return }
+            self.onEscape?()
         }) {
             monitors.append(escapeGlobal)
         }
         if let escapeLocal = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
             guard event.keyCode == 53 else { return event }
-            self?.onEscape?()
+            guard let self, self.isVisible else { return event }
+            if self.hasOwnedMenuOpen() { return event }
+            self.onEscape?()
             return nil
         }) {
             monitors.append(escapeLocal)
@@ -82,6 +85,39 @@ public final class SelectionTranslatePanel: NSPanel {
     }
 
     var dismissalMonitorCount: Int { eventMonitors.count }
+
+    func containsOwnedUI(at location: CGPoint, windows: [NSWindow] = NSApp.windows) -> Bool {
+        SelectionPopoverHitTesting.containsInteraction(
+            panelFrame: frame,
+            location: location,
+            auxiliaryFrames: SelectionPopoverHitTesting.auxiliaryFrames(from: windows, excluding: self)
+        )
+    }
+
+    func hasOwnedMenuOpen(windows: [NSWindow] = NSApp.windows) -> Bool {
+        windows.contains { $0.isVisible && $0 !== self && $0.level == .popUpMenu }
+    }
+}
+
+/// Picker menus render in a pop-up window outside the floating panel frame.
+/// Clicks there must not count as "outside" dismissal.
+public enum SelectionPopoverHitTesting {
+    public static func containsInteraction(
+        panelFrame: CGRect,
+        location: CGPoint,
+        auxiliaryFrames: [CGRect]
+    ) -> Bool {
+        if panelFrame.contains(location) { return true }
+        return auxiliaryFrames.contains { $0.contains(location) }
+    }
+
+    public static func auxiliaryFrames(from windows: [NSWindow], excluding panel: NSWindow) -> [CGRect] {
+        windows.compactMap { window in
+            guard window.isVisible, window !== panel else { return nil }
+            let owned = window.level == .popUpMenu || window.parent === panel
+            return owned ? window.frame : nil
+        }
+    }
 }
 
 @MainActor
@@ -96,6 +132,14 @@ public protocol SelectionPopoverControlling: AnyObject {
     var copyFeedback: SelectionCopyFeedback { get }
     func show(_ content: SelectionPopoverContent)
     func dismiss()
+    func containsInteraction(at location: CGPoint) -> Bool
+}
+
+@MainActor
+public extension SelectionPopoverControlling {
+    func containsInteraction(at location: CGPoint) -> Bool {
+        panelFrame?.contains(location) == true
+    }
 }
 
 @MainActor
@@ -136,6 +180,25 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     private var copyFeedbackGeneration: UInt64 = 0
 
     public var panelFrame: CGRect? { panel?.isVisible == true ? panel?.frame : nil }
+
+    public func containsInteraction(at location: CGPoint) -> Bool {
+        guard let panel, panel.isVisible else { return false }
+        return panel.containsOwnedUI(at: location)
+    }
+
+    /// Test seam: same path as mouse-down monitors.
+    public func handlePotentialOutsideClick(at location: CGPoint, auxiliaryFrames: [CGRect]? = nil) {
+        guard let panel, panel.isVisible else { return }
+        let extra = auxiliaryFrames ?? SelectionPopoverHitTesting.auxiliaryFrames(from: NSApp.windows, excluding: panel)
+        if SelectionPopoverHitTesting.containsInteraction(
+            panelFrame: panel.frame,
+            location: location,
+            auxiliaryFrames: extra
+        ) {
+            return
+        }
+        notifyUserDismiss()
+    }
 
     public init(
         visibleFramesProvider: @escaping () -> [CGRect] = { NSScreen.screens.map(\.visibleFrame) },

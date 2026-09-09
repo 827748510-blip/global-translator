@@ -200,4 +200,47 @@ struct SelectionTranslatePopoverTests {
         #expect(dismissed == 1)
         #expect(controller.currentContent == nil)
     }
+
+    @Test
+    func sceneMenuFramesAreNotOutsideClicks() {
+        let panelFrame = CGRect(x: 40, y: 80, width: 280, height: 90)
+        let menuFrame = CGRect(x: 40, y: 10, width: 160, height: 140)
+        #expect(SelectionPopoverHitTesting.containsInteraction(
+            panelFrame: panelFrame,
+            location: CGPoint(x: 80, y: 50),
+            auxiliaryFrames: [menuFrame]
+        ))
+        #expect(!SelectionPopoverHitTesting.containsInteraction(
+            panelFrame: panelFrame,
+            location: CGPoint(x: 800, y: 600),
+            auxiliaryFrames: [menuFrame]
+        ))
+        #expect(SelectionPopoverHitTesting.containsInteraction(
+            panelFrame: panelFrame,
+            location: CGPoint(x: 50, y: 100),
+            auxiliaryFrames: [menuFrame]
+        ))
+    }
+
+    @Test
+    func popUpMenuWindowClickDoesNotDismissPopover() {
+        var dismissed = 0
+        let controller = SelectionTranslatePanelController(
+            visibleFramesProvider: { [CGRect(x: 0, y: 0, width: 1440, height: 875)] },
+            pasteboardWriter: { _ in }
+        )
+        controller.onUserDismiss = { dismissed += 1 }
+        controller.show(.translated(
+            original: "Hello",
+            translation: "你好",
+            screenFrame: CGRect(x: 40, y: 80, width: 60, height: 14)
+        ))
+        let menuFrame = CGRect(x: 200, y: 200, width: 140, height: 120)
+        controller.handlePotentialOutsideClick(at: CGPoint(x: 240, y: 240), auxiliaryFrames: [menuFrame])
+        #expect(dismissed == 0)
+        #expect(controller.currentContent != nil)
+        controller.handlePotentialOutsideClick(at: CGPoint(x: 1200, y: 800), auxiliaryFrames: [menuFrame])
+        #expect(dismissed == 1)
+        #expect(controller.currentContent == nil)
+    }
 }
