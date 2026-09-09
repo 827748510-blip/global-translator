@@ -39,9 +39,11 @@ public final class SelectionTranslatePanel: NSPanel {
         guard eventMonitors.isEmpty else { return }
         var monitors: [Any] = []
         let outside: (NSEvent) -> Void = { [weak self] _ in
-            guard let self, self.isVisible else { return }
-            if self.containsOwnedUI(at: NSEvent.mouseLocation) { return }
-            self.onOutsideClick?()
+            MainActor.assumeIsolated {
+                guard let self, self.isVisible else { return }
+                if self.containsOwnedUI(at: NSEvent.mouseLocation) { return }
+                self.onOutsideClick?()
+            }
         }
         if let global = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown],
@@ -52,27 +54,33 @@ public final class SelectionTranslatePanel: NSPanel {
         if let local = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown],
             handler: { [weak self] event in
-                guard let self, self.isVisible else { return event }
-                if self.containsOwnedUI(at: NSEvent.mouseLocation) { return event }
-                self.onOutsideClick?()
-                return event
+                MainActor.assumeIsolated {
+                    guard let self, self.isVisible else { return event }
+                    if self.containsOwnedUI(at: NSEvent.mouseLocation) { return event }
+                    self.onOutsideClick?()
+                    return event
+                }
             }
         ) {
             monitors.append(local)
         }
         if let escapeGlobal = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
             guard event.keyCode == 53 else { return }
-            guard let self, self.isVisible, !self.hasOwnedMenuOpen() else { return }
-            self.onEscape?()
+            MainActor.assumeIsolated {
+                guard let self, self.isVisible, !self.hasOwnedMenuOpen() else { return }
+                self.onEscape?()
+            }
         }) {
             monitors.append(escapeGlobal)
         }
         if let escapeLocal = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
             guard event.keyCode == 53 else { return event }
-            guard let self, self.isVisible else { return event }
-            if self.hasOwnedMenuOpen() { return event }
-            self.onEscape?()
-            return nil
+            return MainActor.assumeIsolated {
+                guard let self, self.isVisible else { return event }
+                if self.hasOwnedMenuOpen() { return event }
+                self.onEscape?()
+                return nil
+            }
         }) {
             monitors.append(escapeLocal)
         }
@@ -86,15 +94,21 @@ public final class SelectionTranslatePanel: NSPanel {
 
     var dismissalMonitorCount: Int { eventMonitors.count }
 
-    func containsOwnedUI(at location: CGPoint, windows: [NSWindow] = NSApp.windows) -> Bool {
+    @MainActor
+    func containsOwnedUI(at location: CGPoint, windows: [NSWindow]? = nil) -> Bool {
         SelectionPopoverHitTesting.containsInteraction(
             panelFrame: frame,
             location: location,
-            auxiliaryFrames: SelectionPopoverHitTesting.auxiliaryFrames(from: windows, excluding: self)
+            auxiliaryFrames: SelectionPopoverHitTesting.auxiliaryFrames(
+                from: windows ?? NSApp.windows,
+                excluding: self
+            )
         )
     }
 
-    func hasOwnedMenuOpen(windows: [NSWindow] = NSApp.windows) -> Bool {
+    @MainActor
+    func hasOwnedMenuOpen(windows: [NSWindow]? = nil) -> Bool {
+        let windows = windows ?? NSApp.windows
         windows.contains { $0.isVisible && $0 !== self && $0.level == .popUpMenu }
     }
 }
@@ -111,6 +125,7 @@ public enum SelectionPopoverHitTesting {
         return auxiliaryFrames.contains { $0.contains(location) }
     }
 
+    @MainActor
     public static func auxiliaryFrames(from windows: [NSWindow], excluding panel: NSWindow) -> [CGRect] {
         windows.compactMap { window in
             guard window.isVisible, window !== panel else { return nil }
