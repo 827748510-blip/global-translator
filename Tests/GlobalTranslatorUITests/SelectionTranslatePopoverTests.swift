@@ -121,6 +121,8 @@ struct SelectionTranslatePopoverTests {
         #expect(!loading.allowsCopy)
         #expect(translated.allowsCopy)
         #expect(translated.showsOptimizeAction)
+        #expect(!SelectionPopoverLayout.usesStatusResultFont(.loading))
+        #expect(!SelectionPopoverLayout.usesStatusResultFont(.translated))
         #expect(translatedSize.height >= loadingSize.height)
         #expect(translatedSize.width == GTSelectionMetrics.width)
     }
@@ -180,6 +182,13 @@ struct SelectionTranslatePopoverTests {
             font: NSFont.preferredFont(forTextStyle: .body)
         )
         #expect(status.height > body.height)
+        #expect(SelectionPopoverLayout.usesStatusResultFont(.alreadyChinese))
+        #expect(SelectionPopoverLayout.usesStatusResultFont(.noTranslationNeeded))
+        #expect(SelectionPopoverLayout.usesStatusResultFont(.failed))
+        #expect(SelectionPopoverLayout.usesStatusResultFont(.unavailable))
+        #expect(!SelectionPopoverLayout.usesStatusResultFont(.loading))
+        #expect(!SelectionPopoverLayout.usesStatusResultFont(.optimizing))
+        #expect(!SelectionPopoverLayout.usesStatusResultFont(.optimized))
         let size = SelectionTranslatePanelController.contentSize(for: content)
         #expect(size.height >= GTSelectionMetrics.verticalPadding * 2 + status.height + GTSelectionMetrics.sectionSpacing)
     }
