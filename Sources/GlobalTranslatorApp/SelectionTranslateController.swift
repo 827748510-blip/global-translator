@@ -81,6 +81,7 @@ public final class SelectionTranslateController {
     private let logger: any AppRuntimeLogger
     private let translator: () -> (any SelectionTranslating)?
     private let ownBundleIdentifiers: Set<String>
+    private let frontmostBundleIdentifier: () -> String
     private let targetLanguage: String
     private let settleDelay: Duration
     private let unavailableDismissDelay: Duration
@@ -106,6 +107,9 @@ public final class SelectionTranslateController {
         logger: any AppRuntimeLogger,
         translator: @escaping () -> (any SelectionTranslating)?,
         ownBundleIdentifiers: Set<String> = [],
+        frontmostBundleIdentifier: @escaping () -> String = {
+            AXSelectedTextReader.systemFrontmostApplication()?.bundleIdentifier ?? ""
+        },
         targetLanguage: String = SelectionTranslateSupport.defaultTargetLanguage,
         settleDelay: Duration = .milliseconds(SelectionTranslateSupport.settleDelayMilliseconds),
         unavailableDismissDelay: Duration = .milliseconds(
@@ -119,6 +123,7 @@ public final class SelectionTranslateController {
         self.logger = logger
         self.translator = translator
         self.ownBundleIdentifiers = ownBundleIdentifiers
+        self.frontmostBundleIdentifier = frontmostBundleIdentifier
         self.targetLanguage = targetLanguage
         self.settleDelay = settleDelay
         self.unavailableDismissDelay = unavailableDismissDelay
@@ -226,7 +231,10 @@ public final class SelectionTranslateController {
             popover.dismiss()
             return
         }
-        switch reader.readSelection(mouseLocation: location, allowClipboardFallback: pointer.didDrag) {
+        switch reader.readSelection(
+            mouseLocation: location,
+            allowClipboardFallback: pointer.didDrag && !isOwnFrontmostApplication()
+        ) {
         case .empty:
             suppressedSource = nil
             cancelPresentation()
@@ -239,7 +247,7 @@ public final class SelectionTranslateController {
                 popover.dismiss()
             }
         case .snapshot(let snapshot):
-            if ownBundleIdentifiers.contains(snapshot.bundleIdentifier) {
+            if isOwnApplication(snapshot.bundleIdentifier) {
                 popover.dismiss()
                 return
             }
@@ -390,6 +398,14 @@ public final class SelectionTranslateController {
                 ))
             }
         }
+    }
+
+    private func isOwnFrontmostApplication() -> Bool {
+        isOwnApplication(frontmostBundleIdentifier())
+    }
+
+    private func isOwnApplication(_ bundleIdentifier: String) -> Bool {
+        !bundleIdentifier.isEmpty && ownBundleIdentifiers.contains(bundleIdentifier)
     }
 
     private static func describe(_ error: Error) -> String {

@@ -23,7 +23,8 @@ struct SelectionTranslateControllerTests {
         reader: FakeSelectedTextReader,
         popover: FakeSelectionPopover,
         translator: StubSelectionTranslator,
-        permission: FakePermissionController = FakePermissionController(snapshot: .allGranted)
+        permission: FakePermissionController = FakePermissionController(snapshot: .allGranted),
+        frontmostBundleIdentifier: @escaping () -> String = { "com.apple.TextEdit" }
     ) -> SelectionTranslateController {
         SelectionTranslateController(
             reader: reader,
@@ -33,6 +34,7 @@ struct SelectionTranslateControllerTests {
             logger: RecordingLogger(),
             translator: { translator },
             ownBundleIdentifiers: ["com.maodashu.global-translator"],
+            frontmostBundleIdentifier: frontmostBundleIdentifier,
             settleDelay: .milliseconds(5),
             unavailableDismissDelay: .milliseconds(30)
         )
@@ -319,10 +321,11 @@ struct SelectionTranslateControllerTests {
         let controller = makeController(reader: reader, popover: popover, translator: translator)
         controller.setEnabled(true)
         select(controller)
-        try await Task.sleep(for: .milliseconds(25))
-        #expect(reader.readCount == 1)
-        #expect(!reader.lastAllowClipboardFallback)
+        // Click-without-drag may still AX-poll (TextEdit / dismiss); it must not
+        // steal the clipboard or show a popover. Wait for settle so this is not a 25ms race.
+        try await waitUntil { reader.readCount >= 1 }
         #expect(reader.clipboardFallbackUseCount == 0)
+        #expect(!reader.lastAllowClipboardFallback)
         #expect(translator.texts.isEmpty)
         #expect(popover.currentContent == nil)
         #expect(popover.shown.isEmpty)
@@ -334,13 +337,20 @@ struct SelectionTranslateControllerTests {
         reader.clipboardFallbackSnapshot = snapshot("Hello from self", bundle: "com.maodashu.global-translator")
         let popover = FakeSelectionPopover()
         let translator = StubSelectionTranslator()
-        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        let controller = makeController(
+            reader: reader,
+            popover: popover,
+            translator: translator,
+            frontmostBundleIdentifier: { "com.maodashu.global-translator" }
+        )
         controller.setEnabled(true)
         dragSelect(controller)
-        try await Task.sleep(for: .milliseconds(25))
-        #expect(reader.clipboardFallbackUseCount == 1)
+        try await waitUntil { reader.readCount >= 1 }
+        #expect(reader.clipboardFallbackUseCount == 0)
+        #expect(!reader.lastAllowClipboardFallback)
         #expect(translator.texts.isEmpty)
         #expect(popover.currentContent == nil)
+        #expect(popover.shown.isEmpty)
     }
 
     @Test
