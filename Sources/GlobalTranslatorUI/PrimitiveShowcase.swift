@@ -84,7 +84,7 @@ public struct PrimitiveShowcase: View {
             // Never render a key-shaped value, even a fake one; a disabled
             // empty field plus caption conveys the error state.
             SecureField("已保存的密钥不会显示", text: .constant(""))
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(GTFieldTextStyle())
                 .disabled(true)
             Text("密钥存储失败，请重试")
                 .font(GTType.secondary)
@@ -149,6 +149,7 @@ public struct PrimitiveShowcase: View {
 private final class ShowcaseActions: SettingsActions {
     func setAutomaticTranslation(_ enabled: Bool) {}
     func setSelectionTranslate(_ enabled: Bool) {}
+    func setPromptOptimizeMode(_ mode: PromptOptimizeMode) {}
     func selectBackend(_ kind: BackendKind) {}
     func saveAPIKey(_ draft: String) async throws {}
     func deleteAPIKey() async throws {}

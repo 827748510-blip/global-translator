@@ -496,7 +496,7 @@ struct SelectionTranslateControllerTests {
         try await waitUntil { popover.currentContent?.status == .optimized }
         #expect(translator.texts.isEmpty)
         #expect(translator.optimizedTexts == ["一个女孩站在雨里"])
-        #expect(translator.optimizedModes == [.generativePrompt])
+        #expect(translator.optimizedModes == [.communicationPolish])
         #expect(popover.currentContent?.displayTranslation == translator.optimizeResult)
         #expect(popover.currentContent?.allowsCopy == true)
         #expect(popover.currentContent?.copyText == translator.optimizeResult)
@@ -510,17 +510,17 @@ struct SelectionTranslateControllerTests {
         translator.optimizeResult = "这段实现把错误路径写清楚了。"
         let controller = makeController(reader: reader, popover: popover, translator: translator)
         controller.setEnabled(true)
-        controller.setOptimizeMode(.technicalExpression)
+        controller.setOptimizeMode(.taskInstruction)
         select(controller)
         try await waitUntil { popover.currentContent?.status == .alreadyChinese }
         popover.simulateOptimize()
         try await waitUntil { popover.currentContent?.status == .optimized }
-        #expect(translator.optimizedModes == [.technicalExpression])
-        popover.simulateOptimizeMode(.professionalReply)
+        #expect(translator.optimizedModes == [.taskInstruction])
+        popover.simulateOptimizeMode(.communicationPolish)
         popover.simulateOptimize()
         try await waitUntil { translator.optimizedModes.count == 2 }
-        #expect(translator.optimizedModes == [.technicalExpression, .professionalReply])
-        #expect(popover.optimizeMode == .professionalReply)
+        #expect(translator.optimizedModes == [.taskInstruction, .communicationPolish])
+        #expect(popover.optimizeMode == .communicationPolish)
     }
 
     @Test
@@ -629,14 +629,17 @@ extension ApplicationControllerTests {
         )
         try await controller.start()
         await waitForStartupHealthCheck(controller)
-        #expect(controller.configuration.promptOptimizeMode == .generativePrompt)
-        controller.setPromptOptimizeMode(.highEQ)
+        #expect(controller.configuration.promptOptimizeMode == .communicationPolish)
+        #expect(controller.viewModel.promptOptimizeMode == .communicationPolish)
+        controller.setPromptOptimizeMode(.taskInstruction)
         try await controller.persistence.flush()
-        #expect(controller.configuration.promptOptimizeMode == .highEQ)
-        #expect(await store.saved.last?.promptOptimizeMode == .highEQ)
+        #expect(controller.configuration.promptOptimizeMode == .taskInstruction)
+        #expect(controller.viewModel.promptOptimizeMode == .taskInstruction)
+        #expect(await store.saved.last?.promptOptimizeMode == .taskInstruction)
         popover.simulateOptimizeMode(.wordingFix)
         try await controller.persistence.flush()
         #expect(controller.configuration.promptOptimizeMode == .wordingFix)
+        #expect(controller.viewModel.promptOptimizeMode == .wordingFix)
         #expect(await store.saved.last?.promptOptimizeMode == .wordingFix)
         await controller.stop()
     }
@@ -729,17 +732,18 @@ extension ApplicationControllerTests {
         try await controller.start()
         await waitForStartupHealthCheck(controller)
         let session = try #require(controller.session)
-        _ = try await session.optimizePrompt("把这段写清楚", mode: .technicalExpression)
-        _ = try await session.optimizePrompt("把这段写清楚", mode: .professionalReply)
+        _ = try await session.optimizePrompt("把这段写清楚", mode: .taskInstruction)
+        _ = try await session.optimizePrompt("把这段写清楚", mode: .communicationPolish)
         let systems = await coordinator.systems
         let users = await coordinator.users
         #expect(systems.count == 2)
-        #expect(systems[0].contains("technical or code-related"))
-        #expect(systems[1].contains("professional workplace reply"))
+        #expect(systems[0].contains("structured task brief"))
+        #expect(systems[1].contains("workplace or social communication"))
         #expect(systems[0] != systems[1])
-        #expect(users[0].contains("clearer technical expression"))
-        #expect(users[1].contains("professional workplace reply"))
+        #expect(users[0].contains("structured task brief"))
+        #expect(users[1].contains("workplace or social communication"))
         #expect(systems.allSatisfy { $0.contains("untrusted data") })
+        #expect(systems.allSatisfy { $0.contains("Do not turn the text into a generative image prompt") })
         await controller.stop()
     }
 }

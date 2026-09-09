@@ -329,11 +329,11 @@ public final class TranslationSession {
         }
     }
 
-    /// Generic prompt rewrite. Allows Simplified Chinese drafts (the
+    /// Scene-based rewrite. Allows Simplified Chinese drafts (the
     /// already-Chinese skip is translate-only). Uses the selection coordinator's
     /// `completePlain` so overlay/bridge JSON translation is not involved.
     public func optimizePrompt(_ text: String) async throws -> String {
-        try await optimizePrompt(text, mode: .generativePrompt)
+        try await optimizePrompt(text, mode: .communicationPolish)
     }
 
     public func optimizePrompt(_ text: String, mode: PromptOptimizeMode) async throws -> String {

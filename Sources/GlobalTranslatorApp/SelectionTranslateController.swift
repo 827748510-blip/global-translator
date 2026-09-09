@@ -112,7 +112,7 @@ public final class SelectionTranslateController {
     /// Source text the user just dismissed (Esc / outside click / new press).
     /// Settle will not re-show it until the selection changes or becomes empty.
     private var suppressedSource: String?
-    private var optimizeMode: PromptOptimizeMode = .generativePrompt
+    private var optimizeMode: PromptOptimizeMode = .communicationPolish
     public var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
 
     public var isEnabled: Bool { enabled }

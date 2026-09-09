@@ -1,25 +1,21 @@
 import Foundation
 
-/// Scene for 优化提示词. Default stays the original generative-image rewrite.
+/// Scene for 优化提示词. Default is workplace/social polish, not image-prompt rewrite.
 public enum PromptOptimizeMode: String, Codable, CaseIterable, Equatable, Sendable, Identifiable {
-    case generativePrompt
-    case technicalExpression
-    case professionalReply
-    case highEQ
+    case communicationPolish
+    case taskInstruction
     case wordingFix
 
     public var id: String { rawValue }
 
+    public static let `default`: PromptOptimizeMode = .communicationPolish
+
     public var title: String {
         switch self {
-        case .generativePrompt:
-            return "生成提示词"
-        case .technicalExpression:
-            return "技术表达"
-        case .professionalReply:
-            return "专业回复"
-        case .highEQ:
-            return "高情商"
+        case .communicationPolish:
+            return "沟通润色"
+        case .taskInstruction:
+            return "任务指令"
         case .wordingFix:
             return "用词修正"
         }
@@ -27,16 +23,37 @@ public enum PromptOptimizeMode: String, Codable, CaseIterable, Equatable, Sendab
 
     public var optimizeAccessibilityHint: String {
         switch self {
-        case .generativePrompt:
-            return "把草稿改写成通用生成提示词"
-        case .technicalExpression:
-            return "把选区改写成更清晰的技术表达"
-        case .professionalReply:
-            return "把选区改写成专业得体的回复"
-        case .highEQ:
-            return "把选区改写成更有同理心的措辞"
+        case .communicationPolish:
+            return "改得更得体、清晰、有同理心，不改事实、不加承诺"
+        case .taskInstruction:
+            return "把含糊意图扩写成给 AI 执行的结构化任务说明"
         case .wordingFix:
             return "修正错别字、用词和不得体表达"
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        self = Self.migrating(from: raw)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    /// Maps persisted and legacy raw values onto the current three scenes.
+    public static func migrating(from rawValue: String) -> PromptOptimizeMode {
+        switch rawValue {
+        case Self.communicationPolish.rawValue, "professionalReply", "highEQ":
+            return .communicationPolish
+        case Self.wordingFix.rawValue:
+            return .wordingFix
+        case Self.taskInstruction.rawValue:
+            return .taskInstruction
+        default:
+            return .communicationPolish
         }
     }
 }

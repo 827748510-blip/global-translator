@@ -35,8 +35,19 @@ public enum GTColor {
     public static let accent = Color.accentColor
     public static let destructive = Color(nsColor: .systemRed)
     public static let sectionFill = Color(nsColor: .controlBackgroundColor)
+    public static let fieldFill = Color(nsColor: .textBackgroundColor)
+    public static let hairline = Color.primary.opacity(0.12)
     /// Solid fallback for overlay backgrounds when Reduce Transparency is enabled.
     public static let overlaySolidFallback = Color(nsColor: .windowBackgroundColor)
+}
+
+/// Shared form controls (settings cards, text fields, custom menus).
+public enum GTControlMetrics {
+    /// Comfortable field / menu trigger height (taller than the system Picker).
+    public static let fieldHeight: CGFloat = 36
+    public static let menuRowHeight: CGFloat = 32
+    public static let menuListMaxHeight: CGFloat = 168
+    public static let fieldStrokeWidth: CGFloat = 1
 }
 
 /// Overlay layout metrics (see DESIGN.md §3/§5).
@@ -66,7 +77,7 @@ public enum GTSelectionMetrics {
     public static let width: CGFloat = 312
     public static let maxOriginalLines = 2
     public static let maxTranslationLines = 8
-    public static let modePickerHeight: CGFloat = 22
+    public static let modePickerHeight: CGFloat = 32
     public static let actionRowHeight: CGFloat = 28
     public static let horizontalPadding: CGFloat = 14
     public static let verticalPadding: CGFloat = 12

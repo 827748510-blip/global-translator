@@ -14,6 +14,7 @@ private final class SpyActions: SettingsActions {
 
     var automaticValues: [Bool] = []
     var selectionTranslateValues: [Bool] = []
+    var promptOptimizeModes: [PromptOptimizeMode] = []
     var selectedBackends: [BackendKind] = []
     var savedKeyDrafts: [String] = []
     var deleteKeyCallCount = 0
@@ -40,6 +41,10 @@ private final class SpyActions: SettingsActions {
 
     func setSelectionTranslate(_ enabled: Bool) {
         selectionTranslateValues.append(enabled)
+    }
+
+    func setPromptOptimizeMode(_ mode: PromptOptimizeMode) {
+        promptOptimizeModes.append(mode)
     }
 
     func selectBackend(_ kind: BackendKind) {
@@ -267,6 +272,20 @@ struct SettingsViewModelTests {
         #expect(actions.selectionTranslateValues == [false, true])
         viewModel.setSelectionTranslate(true)
         #expect(actions.selectionTranslateValues == [false, true])
+    }
+
+    @Test
+    func promptOptimizeModeDefaultsToCommunicationPolishAndForwards() {
+        let (viewModel, actions) = makeViewModel()
+        #expect(viewModel.promptOptimizeMode == .communicationPolish)
+        viewModel.setPromptOptimizeMode(.taskInstruction)
+        #expect(viewModel.promptOptimizeMode == .taskInstruction)
+        #expect(actions.promptOptimizeModes == [.taskInstruction])
+        viewModel.setPromptOptimizeMode(.taskInstruction)
+        #expect(actions.promptOptimizeModes == [.taskInstruction])
+        viewModel.setPromptOptimizeMode(.wordingFix)
+        #expect(viewModel.promptOptimizeMode == .wordingFix)
+        #expect(actions.promptOptimizeModes == [.taskInstruction, .wordingFix])
     }
 
     @Test

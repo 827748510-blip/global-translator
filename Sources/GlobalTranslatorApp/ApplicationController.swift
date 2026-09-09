@@ -150,6 +150,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
                 displayName: url.map { FileManager.default.displayName(atPath: $0.path) } ?? id)
         }
         viewModel.isSelectionTranslateEnabled = configuration.selectionTranslateEnabled
+        viewModel.promptOptimizeMode = configuration.promptOptimizeMode
         viewModel.permissionSnapshot = components.permissionController.snapshot
         if configuration.backend == .deepSeekCloud {
             let storedKey = try? components.credentialStore.read()

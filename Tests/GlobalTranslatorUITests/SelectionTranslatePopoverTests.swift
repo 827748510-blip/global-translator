@@ -135,6 +135,10 @@ struct SelectionTranslatePopoverTests {
         #expect(GTSelectionMetrics.verticalPadding > GTOverlayMetrics.verticalPadding)
         #expect(GTSelectionMetrics.sectionSpacing > GTSpacing.xSmall)
         #expect(GTSelectionMetrics.textBlockSpacing < GTSelectionMetrics.sectionSpacing)
+        #expect(GTSelectionMetrics.modePickerHeight >= 28)
+        #expect(GTControlMetrics.fieldHeight >= 36)
+        #expect(GTControlMetrics.menuRowHeight >= 32)
+        #expect(GTControlMetrics.fieldHeight > GTSelectionMetrics.modePickerHeight - 8)
     }
 
     @Test

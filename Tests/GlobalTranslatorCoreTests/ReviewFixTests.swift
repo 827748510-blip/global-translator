@@ -53,7 +53,7 @@ struct ReviewFixTests {
             Issue.record("missing max_output_tokens")
         }
         let input = try #require(payload["input"] as? [[String: Any]])
-        #expect((input[0]["content"] as? String)?.contains("generic generative prompt") == true)
+        #expect((input[0]["content"] as? String)?.contains("workplace or social communication") == true)
         #expect((input[1]["content"] as? String)?.contains("一个女孩站在雨里") == true)
     }
 

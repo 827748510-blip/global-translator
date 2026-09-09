@@ -8,11 +8,11 @@ import GlobalTranslatorCore
 /// `NSHostingView` on copy was resetting feedback to idle on Mac.
 @MainActor
 public final class SelectionPopoverChrome: ObservableObject {
-    @Published public var optimizeMode: PromptOptimizeMode = .generativePrompt
+    @Published public var optimizeMode: PromptOptimizeMode = .communicationPolish
     @Published public var copyFeedback: SelectionCopyFeedback = .idle
 
     public init(
-        optimizeMode: PromptOptimizeMode = .generativePrompt,
+        optimizeMode: PromptOptimizeMode = .communicationPolish,
         copyFeedback: SelectionCopyFeedback = .idle
     ) {
         self.optimizeMode = optimizeMode
@@ -92,18 +92,10 @@ public struct SelectionTranslatePopoverView: View {
     private var actionsGroup: some View {
         VStack(alignment: .leading, spacing: GTSelectionMetrics.actionsSpacing) {
             if content.showsOptimizeAction {
-                Picker("优化场景", selection: modeBinding) {
-                    ForEach(PromptOptimizeMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                .pickerStyle(.menu)
-                .controlSize(.small)
-                .labelsHidden()
-                .disabled(content.status == .optimizing)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityLabel("优化场景")
-                .accessibilityValue(chrome.optimizeMode.title)
+                GTOptimizeModePicker(
+                    selection: modeBinding,
+                    isEnabled: content.status != .optimizing
+                )
             }
             if content.showsActionButtons {
                 HStack(spacing: GTSpacing.xSmall) {

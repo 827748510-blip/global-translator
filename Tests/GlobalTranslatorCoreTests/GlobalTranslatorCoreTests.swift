@@ -13,7 +13,7 @@ struct GlobalTranslatorCoreTests {
         #expect(configuration.localModel.isEmpty)
         #expect(configuration.translatedBundleIDs.isEmpty)
         #expect(configuration.selectionTranslateEnabled)
-        #expect(configuration.promptOptimizeMode == .generativePrompt)
+        #expect(configuration.promptOptimizeMode == .communicationPolish)
 
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = ConfigStore(url: path)
@@ -31,18 +31,35 @@ struct GlobalTranslatorCoreTests {
         #expect(decoded.translatedBundleIDs.isEmpty)
         #expect(decoded.autoTranslateEnabled)
         #expect(decoded.selectionTranslateEnabled)
-        #expect(decoded.promptOptimizeMode == .generativePrompt)
+        #expect(decoded.promptOptimizeMode == .communicationPolish)
 
         let allowJSON = Data(#"{"translatedBundleIDs":["com.google.Chrome"]}"#.utf8)
         let allow = try JSONDecoder().decode(AppConfiguration.self, from: allowJSON)
         #expect(allow.translatedBundleIDs == ["com.google.Chrome"])
         #expect(!allow.autoTranslateEnabled)
         #expect(allow.selectionTranslateEnabled)
-        #expect(allow.promptOptimizeMode == .generativePrompt)
+        #expect(allow.promptOptimizeMode == .communicationPolish)
+    }
 
-        let modeJSON = Data(#"{"promptOptimizeMode":"highEQ"}"#.utf8)
-        let mode = try JSONDecoder().decode(AppConfiguration.self, from: modeJSON)
-        #expect(mode.promptOptimizeMode == .highEQ)
+    @Test
+    func promptOptimizeModeMigratesLegacyRawValues() throws {
+        func decodeMode(_ raw: String) throws -> PromptOptimizeMode {
+            let data = Data(#"{"promptOptimizeMode":"\#(raw)"}"#.utf8)
+            return try JSONDecoder().decode(AppConfiguration.self, from: data).promptOptimizeMode
+        }
+        #expect(try decodeMode("professionalReply") == .communicationPolish)
+        #expect(try decodeMode("highEQ") == .communicationPolish)
+        #expect(try decodeMode("wordingFix") == .wordingFix)
+        #expect(try decodeMode("generativePrompt") == .communicationPolish)
+        #expect(try decodeMode("technicalExpression") == .communicationPolish)
+        #expect(try decodeMode("unknownScene") == .communicationPolish)
+        #expect(try decodeMode("communicationPolish") == .communicationPolish)
+        #expect(try decodeMode("taskInstruction") == .taskInstruction)
+        #expect(PromptOptimizeMode.migrating(from: "highEQ") == .communicationPolish)
+        #expect(PromptOptimizeMode.migrating(from: "wordingFix") == .wordingFix)
+        let encoded = try JSONEncoder().encode(AppConfiguration(promptOptimizeMode: .communicationPolish))
+        let object = try #require(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        #expect(object["promptOptimizeMode"] as? String == "communicationPolish")
     }
 
     @Test
