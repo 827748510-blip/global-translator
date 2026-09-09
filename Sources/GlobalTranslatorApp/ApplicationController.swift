@@ -150,6 +150,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
                 displayName: url.map { FileManager.default.displayName(atPath: $0.path) } ?? id)
         }
         viewModel.isSelectionTranslateEnabled = configuration.selectionTranslateEnabled
+        viewModel.isVideoTranslateEnabled = configuration.videoTranslateEnabled
         viewModel.promptOptimizeMode = configuration.promptOptimizeMode
         viewModel.deepSeekModel = AppConfiguration.resolvedDeepSeekModel(configuration.deepSeekModel)
         viewModel.permissionSnapshot = components.permissionController.snapshot
@@ -273,7 +274,12 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
     /// daemon; the handler resolves the session lazily so session rebuilds
     /// and backend reconfiguration need no server restart.
     private func startExtensionBridge() {
-        let server = ExtensionBridgeServer(logger: components.logger) { [weak self] texts in
+        let server = ExtensionBridgeServer(
+            logger: components.logger,
+            videoTranslateEnabled: { [weak self] in
+                self?.configuration.videoTranslateEnabled == true
+            }
+        ) { [weak self] texts in
             guard let session = self?.session else { throw ExtensionBridgeError.translatorUnavailable }
             return try await session.translateBridgeTexts(texts)
         }

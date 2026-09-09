@@ -19,14 +19,13 @@
 <body>
   <h1>Global Translator</h1>
   <label><input type="checkbox" id="enabled"> 启用网页整页翻译</label>
-  <label><input type="checkbox" id="videoTranslate"> 视频翻译</label>
+  <p id="videoHint">视频翻译开关在菜单栏设置，与「滑词翻译」同一行，默认关闭。</p>
   <div id="videoExtras" hidden>
     <button type="button" id="pickSidecar">选择本地字幕 (SRT/VTT)</button>
     <input type="file" id="sidecarFile" accept=".srt,.vtt,text/vtt" hidden>
     <div id="sidecarName"></div>
     <button type="button" id="clearSidecar" hidden>清除字幕文件</button>
     <p id="sidecarError"></p>
-    <p id="videoHint">仅叠加中文，不改原片或原字幕文件。YouTube 等无标准 textTracks 的站点不保证可用，本阶段不做语音识别。</p>
   </div>
   <div id="status">检查桌面端连接…</div>
   <script src="subtitle-cues.js"></script>

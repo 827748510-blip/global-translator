@@ -15,6 +15,7 @@ struct GlobalTranslatorCoreTests {
         #expect(!configuration.deepSeekAPIKeyConfigured)
         #expect(configuration.translatedBundleIDs.isEmpty)
         #expect(configuration.selectionTranslateEnabled)
+        #expect(!configuration.videoTranslateEnabled)
         #expect(configuration.promptOptimizeMode == .communicationPolish)
 
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -33,6 +34,7 @@ struct GlobalTranslatorCoreTests {
         #expect(decoded.translatedBundleIDs.isEmpty)
         #expect(decoded.autoTranslateEnabled)
         #expect(decoded.selectionTranslateEnabled)
+        #expect(!decoded.videoTranslateEnabled)
         #expect(decoded.promptOptimizeMode == .communicationPolish)
         #expect(decoded.deepSeekModel == "deepseek-chat")
         #expect(!decoded.deepSeekAPIKeyConfigured)
@@ -42,6 +44,7 @@ struct GlobalTranslatorCoreTests {
         #expect(allow.translatedBundleIDs == ["com.google.Chrome"])
         #expect(!allow.autoTranslateEnabled)
         #expect(allow.selectionTranslateEnabled)
+        #expect(!allow.videoTranslateEnabled)
         #expect(allow.promptOptimizeMode == .communicationPolish)
     }
 

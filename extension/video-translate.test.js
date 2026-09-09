@@ -22,12 +22,14 @@ const manifest = fs.readFileSync(path.join(dir, "manifest.json"), "utf8");
 const background = fs.readFileSync(path.join(dir, "background.js"), "utf8");
 
 assert(popupHtml.indexOf("视频翻译") !== -1, "popup shows 视频翻译");
-assert(popupHtml.indexOf("id=\"videoTranslate\"") !== -1, "popup has video toggle");
+assert(popupHtml.indexOf("id=\"videoTranslate\"") === -1, "no separate popup toggle");
+assert(popupHtml.indexOf("同一行") !== -1, "popup points at menu-bar same row");
 assert(popupHtml.indexOf("SRT/VTT") !== -1, "popup offers sidecar picker");
 assert(popupJs.indexOf("videoTranslateEnabled: false") !== -1, "storage default is off");
-assert(popupJs.indexOf("prefs.videoTranslateEnabled === true") !== -1, "only true enables");
+assert(popupJs.indexOf("response.videoTranslateEnabled === true") !== -1, "desktop ping is source of truth");
 assert(videoJs.indexOf("videoTranslateEnabled: false") !== -1, "content default is off");
 assert(videoJs.indexOf("videoTranslateEnabled === true") !== -1, "content only starts when true");
+assert(background.indexOf("payload.videoTranslateEnabled === true") !== -1, "health forwards desktop toggle");
 
 const cuesSource = fs.readFileSync(path.join(dir, "subtitle-cues.js"), "utf8");
 assert(cuesSource.indexOf("翻译服务不可用") !== -1, "service failure copy");
@@ -51,6 +53,12 @@ assert(manifest.indexOf("subtitle-cues.js") !== -1, "manifest loads cue helper")
 assert(manifest.indexOf("video-translate.js") !== -1, "manifest loads video script");
 assert(manifest.indexOf("tabCapture") === -1, "no tabCapture permission");
 assert(manifest.indexOf("desktopCapture") === -1, "no desktopCapture");
+
+const settings = fs.readFileSync(path.join(dir, "../Sources/GlobalTranslatorUI/SettingsSections.swift"), "utf8");
+assert(settings.indexOf("\"滑词翻译\"") !== -1, "settings has 滑词翻译");
+assert(settings.indexOf("\"视频翻译\"") !== -1, "settings has 视频翻译");
+assert(settings.indexOf("HStack(alignment: .center, spacing: GTSpacing.medium)") !== -1, "same-row HStack");
+assert(settings.indexOf("\"滑词翻译\"") < settings.indexOf("\"视频翻译\""), "video toggle after selection on the row");
 
 const cues = require("./subtitle-cues");
 assertEqual(cues.parseSidecar(fs.readFileSync(path.join(dir, "fixtures/sample.en.srt"), "utf8"), "sample.en.srt")[0].text,

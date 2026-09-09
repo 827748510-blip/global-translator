@@ -149,6 +149,7 @@ public struct PrimitiveShowcase: View {
 private final class ShowcaseActions: SettingsActions {
     func setAutomaticTranslation(_ enabled: Bool) {}
     func setSelectionTranslate(_ enabled: Bool) {}
+    func setVideoTranslate(_ enabled: Bool) {}
     func setPromptOptimizeMode(_ mode: PromptOptimizeMode) {}
     func selectBackend(_ kind: BackendKind) {}
     func saveAPIKey(_ draft: String) async throws {}

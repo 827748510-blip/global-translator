@@ -114,6 +114,12 @@ extension ApplicationController {
         queueSave()
     }
 
+    public func setVideoTranslate(_ enabled: Bool) {
+        configuration.videoTranslateEnabled = enabled
+        viewModel.isVideoTranslateEnabled = enabled
+        queueSave()
+    }
+
     public func setPromptOptimizeMode(_ mode: PromptOptimizeMode) {
         viewModel.promptOptimizeMode = mode
         guard configuration.promptOptimizeMode != mode else {

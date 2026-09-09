@@ -10,6 +10,7 @@
   const CHUNK_SIZE = 3;
   const PROBE_MS = 4000;
   const PREFETCH = 4;
+  const DESKTOP_SYNC_MS = 3000;
   const HOST_ATTR = "data-gt-video-translate";
 
   let enabled = false;
@@ -381,6 +382,21 @@
     }
   }
 
+  function syncDesktopPref() {
+    try {
+      chrome.runtime.sendMessage({ type: "ping" }, (response) => {
+        if (chrome.runtime.lastError) {
+          chrome.storage.local.set({ videoTranslateEnabled: false });
+          return;
+        }
+        const on = !!(response && response.ok && response.videoTranslateEnabled === true);
+        chrome.storage.local.set({ videoTranslateEnabled: on });
+      });
+    } catch (_error) {
+      try { chrome.storage.local.set({ videoTranslateEnabled: false }); } catch (_ignored) {}
+    }
+  }
+
   function readPrefs() {
     try {
       chrome.storage.local.get({ videoTranslateEnabled: false }, (prefs) => {
@@ -398,6 +414,7 @@
         });
       }
     } catch (_error) {}
+    syncDesktopPref();
   }
 
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -417,4 +434,11 @@
   } else {
     readPrefs();
   }
+
+  setInterval(() => {
+    safe(() => {
+      if (document.visibilityState !== "visible") return;
+      if (enabled || document.querySelector("video")) syncDesktopPref();
+    });
+  }, DESKTOP_SYNC_MS);
 })();

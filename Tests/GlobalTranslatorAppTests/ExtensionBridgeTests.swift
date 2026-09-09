@@ -81,6 +81,7 @@ struct ExtensionBridgeServerTests {
         #expect(source.contains("let bridgeChain = Promise.resolve();"))
         #expect(source.contains("enqueueBridgeFetch(() =>"))
         #expect(source.contains("retry: Array.isArray(payload.retry) ? payload.retry : []"))
+        #expect(source.contains("payload.videoTranslateEnabled === true"))
     }
 
     @Test
@@ -106,13 +107,33 @@ struct ExtensionBridgeServerTests {
         let popupJs = try String(contentsOf: root.appendingPathComponent("extension/popup.js"), encoding: .utf8)
         let videoJs = try String(contentsOf: root.appendingPathComponent("extension/video-translate.js"), encoding: .utf8)
         let cuesJs = try String(contentsOf: root.appendingPathComponent("extension/subtitle-cues.js"), encoding: .utf8)
+        let settings = try String(
+            contentsOf: root.appendingPathComponent("Sources/GlobalTranslatorUI/SettingsSections.swift"),
+            encoding: .utf8
+        )
         let visual = try String(
             contentsOf: root.appendingPathComponent("Sources/GlobalTranslatorCapture/WindowVisualUpdates.swift"),
             encoding: .utf8
         )
+        #expect(settings.contains("\"滑词翻译\""))
+        #expect(settings.contains("\"视频翻译\""))
+        #expect(settings.contains("HStack(alignment: .center, spacing: GTSpacing.medium)"))
+        if let rowStart = settings.range(of: "HStack(alignment: .center, spacing: GTSpacing.medium)"),
+           let selectionRange = settings.range(of: "\"滑词翻译\""),
+           let videoRange = settings.range(of: "\"视频翻译\"") {
+            #expect(rowStart.lowerBound < selectionRange.lowerBound)
+            #expect(selectionRange.lowerBound < videoRange.lowerBound)
+            let betweenToggles = settings[selectionRange.lowerBound..<videoRange.lowerBound]
+            #expect(betweenToggles.contains("Spacer"))
+            #expect(!betweenToggles.contains("Divider()"))
+            #expect(!betweenToggles.contains("VStack"))
+        }
+        #expect(!popup.contains("id=\"videoTranslate\""))
         #expect(popup.contains("视频翻译"))
         #expect(popupJs.contains("videoTranslateEnabled: false"))
+        #expect(popupJs.contains("response.videoTranslateEnabled === true"))
         #expect(videoJs.contains("videoTranslateEnabled: false"))
+        #expect(videoJs.contains("videoTranslateEnabled === true"))
         #expect(videoJs.contains("type: \"translate\""))
         #expect(!videoJs.contains("getUserMedia"))
         #expect(!videoJs.contains("mediaDevices"))
@@ -261,10 +282,30 @@ struct ExtensionBridgeServerTests {
 
         // The extension pings with POST because browsers omit Origin on GET.
         let post = request(port, method: "POST", path: "/health", origin: ExtensionBridgeServer.allowedOrigin)
-        #expect(((try await session.data(for: post)).1 as? HTTPURLResponse)?.statusCode == 200)
+        let (postData, postResponse) = try await session.data(for: post)
+        #expect((postResponse as? HTTPURLResponse)?.statusCode == 200)
+        let health = try #require(try JSONSerialization.jsonObject(with: postData) as? [String: Any])
+        #expect(health["ok"] as? Bool == true)
+        #expect(health["videoTranslateEnabled"] as? Bool == false)
 
         let postDenied = request(port, method: "POST", path: "/health", origin: "https://evil.example")
         #expect(((try await session.data(for: postDenied)).1 as? HTTPURLResponse)?.statusCode == 403)
+    }
+
+    @Test
+    func healthReportsVideoTranslateToggle() async throws {
+        let server = ExtensionBridgeServer(port: 0, videoTranslateEnabled: { true }) { texts in
+            ExtensionBridgeTranslation(translations: texts.map { $0 })
+        }
+        server.start()
+        defer { server.stop() }
+        let port = try await #require(waitForPort(server))
+        let post = request(port, method: "POST", path: "/health", origin: ExtensionBridgeServer.allowedOrigin)
+        let (data, response) = try await URLSession(configuration: .ephemeral).data(for: post)
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["ok"] as? Bool == true)
+        #expect(object["videoTranslateEnabled"] as? Bool == true)
     }
 
     @Test

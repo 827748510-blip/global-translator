@@ -1,6 +1,6 @@
 const checkbox = document.getElementById("enabled");
 const status = document.getElementById("status");
-const videoToggle = document.getElementById("videoTranslate");
+const videoHint = document.getElementById("videoHint");
 const videoExtras = document.getElementById("videoExtras");
 const pickSidecar = document.getElementById("pickSidecar");
 const sidecarFile = document.getElementById("sidecarFile");
@@ -14,6 +14,9 @@ const Cues = (typeof GlobalTranslatorSubtitleCues !== "undefined")
 
 function setVideoExtrasVisible(on) {
   videoExtras.hidden = !on;
+  videoHint.textContent = on
+    ? "视频翻译已开启。可选本地 SRT/VTT；不改原片。YouTube 等无标准 textTracks 的站点不保证可用。"
+    : "视频翻译开关在菜单栏设置，与「滑词翻译」同一行，默认关闭。";
 }
 
 function showSidecarMeta(name) {
@@ -25,10 +28,14 @@ function setSidecarError(message) {
   sidecarError.textContent = message || "";
 }
 
+function applyDesktopVideoPref(on) {
+  chrome.storage.local.set({ videoTranslateEnabled: on });
+  setVideoExtrasVisible(on);
+}
+
 chrome.storage.local.get({ enabled: true, videoTranslateEnabled: false }, (prefs) => {
   checkbox.checked = prefs.enabled !== false;
-  videoToggle.checked = prefs.videoTranslateEnabled === true;
-  setVideoExtrasVisible(videoToggle.checked);
+  setVideoExtrasVisible(prefs.videoTranslateEnabled === true);
 });
 
 if (chrome.storage.session) {
@@ -40,17 +47,6 @@ if (chrome.storage.session) {
 
 checkbox.addEventListener("change", () => {
   chrome.storage.local.set({ enabled: checkbox.checked });
-});
-
-videoToggle.addEventListener("change", () => {
-  const on = videoToggle.checked === true;
-  chrome.storage.local.set({ videoTranslateEnabled: on });
-  setVideoExtrasVisible(on);
-  if (!on && chrome.storage.session) {
-    chrome.storage.session.remove("videoSidecar");
-    showSidecarMeta("");
-    setSidecarError("");
-  }
 });
 
 pickSidecar.addEventListener("click", () => {
@@ -108,4 +104,5 @@ chrome.runtime.sendMessage({ type: "ping" }, (response) => {
   }
   status.textContent = "已连接桌面端";
   status.className = "ok";
+  applyDesktopVideoPref(response.videoTranslateEnabled === true);
 });

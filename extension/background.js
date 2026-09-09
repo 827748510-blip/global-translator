@@ -44,8 +44,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // rejects origin-less GETs, which is exactly what a plain fetch is.
     enqueueBridgeFetch(() =>
       fetch(ENDPOINT + "/health", { method: "POST" })
-        .then((response) => sendResponse({ ok: response.ok }))
-        .catch(() => sendResponse({ ok: false }))
+        .then(async (response) => {
+          let videoTranslateEnabled = false;
+          try {
+            const payload = await response.json();
+            videoTranslateEnabled = payload.videoTranslateEnabled === true;
+          } catch (_error) {}
+          sendResponse({ ok: response.ok, videoTranslateEnabled });
+        })
+        .catch(() => sendResponse({ ok: false, videoTranslateEnabled: false }))
     );
     return true;
   }
