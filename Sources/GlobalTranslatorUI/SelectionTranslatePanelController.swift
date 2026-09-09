@@ -135,7 +135,7 @@ private func selectionPanelRunOnMainActor(_ work: () -> Void) {
     }
 }
 
-private func selectionPanelRunOnMainActor<T>(_ work: () -> T) -> T {
+private func selectionPanelRunOnMainActor<T: Sendable>(_ work: () -> T) -> T {
     if Thread.isMainThread {
         return MainActor.assumeIsolated {
             work()
