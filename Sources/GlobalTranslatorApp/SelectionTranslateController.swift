@@ -114,7 +114,7 @@ public final class SelectionTranslateController {
         self.ownBundleIdentifiers = ownBundleIdentifiers
         self.targetLanguage = targetLanguage
         self.settleDelay = settleDelay
-        var wired = self.popover
+        let wired = self.popover
         wired.onUserDismiss = { [weak self] in
             self?.handleUserDismiss()
         }
@@ -124,7 +124,6 @@ public final class SelectionTranslateController {
         wired.onOptimize = { [weak self] in
             self?.performOptimize()
         }
-        self.popover = wired
     }
 
     public func setEnabled(_ enabled: Bool) {

@@ -359,9 +359,7 @@ actor TranslatingCoordinator: TranslationCoordinating {
         )
     }
 
-    func completePlain(system: String, user: String, backend: BackendKind) async throws -> String {
-        _ = system
-        _ = backend
+    func completePlain(system _: String, user: String, backend _: BackendKind) async throws -> String {
         let source = user.split(separator: "\n").last.map(String.init) ?? user
         return "优化 " + source
     }

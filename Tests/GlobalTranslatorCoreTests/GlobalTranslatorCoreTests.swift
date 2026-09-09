@@ -598,8 +598,7 @@ private actor SlowRecordingBackend: TranslationBackend {
         )
     }
 
-    func completePlain(system: String, user: String) async throws -> String {
-        _ = system
+    func completePlain(system _: String, user: String) async throws -> String {
         inFlight += 1
         maxInFlight = max(maxInFlight, inFlight)
         started.append("plain:" + user)
