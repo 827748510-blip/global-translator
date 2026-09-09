@@ -166,7 +166,9 @@ public protocol SelectionPopoverControlling: AnyObject {
     var onTranslate: (() -> Void)? { get set }
     var onOptimize: (() -> Void)? { get set }
     var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)? { get set }
+    var onBackendChange: ((BackendKind) -> Void)? { get set }
     var optimizeMode: PromptOptimizeMode { get set }
+    var backend: BackendKind { get set }
     var copyFeedback: SelectionCopyFeedback { get }
     func show(_ content: SelectionPopoverContent)
     func dismiss()
@@ -188,7 +190,9 @@ public final class NullSelectionPopover: SelectionPopoverControlling {
     public var onTranslate: (() -> Void)?
     public var onOptimize: (() -> Void)?
     public var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
+    public var onBackendChange: ((BackendKind) -> Void)?
     public var optimizeMode: PromptOptimizeMode = .communicationPolish
+    public var backend: BackendKind = .deepSeekCloud
     public var copyFeedback: SelectionCopyFeedback { .idle }
     public init() {}
     public func show(_ content: SelectionPopoverContent) { currentContent = content }
@@ -203,9 +207,14 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     public var onTranslate: (() -> Void)?
     public var onOptimize: (() -> Void)?
     public var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
+    public var onBackendChange: ((BackendKind) -> Void)?
     public var optimizeMode: PromptOptimizeMode {
         get { chrome.optimizeMode }
         set { chrome.optimizeMode = newValue }
+    }
+    public var backend: BackendKind {
+        get { chrome.backend }
+        set { chrome.backend = newValue }
     }
     public var copyFeedback: SelectionCopyFeedback { chrome.copyFeedback }
 
@@ -283,6 +292,10 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
             onOptimizeModeChange: { [weak self] mode in
                 self?.optimizeMode = mode
                 self?.onOptimizeModeChange?(mode)
+            },
+            onBackendChange: { [weak self] kind in
+                self?.backend = kind
+                self?.onBackendChange?(kind)
             }
         ))
         if let panel {
@@ -379,13 +392,13 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
         let hasActions = content.showsOptimizeAction || content.showsActionButtons
         if hasActions {
             height += GTSelectionMetrics.sectionSpacing
+            height += GTSelectionMetrics.modePickerHeight
             if content.showsOptimizeAction {
+                height += GTSelectionMetrics.actionsSpacing
                 height += GTSelectionMetrics.modePickerHeight
             }
             if content.showsActionButtons {
-                if content.showsOptimizeAction {
-                    height += GTSelectionMetrics.actionsSpacing
-                }
+                height += GTSelectionMetrics.actionsSpacing
                 height += GTSelectionMetrics.actionRowHeight
             }
         }

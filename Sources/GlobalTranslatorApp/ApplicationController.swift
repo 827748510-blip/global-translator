@@ -247,12 +247,19 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             permissions: components.permissionController,
             logger: components.logger,
             translator: { [weak self] in self?.session },
+            isCloudKeyConfigured: { [weak self] in
+                self?.configuration.deepSeekAPIKeyConfigured == true
+            },
             ownBundleIdentifiers: own
         )
         selectionTranslate = controller
         controller.setOptimizeMode(configuration.promptOptimizeMode)
+        controller.setBackend(configuration.backend)
         controller.onOptimizeModeChange = { [weak self] mode in
             self?.setPromptOptimizeMode(mode)
+        }
+        controller.onBackendChange = { [weak self] kind in
+            self?.selectBackend(kind)
         }
         controller.setEnabled(configuration.selectionTranslateEnabled)
     }

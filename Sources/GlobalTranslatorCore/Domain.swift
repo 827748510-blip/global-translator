@@ -4,6 +4,14 @@ import CoreGraphics
 public enum BackendKind: String, Codable, Sendable, Equatable, Hashable {
     case deepSeekCloud
     case local
+
+    /// Compact labels for the selection popover. Settings keeps the longer names.
+    public var selectionPickerTitle: String {
+        switch self {
+        case .local: return "本地"
+        case .deepSeekCloud: return "DeepSeek"
+        }
+    }
 }
 
 public enum BackendHealthStatus: String, Codable, Sendable, Equatable {

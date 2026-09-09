@@ -310,6 +310,24 @@ struct GTEqualWidthSegmentedPicker<Value: Hashable>: View {
     }
 }
 
+/// Compact Local / DeepSeek control for the selection popover.
+struct GTSelectionBackendPicker: View {
+    @Binding var selection: BackendKind
+    var isEnabled: Bool = true
+
+    var body: some View {
+        GTEqualWidthSegmentedPicker(
+            options: [BackendKind.deepSeekCloud, .local],
+            selection: $selection,
+            title: { $0.selectionPickerTitle },
+            isEnabled: isEnabled,
+            accessibilityLabelText: "翻译后端"
+        )
+        .accessibilityValue(selection.selectionPickerTitle)
+        .accessibilityHint("与设置页共用，切换后翻译和优化都走当前后端")
+    }
+}
+
 /// Three-scene control used in settings and the selection popover.
 struct GTOptimizeModePicker: View {
     @Binding var selection: PromptOptimizeMode
