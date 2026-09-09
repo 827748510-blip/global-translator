@@ -113,9 +113,12 @@ public struct AXSelectedTextReader: SelectedTextReading, @unchecked Sendable {
            let copied = clipboard?.copySelectedTextRestoringClipboard() {
             let resolved = copied.trimmingCharacters(in: .whitespacesAndNewlines)
             if !resolved.isEmpty {
+                let anchor = candidates.first { element in
+                    (attributeReader.selectedTextRange(of: element)?.length ?? 0) > 0
+                } ?? candidates.first
                 return .snapshot(clipboardSnapshot(
                     text: resolved,
-                    from: candidates.first,
+                    from: anchor,
                     app: app,
                     mouseLocation: mouseLocation
                 ))
@@ -150,14 +153,30 @@ public struct AXSelectedTextReader: SelectedTextReading, @unchecked Sendable {
         app: FrontmostApplicationInfo,
         mouseLocation: CGPoint
     ) -> SelectedTextSnapshot {
-        let screenFrame = element.map { resolvedFrame(of: $0, mouseLocation: mouseLocation) }
-            ?? SelectionTranslateSupport.fallbackFrame(at: mouseLocation)
-        return SelectedTextSnapshot(
+        SelectedTextSnapshot(
             text: SelectionTranslateSupport.cappedSource(text),
-            screenFrame: screenFrame,
+            screenFrame: clipboardAnchorFrame(of: element, mouseLocation: mouseLocation),
             source: .clipboardFallback,
             bundleIdentifier: app.bundleIdentifier
         )
+    }
+
+    /// Feishu / Electron often expose a zero range on a large webview. Using that
+    /// element's full AX frame would pin the popover to a window edge. Anchor to
+    /// the mouse unless AX has a real selected-range rect.
+    private func clipboardAnchorFrame(of element: AXElement?, mouseLocation: CGPoint) -> CGRect {
+        if let element,
+           let range = attributeReader.selectedTextRange(of: element),
+           range.length > 0,
+           let bounds = attributeReader.boundsForRange(
+            of: element,
+            location: range.location,
+            length: range.length
+           ),
+           let converted = convertedFrame(bounds) {
+            return converted
+        }
+        return SelectionTranslateSupport.fallbackFrame(at: mouseLocation)
     }
 
     private func resolvedFrame(of element: AXElement, mouseLocation: CGPoint) -> CGRect {

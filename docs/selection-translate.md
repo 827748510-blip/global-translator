@@ -25,7 +25,7 @@
 
 现在的规则：
 
-1. **鼠标拖选后松手**（按下期间收到 `leftMouseDragged`，系统本身会滤掉几乎不动的位移）：AX 若是 `.empty` / `.unavailable` 且没有可用字符串，才尝试 ⌘C 剪贴板兜底。读到的文本与普通选区一样走 `TextFilter.selectionDecision`（中文显示「已是中文」+ 优化提示词；外文翻译；标识符 / URL 跳过），来源标记为 `clipboardFallback`。
+1. **鼠标拖选后松手**（按下期间收到 `leftMouseDragged`，系统本身会滤掉几乎不动的位移）：AX 若是 `.empty` / `.unavailable` 且没有可用字符串，才尝试 ⌘C 剪贴板兜底。读到的文本与普通选区一样走 `TextFilter.selectionDecision`（中文显示「已是中文」+ 优化提示词；外文翻译；标识符 / URL 跳过），来源标记为 `clipboardFallback`。弹层锚在鼠标附近（飞书等 App 的 AX 选区范围经常是 0，不能用整块 webview 的 frame，否则会贴到窗口边缘）。
 2. **单击、无拖拽**（或可忽略的位移）：不发 ⌘C、不弹层，避免点一下就出现红字或改剪贴板。
 3. 拖选后剪贴板也读不到字：短暂显示「无法读取所选文字」，约 1.5 秒后自动收起。
 4. 本机窗口、密码框、剪贴板无法完整备份：跳过 ⌘C。

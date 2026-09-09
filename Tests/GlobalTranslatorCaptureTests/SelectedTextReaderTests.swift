@@ -66,6 +66,7 @@ struct SelectedTextReaderTests {
         #expect(snapshot.source == .clipboardFallback)
         #expect(snapshot.bundleIdentifier == "com.electron.lark")
         #expect(clipboard.callCount == 1)
+        #expect(snapshot.screenFrame == SelectionTranslateSupport.fallbackFrame(at: CGPoint(x: 40, y: 80)))
     }
 
     @Test
@@ -116,6 +117,34 @@ struct SelectedTextReaderTests {
         #expect(snapshot.text == "copied from custom canvas")
         #expect(snapshot.source == .clipboardFallback)
         #expect(clipboard.callCount == 1)
+        #expect(snapshot.screenFrame == SelectionTranslateSupport.fallbackFrame(at: CGPoint(x: 12, y: 18)))
+    }
+
+    @Test
+    func clipboardFallbackWithZeroRangeAnchorsNearMouseNotWebviewFrame() {
+        let mouse = CGPoint(x: 420, y: 310)
+        let ax = FakeSelectionAXReader(
+            selectedText: "",
+            range: (0, 0),
+            bounds: CGRect(x: 0, y: 0, width: 1_200, height: 800)
+        )
+        let clipboard = RecordingClipboardFallback(text: "bubble text")
+        let reader = AXSelectedTextReader(
+            attributeReader: ax,
+            clipboard: clipboard,
+            frontmostApplication: { FrontmostApplicationInfo(pid: 21, bundleIdentifier: "com.electron.lark") },
+            primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 1_440, height: 900) }
+        )
+        guard case .snapshot(let snapshot) = reader.readSelection(
+            mouseLocation: mouse,
+            allowClipboardFallback: true
+        ) else {
+            Issue.record("expected clipboard snapshot")
+            return
+        }
+        #expect(snapshot.screenFrame == SelectionTranslateSupport.fallbackFrame(at: mouse))
+        #expect(snapshot.screenFrame.width < 10)
+        #expect(snapshot.screenFrame.height < 20)
     }
 
     @Test
@@ -149,6 +178,9 @@ struct SelectedTextReaderTests {
         #expect(snapshot.text == "Clipboard text")
         #expect(snapshot.source == .clipboardFallback)
         #expect(clipboard.callCount == 1)
+        #expect(snapshot.screenFrame.width == 40)
+        #expect(snapshot.screenFrame.height == 12)
+        #expect(snapshot.screenFrame != SelectionTranslateSupport.fallbackFrame(at: CGPoint(x: 5, y: 5)))
     }
 
     @Test
