@@ -88,9 +88,8 @@ struct ReviewFixTests {
                 model: model
             )
             _ = try await translateBackend.translate(request)
-            let translatePayload = try #require(
-                try JSONSerialization.jsonObject(with: try #require(await translateTransport.requests.first?.httpBody)) as? [String: Any]
-            )
+            let translateBody = try #require(await translateTransport.requests.first?.httpBody)
+            let translatePayload = try #require(try JSONSerialization.jsonObject(with: translateBody) as? [String: Any])
             #expect(translatePayload["model"] as? String == model)
             expectNestedReasoningNone(translatePayload)
             #expect(translatePayload["text"] != nil)
@@ -104,9 +103,8 @@ struct ReviewFixTests {
                 model: model
             )
             _ = try await plainBackend.completePlain(system: "sys", user: "draft")
-            let plainPayload = try #require(
-                try JSONSerialization.jsonObject(with: try #require(await plainTransport.requests.first?.httpBody)) as? [String: Any]
-            )
+            let plainBody = try #require(await plainTransport.requests.first?.httpBody)
+            let plainPayload = try #require(try JSONSerialization.jsonObject(with: plainBody) as? [String: Any])
             #expect(plainPayload["model"] as? String == model)
             expectNestedReasoningNone(plainPayload)
             #expect(plainPayload["text"] == nil)
@@ -130,9 +128,8 @@ struct ReviewFixTests {
                 request,
                 images: [VisionTranslationImage(segmentId: id, pngData: png)]
             )
-            let visionPayload = try #require(
-                try JSONSerialization.jsonObject(with: try #require(await visionTransport.requests.first?.httpBody)) as? [String: Any]
-            )
+            let visionBody = try #require(await visionTransport.requests.first?.httpBody)
+            let visionPayload = try #require(try JSONSerialization.jsonObject(with: visionBody) as? [String: Any])
             #expect(visionPayload["model"] as? String == model)
             expectNestedReasoningNone(visionPayload)
             let serialized = String(decoding: try JSONSerialization.data(withJSONObject: visionPayload), as: UTF8.self)
