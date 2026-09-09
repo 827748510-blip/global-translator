@@ -43,6 +43,9 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
     static let maxBackendRetryAttempts = 30
     var applicationPicker: NSOpenPanel?
     var bridgeServer: ExtensionBridgeServer?
+    /// Cloud Keychain is probed at DeepSeek launch or the first switch to it,
+    /// never on a local-only startup.
+    var didProbeKeychain = false
 
     public init(
         paths: RuntimePaths,
@@ -132,6 +135,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         statusItem = nil
         overlay?.hideAll()
         overlay = nil
+        didProbeKeychain = false
         do {
             try await persistence.flush()
         } catch {
@@ -153,9 +157,17 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         viewModel.promptOptimizeMode = configuration.promptOptimizeMode
         viewModel.deepSeekModel = AppConfiguration.resolvedDeepSeekModel(configuration.deepSeekModel)
         viewModel.permissionSnapshot = components.permissionController.snapshot
-        // Probe Keychain once at launch for any backend. Switching to DeepSeek
-        // later must not re-read the item (that can pop a system prompt and
-        // an empty key form).
+        if configuration.backend == .deepSeekCloud {
+            probeKeychainIfNeeded()
+        }
+    }
+
+    /// Keychain is only touched for the cloud backend: once at DeepSeek
+    /// launch, or once when the user later switches to it. Local startup
+    /// must not read the item (that can pop a system prompt).
+    func probeKeychainIfNeeded() {
+        guard !didProbeKeychain else { return }
+        didProbeKeychain = true
         let storedKey = try? components.credentialStore.read()
         viewModel.keyConfigured = !(storedKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
     }
@@ -319,13 +331,14 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
                 adoptDeepSeekModel(from: health.availableModels)
             }
         }
-        let cloudModelReady = configuration.backend != .deepSeekCloud
-            || viewModel.availableModels.contains(AppConfiguration.resolvedDeepSeekModel(configuration.deepSeekModel))
+        let cloudModelReady = configuration.backend == .deepSeekCloud
+            && !health.availableModels.isEmpty
+            && health.availableModels.contains(AppConfiguration.resolvedDeepSeekModel(configuration.deepSeekModel))
         switch health.status {
         case .healthy:
             viewModel.backendReady = true
             viewModel.healthMessage = health.message
-        case .modelUnavailable where cloudModelReady && !viewModel.availableModels.isEmpty:
+        case .modelUnavailable where cloudModelReady:
             viewModel.backendReady = true
             viewModel.healthMessage = "DeepSeek backend is ready"
         case .unavailable, .invalidCredentials, .modelUnavailable, .invalidConfiguration:

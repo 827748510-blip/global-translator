@@ -137,6 +137,9 @@ extension ApplicationController {
         viewModel.backendReady = false
         viewModel.connectionTest = .idle
         viewModel.availableModels = []
+        if kind == .deepSeekCloud {
+            probeKeychainIfNeeded()
+        }
         Task { await previousSession?.clearCache() }
         rebuildSession()
         queueSave()

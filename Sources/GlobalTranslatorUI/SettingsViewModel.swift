@@ -254,16 +254,15 @@ public final class SettingsViewModel: ObservableObject {
                 availableModels = health.availableModels
                 adoptCloudModelIfNeeded(from: health.availableModels)
             case .modelUnavailable:
-                if !health.availableModels.isEmpty {
+                // Only the fresh `/models` payload may be adopted. An empty
+                // list must not reuse a stale `availableModels` to fake healthy.
+                if selectedBackend == .deepSeekCloud, !health.availableModels.isEmpty {
                     availableModels = health.availableModels
-                }
-                if selectedBackend == .deepSeekCloud,
-                   !availableModels.isEmpty {
                     let picked = AppConfiguration.preferredDeepSeekModel(
                         current: deepSeekModel,
-                        available: availableModels
+                        available: health.availableModels
                     )
-                    if availableModels.contains(picked) {
+                    if health.availableModels.contains(picked) {
                         if picked != deepSeekModel {
                             deepSeekModel = picked
                             actions.setDeepSeekModel(picked)

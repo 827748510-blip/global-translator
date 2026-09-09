@@ -512,30 +512,31 @@ struct ApplicationControllerTests {
 
     @Test
     func switchingToDeepSeekWithStoredKeyDoesNotReopenEmptyKeyForm() async throws {
+        let gate = HealthCheckGate()
         let credentials = RecordingCredentialStore(value: "stored-key")
         let controller = ApplicationController(
             paths: try RuntimePaths(validatingRoot: temporaryRoot()),
             components: makeComponents(
                 store: RecordingConfigurationStore(configuration: AppConfiguration(
                     backend: .local, localModel: "test")),
-                credentials: credentials
+                credentials: credentials,
+                backendFactory: GatedBackendFactory(gate: gate)
             )
         )
         try await controller.start()
-        await waitForStartupHealthCheck(controller)
-        let readsAfterStart = credentials.readCount
-        #expect(controller.viewModel.keyConfigured)
-        #expect(!controller.viewModel.showsKeyEntry)
+        #expect(credentials.readCount == 0)
+        #expect(!controller.viewModel.keyConfigured)
 
         controller.selectBackend(.deepSeekCloud)
 
+        #expect(credentials.readCount == 1)
         #expect(controller.viewModel.selectedBackend == .deepSeekCloud)
         #expect(controller.viewModel.keyConfigured)
         #expect(!controller.viewModel.showsKeyEntry)
         #expect(!controller.viewModel.isReplacingKey)
         #expect(controller.viewModel.keyDraft == "")
-        #expect(credentials.readCount == readsAfterStart)
         #expect(controller.modelIdentifier == AppConfiguration.defaultDeepSeekModel)
+        await gate.release(BackendHealth(status: .healthy, message: "ok"))
         await controller.stop()
     }
 
