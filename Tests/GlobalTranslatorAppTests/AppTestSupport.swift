@@ -403,10 +403,13 @@ actor TranslatingCoordinator: TranslationCoordinating {
 }
 
 actor RecordingPlainCoordinator: TranslationCoordinating {
+    private(set) var selectedKinds: [BackendKind] = []
     private(set) var systems: [String] = []
     private(set) var users: [String] = []
+    private(set) var completePlainBackends: [BackendKind] = []
+    private(set) var translateBackends: [BackendKind] = []
 
-    func selectBackend(kind: BackendKind, modelIdentifier: String) async {}
+    func selectBackend(kind: BackendKind, modelIdentifier: String) async { selectedKinds.append(kind) }
     func clearCache() async {}
     func cancelPendingRequests() async {}
     func translate(
@@ -415,24 +418,29 @@ actor RecordingPlainCoordinator: TranslationCoordinating {
         modelIdentifier: String,
         visionFallbackEnabled: Bool
     ) async throws -> EngineOutput {
-        EngineOutput(
+        translateBackends.append(backend)
+        let translations = snapshot.regions.map { region in
+            RenderedTranslation(region: region, text: "你好 " + region.sourceText)
+        }
+        return EngineOutput(
             windowRevision: snapshot.descriptor.revision,
-            translations: [],
+            translations: translations,
             metrics: EngineMetrics(
-                inputRegionCount: 0,
-                eligibleRegionCount: 0,
+                inputRegionCount: translations.count,
+                eligibleRegionCount: translations.count,
                 cacheHitCount: 0,
-                batchCount: 0,
-                translatedRegionCount: 0,
-                durationMilliseconds: 0,
-                status: .cacheOnly
+                batchCount: translations.isEmpty ? 0 : 1,
+                translatedRegionCount: translations.count,
+                durationMilliseconds: 1,
+                status: translations.isEmpty ? .cacheOnly : .success
             )
         )
     }
 
-    func completePlain(system: String, user: String, backend _: BackendKind) async throws -> String {
+    func completePlain(system: String, user: String, backend: BackendKind) async throws -> String {
         systems.append(system)
         users.append(user)
+        completePlainBackends.append(backend)
         return "rewritten"
     }
 }
@@ -599,7 +607,9 @@ final class FakeSelectionPopover: SelectionPopoverControlling {
     var onTranslate: (() -> Void)?
     var onOptimize: (() -> Void)?
     var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
+    var onBackendChange: ((BackendKind) -> Void)?
     var optimizeMode: PromptOptimizeMode = .communicationPolish
+    var backend: BackendKind = .deepSeekCloud
     var extraInteractionFrames: [CGRect] = []
     var copyFeedback: SelectionCopyFeedback = .idle
     func show(_ content: SelectionPopoverContent) {
@@ -626,6 +636,10 @@ final class FakeSelectionPopover: SelectionPopoverControlling {
     func simulateOptimizeMode(_ mode: PromptOptimizeMode) {
         optimizeMode = mode
         onOptimizeModeChange?(mode)
+    }
+    func simulateBackend(_ kind: BackendKind) {
+        backend = kind
+        onBackendChange?(kind)
     }
     func containsInteraction(at location: CGPoint) -> Bool {
         if panelFrame?.contains(location) == true { return true }

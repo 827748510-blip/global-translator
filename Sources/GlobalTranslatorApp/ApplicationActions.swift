@@ -138,15 +138,21 @@ extension ApplicationController {
         viewModel.connectionTest = .idle
         viewModel.availableModels = []
         viewModel.keyConfigured = configuration.deepSeekAPIKeyConfigured
+        selectionTranslate?.setBackend(kind)
         Task { await previousSession?.clearCache() }
         rebuildSession()
         queueSave()
-        if kind == .deepSeekCloud {
-            // Switching tabs must not `read()` Keychain (that pops the
-            // login-keychain dialog). Wire backends without a health check;
-            // translate / 测连接 / 保存密钥 still read when they need the secret.
-            applyDeepSeekSessionBackendsWithoutHealthCheck()
-        } else {
+        // Wire overlay / bridge / 滑词 immediately so the popup switch can
+        // translate without waiting on a health check. DeepSeek must not
+        // `read()` Keychain here; `makeBackend` only holds the store.
+        if let backend = try? components.backendFactory.makeBackend(
+            kind: kind,
+            configuration: configuration,
+            credentials: components.credentialStore
+        ) {
+            applySessionBackends(overlay: backend, configuration: configuration)
+        }
+        if kind != .deepSeekCloud {
             scheduleBackendRefresh()
         }
     }

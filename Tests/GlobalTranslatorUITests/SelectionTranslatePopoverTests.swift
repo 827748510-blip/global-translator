@@ -229,6 +229,57 @@ struct SelectionTranslatePopoverTests {
     }
 
     @Test
+    func backendPickerIsWiredAndSizedOnThePanel() {
+        var backends: [BackendKind] = []
+        let controller = SelectionTranslatePanelController(
+            visibleFramesProvider: { [CGRect(x: 0, y: 0, width: 1440, height: 875)] },
+            pasteboardWriter: { _ in }
+        )
+        controller.onBackendChange = { backends.append($0) }
+        controller.backend = .local
+        controller.show(.translated(
+            original: "Hello",
+            translation: "你好",
+            screenFrame: CGRect(x: 40, y: 80, width: 60, height: 14)
+        ))
+        #expect(controller.backend == .local)
+        controller.onBackendChange?(.deepSeekCloud)
+        #expect(backends == [.deepSeekCloud])
+        let translated = SelectionPopoverContent.translated(
+            original: "Hello",
+            translation: "你好",
+            screenFrame: .zero
+        )
+        let size = SelectionTranslatePanelController.contentSize(for: translated)
+        let textWidth = GTSelectionMetrics.width - GTSelectionMetrics.horizontalPadding * 2
+        let originalHeight = OverlayLayout.estimatedTextSize(
+            for: translated.originalPreview,
+            maxWidth: textWidth,
+            maxLines: GTSelectionMetrics.maxOriginalLines,
+            font: NSFont.preferredFont(forTextStyle: .caption1)
+        ).height
+        let bodyHeight = OverlayLayout.estimatedTextSize(
+            for: translated.displayTranslation,
+            maxWidth: textWidth,
+            maxLines: GTSelectionMetrics.maxTranslationLines,
+            font: NSFont.preferredFont(forTextStyle: .body)
+        ).height
+        let expectedMin = GTSelectionMetrics.verticalPadding * 2
+            + originalHeight
+            + GTSelectionMetrics.textBlockSpacing
+            + bodyHeight
+            + GTSelectionMetrics.sectionSpacing
+            + GTSelectionMetrics.modePickerHeight
+            + GTSelectionMetrics.actionsSpacing
+            + GTSelectionMetrics.modePickerHeight
+            + GTSelectionMetrics.actionsSpacing
+            + GTSelectionMetrics.actionRowHeight
+        #expect(size.height >= expectedMin - 0.5)
+        #expect(BackendKind.local.displayTitle == "本地模型")
+        #expect(BackendKind.deepSeekCloud.displayTitle == "DeepSeek 云端")
+    }
+
+    @Test
     func contentSizeUsesBodyFontSoTranslationDoesNotClipCopy() {
         let text = String(repeating: "这是一段需要换行的译文内容，", count: 8)
         let textWidth = GTSelectionMetrics.width - GTSelectionMetrics.horizontalPadding * 2
@@ -261,6 +312,8 @@ struct SelectionTranslatePopoverTests {
             + GTSelectionMetrics.textBlockSpacing
             + body.height
             + GTSelectionMetrics.sectionSpacing
+            + GTSelectionMetrics.modePickerHeight
+            + GTSelectionMetrics.actionsSpacing
             + GTSelectionMetrics.modePickerHeight
             + GTSelectionMetrics.actionsSpacing
             + GTSelectionMetrics.actionRowHeight

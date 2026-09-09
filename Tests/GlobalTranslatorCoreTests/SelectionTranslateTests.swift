@@ -246,4 +246,13 @@ struct SelectionPopoverContentTests {
         #expect(SelectionTranslateSupport.isChineseTarget("zh"))
         #expect(!SelectionTranslateSupport.isChineseTarget("en"))
     }
+
+    @Test
+    func selectionBackendPickerTitlesAndMissingKeyCopy() {
+        #expect(BackendKind.local.displayTitle == "本地模型")
+        #expect(BackendKind.deepSeekCloud.displayTitle == "DeepSeek 云端")
+        #expect(SelectionTranslateSupport.missingDeepSeekKeyCopy.contains("设置"))
+        #expect(SelectionTranslateSupport.missingDeepSeekKeyCopy.contains("API Key"))
+        #expect(SelectionTranslateSupport.missingDeepSeekKeyCopy.contains("测试连接"))
+    }
 }

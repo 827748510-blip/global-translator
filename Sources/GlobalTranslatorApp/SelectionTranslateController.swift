@@ -92,6 +92,7 @@ public final class SelectionTranslateController {
     private let permissions: any PermissionControlling
     private let logger: any AppRuntimeLogger
     private let translator: () -> (any SelectionTranslating)?
+    private let isCloudKeyConfigured: () -> Bool
     private let ownBundleIdentifiers: Set<String>
     private let frontmostBundleIdentifier: () -> String
     private let targetLanguage: String
@@ -113,7 +114,9 @@ public final class SelectionTranslateController {
     /// Settle will not re-show it until the selection changes or becomes empty.
     private var suppressedSource: String?
     private var optimizeMode: PromptOptimizeMode = .communicationPolish
+    private var backend: BackendKind = .deepSeekCloud
     public var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
+    public var onBackendChange: ((BackendKind) -> Void)?
 
     public var isEnabled: Bool { enabled }
 
@@ -124,6 +127,7 @@ public final class SelectionTranslateController {
         permissions: any PermissionControlling,
         logger: any AppRuntimeLogger,
         translator: @escaping () -> (any SelectionTranslating)?,
+        isCloudKeyConfigured: @escaping () -> Bool = { true },
         ownBundleIdentifiers: Set<String> = [],
         frontmostBundleIdentifier: @escaping () -> String = {
             AXSelectedTextReader.systemFrontmostApplication()?.bundleIdentifier ?? ""
@@ -140,6 +144,7 @@ public final class SelectionTranslateController {
         self.permissions = permissions
         self.logger = logger
         self.translator = translator
+        self.isCloudKeyConfigured = isCloudKeyConfigured
         self.ownBundleIdentifiers = ownBundleIdentifiers
         self.frontmostBundleIdentifier = frontmostBundleIdentifier
         self.targetLanguage = targetLanguage
@@ -158,12 +163,21 @@ public final class SelectionTranslateController {
         wired.onOptimizeModeChange = { [weak self] mode in
             self?.handleOptimizeModeChange(mode)
         }
+        wired.onBackendChange = { [weak self] kind in
+            self?.handleBackendChange(kind)
+        }
         wired.optimizeMode = optimizeMode
+        wired.backend = backend
     }
 
     public func setOptimizeMode(_ mode: PromptOptimizeMode) {
         optimizeMode = mode
         popover.optimizeMode = mode
+    }
+
+    public func setBackend(_ kind: BackendKind) {
+        backend = kind
+        popover.backend = kind
     }
 
     public func setEnabled(_ enabled: Bool) {
@@ -313,7 +327,7 @@ public final class SelectionTranslateController {
         case .alreadyTargetLanguage:
             presentAlreadyChinese(snapshot(from: content))
         case .noTranslationNeeded, .translate:
-            presentTranslation(snapshot(from: content))
+            presentTranslation(snapshot(from: content), force: true)
         }
     }
 
@@ -322,6 +336,41 @@ public final class SelectionTranslateController {
         optimizeMode = mode
         popover.optimizeMode = mode
         onOptimizeModeChange?(mode)
+    }
+
+    private func handleBackendChange(_ kind: BackendKind) {
+        guard backend != kind else { return }
+        let previousStatus = popover.currentContent?.status
+        backend = kind
+        popover.backend = kind
+        onBackendChange?(kind)
+        if kind == .deepSeekCloud && !isCloudKeyConfigured() {
+            cancelPresentation()
+            presentMissingDeepSeekKey()
+            return
+        }
+        switch previousStatus {
+        case .loading, .failed:
+            performTranslate()
+        case .optimizing:
+            performOptimize()
+        default:
+            break
+        }
+    }
+
+    private func presentMissingDeepSeekKey() {
+        guard let content = popover.currentContent else { return }
+        presentMissingDeepSeekKeyIfOriginal(content.original, screenFrame: content.screenFrame)
+    }
+
+    private func presentMissingDeepSeekKeyIfOriginal(_ original: String, screenFrame: CGRect) {
+        guard !original.isEmpty else { return }
+        popover.show(.failed(
+            original: original,
+            message: SelectionTranslateSupport.missingDeepSeekKeyCopy,
+            screenFrame: screenFrame
+        ))
     }
 
     private func performOptimize() {
@@ -371,13 +420,18 @@ public final class SelectionTranslateController {
         }
     }
 
-    private func presentTranslation(_ snapshot: SelectedTextSnapshot) {
-        if popover.currentContent?.original == snapshot.text,
+    private func presentTranslation(_ snapshot: SelectedTextSnapshot, force: Bool = false) {
+        if !force,
+           popover.currentContent?.original == snapshot.text,
            popover.currentContent?.status == .translated {
             return
         }
         cancelPresentation()
         let generation = presentationGeneration
+        if backend == .deepSeekCloud && !isCloudKeyConfigured() {
+            presentMissingDeepSeekKeyIfOriginal(snapshot.text, screenFrame: snapshot.screenFrame)
+            return
+        }
         popover.show(.loading(original: snapshot.text, screenFrame: snapshot.screenFrame))
         guard let translator = translator() else {
             popover.show(.failed(original: snapshot.text, message: "翻译服务未就绪", screenFrame: snapshot.screenFrame))
@@ -422,6 +476,10 @@ public final class SelectionTranslateController {
     private func presentOptimize(original: String, screenFrame: CGRect) {
         cancelPresentation()
         let generation = presentationGeneration
+        if backend == .deepSeekCloud && !isCloudKeyConfigured() {
+            presentMissingDeepSeekKeyIfOriginal(original, screenFrame: screenFrame)
+            return
+        }
         popover.show(.optimizing(original: original, screenFrame: screenFrame))
         guard let translator = translator() else {
             popover.show(.failed(
@@ -476,6 +534,8 @@ public final class SelectionTranslateController {
             switch translation {
             case .invalidResponse, .invalidRequest:
                 return SelectionTranslateError.emptyResult.uiSafeDescription
+            case .missingCredential:
+                return SelectionTranslateSupport.missingDeepSeekKeyCopy
             default:
                 return translation.uiSafeDescription
             }

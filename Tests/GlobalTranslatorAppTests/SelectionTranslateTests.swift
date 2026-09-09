@@ -24,6 +24,7 @@ struct SelectionTranslateControllerTests {
         popover: FakeSelectionPopover,
         translator: StubSelectionTranslator,
         permission: FakePermissionController = FakePermissionController(snapshot: .allGranted),
+        isCloudKeyConfigured: @escaping () -> Bool = { true },
         frontmostBundleIdentifier: @escaping () -> String = { "com.apple.TextEdit" }
     ) -> SelectionTranslateController {
         SelectionTranslateController(
@@ -33,6 +34,7 @@ struct SelectionTranslateControllerTests {
             permissions: permission,
             logger: RecordingLogger(),
             translator: { translator },
+            isCloudKeyConfigured: isCloudKeyConfigured,
             ownBundleIdentifiers: ["com.maodashu.global-translator"],
             frontmostBundleIdentifier: frontmostBundleIdentifier,
             settleDelay: .milliseconds(5),
@@ -588,6 +590,87 @@ struct SelectionTranslateControllerTests {
         #expect(!popover.shown.contains(where: { $0.status == .optimized }))
     }
 
+    @Test
+    func backendSwitchForwardsAndMissingKeyBlocksTranslateAndOptimize() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Hello world")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "你好，世界"
+        translator.optimizeResult = "得体的英文"
+        var cloudKey = true
+        var switched: [BackendKind] = []
+        let controller = makeController(
+            reader: reader,
+            popover: popover,
+            translator: translator,
+            isCloudKeyConfigured: { cloudKey }
+        )
+        controller.onBackendChange = { switched.append($0) }
+        controller.setBackend(.local)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .translated }
+        #expect(popover.backend == .local)
+        #expect(translator.texts == ["Hello world"])
+
+        cloudKey = false
+        popover.simulateBackend(.deepSeekCloud)
+        #expect(switched == [.deepSeekCloud])
+        #expect(popover.backend == .deepSeekCloud)
+        #expect(popover.currentContent?.status == .failed)
+        #expect(popover.currentContent?.displayTranslation == SelectionTranslateSupport.missingDeepSeekKeyCopy)
+        #expect(translator.texts == ["Hello world"])
+        #expect(translator.optimizedTexts.isEmpty)
+
+        popover.simulateTranslate()
+        #expect(popover.currentContent?.displayTranslation == SelectionTranslateSupport.missingDeepSeekKeyCopy)
+        #expect(translator.texts == ["Hello world"])
+
+        popover.simulateOptimize()
+        #expect(popover.currentContent?.displayTranslation == SelectionTranslateSupport.missingDeepSeekKeyCopy)
+        #expect(translator.optimizedTexts.isEmpty)
+
+        cloudKey = true
+        popover.simulateBackend(.local)
+        try await waitUntil { popover.currentContent?.status == .translated }
+        #expect(switched == [.deepSeekCloud, .local])
+        #expect(translator.texts == ["Hello world", "Hello world"])
+    }
+
+    @Test
+    func missingCredentialErrorShowsSettingsTip() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Hello world")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.error = TranslationError.missingCredential
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .failed }
+        #expect(popover.currentContent?.displayTranslation == SelectionTranslateSupport.missingDeepSeekKeyCopy)
+        #expect(popover.currentContent?.displayTranslation != "翻译失败")
+    }
+
+    @Test
+    func deepSeekWithoutKeyShowsTipOnSettleWithoutCallingBackend() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Hello world")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        let controller = makeController(
+            reader: reader,
+            popover: popover,
+            translator: translator,
+            isCloudKeyConfigured: { false }
+        )
+        controller.setBackend(.deepSeekCloud)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .failed }
+        #expect(translator.texts.isEmpty)
+        #expect(translator.optimizedTexts.isEmpty)
+        #expect(popover.currentContent?.displayTranslation == SelectionTranslateSupport.missingDeepSeekKeyCopy)
+    }
+
     private func waitUntil(_ condition: @escaping () -> Bool, timeout: TimeInterval = 1) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition(), Date() < deadline {
@@ -744,6 +827,113 @@ extension ApplicationControllerTests {
         #expect(users[1].contains("workplace or social communication"))
         #expect(systems.allSatisfy { $0.contains("untrusted data") })
         #expect(systems.allSatisfy { $0.contains("Do not turn the text into a generative image prompt") })
+        await controller.stop()
+    }
+
+    @Test
+    func selectionPopupBackendSwitchPersistsAndSyncsSettings() async throws {
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            backend: .local, localModel: "test", deepSeekAPIKeyConfigured: true))
+        let popover = FakeSelectionPopover()
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, selectionPopover: popover)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        #expect(controller.configuration.backend == .local)
+        #expect(controller.viewModel.selectedBackend == .local)
+        #expect(popover.backend == .local)
+
+        popover.simulateBackend(.deepSeekCloud)
+        try await controller.persistence.flush()
+        #expect(controller.configuration.backend == .deepSeekCloud)
+        #expect(controller.viewModel.selectedBackend == .deepSeekCloud)
+        #expect(popover.backend == .deepSeekCloud)
+        #expect(await store.saved.last?.backend == .deepSeekCloud)
+
+        controller.selectBackend(.local)
+        try await controller.persistence.flush()
+        #expect(controller.configuration.backend == .local)
+        #expect(controller.viewModel.selectedBackend == .local)
+        #expect(popover.backend == .local)
+        #expect(await store.saved.last?.backend == .local)
+        await controller.stop()
+    }
+
+    @Test
+    func selectionPopupSwitchToDeepSeekWithoutKeyShowsSettingsTip() async throws {
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            backend: .local, localModel: "test", deepSeekAPIKeyConfigured: false))
+        let reader = FakeSelectedTextReader(result: .snapshot(SelectedTextSnapshot(
+            text: "Hello world",
+            screenFrame: CGRect(x: 40, y: 80, width: 60, height: 14),
+            source: .accessibility,
+            bundleIdentifier: "com.apple.TextEdit"
+        )))
+        let popover = FakeSelectionPopover()
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                coordinator: TranslatingCoordinator(),
+                selectedTextReader: reader,
+                selectionPopover: popover
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let selection = try #require(controller.selectionTranslate)
+        selection.handlePointer(.down, location: CGPoint(x: 50, y: 90))
+        selection.handlePointer(.up, location: CGPoint(x: 50, y: 90))
+        let translatedDeadline = Date().addingTimeInterval(1)
+        while popover.currentContent?.status != .translated, Date() < translatedDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(popover.currentContent?.status == .translated)
+
+        popover.simulateBackend(.deepSeekCloud)
+        try await controller.persistence.flush()
+        #expect(controller.configuration.backend == .deepSeekCloud)
+        #expect(controller.viewModel.selectedBackend == .deepSeekCloud)
+        #expect(controller.viewModel.keyConfigured == false)
+        #expect(popover.currentContent?.displayTranslation == SelectionTranslateSupport.missingDeepSeekKeyCopy)
+        #expect(popover.currentContent?.status == .failed)
+        await controller.stop()
+    }
+
+    @Test
+    func selectionTranslateAndOptimizeFollowPopupBackend() async throws {
+        let coordinator = RecordingPlainCoordinator()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: false, backend: .local, localModel: "test",
+            deepSeekAPIKeyConfigured: true))
+        let popover = FakeSelectionPopover()
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                coordinator: coordinator,
+                selectionPopover: popover
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        #expect(try await session.translateSelection("Hello there") == "你好 Hello there")
+        #expect(await coordinator.translateBackends == [.local])
+        _ = try await session.optimizePrompt("把这段写清楚")
+        #expect(await coordinator.completePlainBackends == [.local])
+
+        popover.simulateBackend(.deepSeekCloud)
+        #expect(controller.configuration.backend == .deepSeekCloud)
+        #expect(controller.viewModel.selectedBackend == .deepSeekCloud)
+        #expect(popover.backend == .deepSeekCloud)
+        let switched = try #require(controller.session)
+        #expect(try await switched.translateSelection("Hello there") == "你好 Hello there")
+        #expect(try await switched.optimizePrompt("把这段写清楚") == "rewritten")
+        #expect(await coordinator.translateBackends == [.local, .deepSeekCloud])
+        #expect(await coordinator.completePlainBackends == [.local, .deepSeekCloud])
         await controller.stop()
     }
 }
