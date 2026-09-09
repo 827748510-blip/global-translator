@@ -57,7 +57,9 @@ assert(videoJs.indexOf("data-gt-video-translate") !== -1, "overlay host marker")
 assert(videoJs.indexOf("#movie_player") === -1, "overlay not mounted inside youtube player");
 assert(videoJs.indexOf("html5-main-video") !== -1, "prefers youtube main video");
 assert(videoJs.indexOf("overlayParentNode") !== -1, "uses document/fullscreen overlay parent");
-assert(videoJs.indexOf("startPaintLoop") !== -1, "keeps overlay painted on youtube");
+assert(videoJs.indexOf("syncFromDom") !== -1, "overlay path refreshes youtube live cues");
+assert(videoJs.indexOf("data-gt-vt") !== -1, "inspectable overlay debug bits");
+assert(videoJs.indexOf("html5-main-video, video") === -1, "video translate no comma selector");
 assert(youtubePage.indexOf("post(\"live\"") !== -1, "page world live caption feed");
 assert(youtubeJs.indexOf("getUserMedia") === -1, "youtube helper no getUserMedia");
 assert(youtubePage.indexOf("getUserMedia") === -1, "youtube page no getUserMedia");

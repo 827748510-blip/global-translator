@@ -244,6 +244,57 @@
     return doc.documentElement || doc.body || null;
   }
 
+  function primaryVideo(doc) {
+    if (!doc || !doc.querySelector) return null;
+    const main = doc.querySelector("video.html5-main-video");
+    if (main) return main;
+    const listed = doc.querySelectorAll ? doc.querySelectorAll("video") : [];
+    let best = null;
+    let area = 0;
+    for (let i = 0; i < listed.length; i++) {
+      const video = listed[i];
+      const rect = video && video.getBoundingClientRect ? video.getBoundingClientRect() : null;
+      const nextArea = rect ? Math.max(0, rect.width) * Math.max(0, rect.height) : 0;
+      if (nextArea > area) {
+        area = nextArea;
+        best = video;
+      }
+    }
+    return best || listed[0] || null;
+  }
+
+  function liveCueFromNow(text, time) {
+    const normalized = Cues ? Cues.normalizeCueText(text) : String(text || "").trim();
+    const t = Number(time);
+    const now = Number.isFinite(t) ? t : 0;
+    if (!normalized) return [];
+    return [{ start: Math.max(0, now - 0.35), end: now + 2.5, text: normalized }];
+  }
+
+  function overlayDebugBits(input) {
+    const cues = (input && input.cues) || [];
+    const time = Number(input && input.time);
+    const translations = (input && input.translations) || {};
+    const cue = Cues && Number.isFinite(time) ? Cues.activeCue(cues, time) : null;
+    const source = Cues && cue ? Cues.normalizeCueText(cue.text) : "";
+    const hasZh = !!(source && translations[source]);
+    return [
+      "c" + cues.length,
+      Number.isFinite(time) ? "t" + Math.floor(time) : "t-",
+      cue ? "on" : "off",
+      hasZh ? "zh" : "wait"
+    ].join(" ");
+  }
+
+  function syncFromDom(video) {
+    if (!enabled) return;
+    if (typeof document === "undefined") return;
+    const player = video || primaryVideo(document);
+    const text = collectDomCaptionText(document);
+    const time = player && Number.isFinite(Number(player.currentTime)) ? Number(player.currentTime) : 0;
+    liveCues = liveCueFromNow(text, time);
+  }
+
   function selectCues(timed, live, time) {
     const timedList = Array.isArray(timed) ? timed : [];
     const liveList = Array.isArray(live) ? live : [];
@@ -307,10 +358,10 @@
   function readDomCaptions() {
     if (!enabled) return;
     if (typeof document === "undefined") return;
+    const player = primaryVideo(document);
     const text = collectDomCaptionText(document);
-    const video = document.querySelector && document.querySelector("video.html5-main-video, video");
-    const time = video ? (video.currentTime || 0) : 0;
-    liveCues = liveCueUpdate(liveCues, text, time);
+    const time = player && Number.isFinite(Number(player.currentTime)) ? Number(player.currentTime) : 0;
+    liveCues = liveCueFromNow(text, time);
     if (liveCues.length > 0 || text) notify();
   }
 
@@ -367,10 +418,10 @@
         if (data.kind === "timedtext") {
           applyTimedText(data.body, data.fmtHint);
         } else if (data.kind === "live") {
-          const video = document.querySelector && document.querySelector("video.html5-main-video, video");
+          const player = primaryVideo(document);
           const time = Number(data.time);
-          const t = Number.isFinite(time) ? time : (video ? (video.currentTime || 0) : 0);
-          liveCues = liveCueUpdate(liveCues, data.body, t);
+          const t = Number.isFinite(time) ? time : (player ? Number(player.currentTime) || 0 : 0);
+          liveCues = liveCueFromNow(data.body, t);
           if (liveCues.length > 0 || data.body) notify();
         } else if (data.kind === "navigate") {
           const nextId = data.videoId || currentVideoId(location.href);
@@ -437,6 +488,10 @@
     collectDomCaptionText,
     userCaptionsEnabledFromDom,
     overlayParentNode,
+    primaryVideo,
+    liveCueFromNow,
+    overlayDebugBits,
+    syncFromDom,
     selectCues,
     isActivePage,
     start,

@@ -88,10 +88,27 @@
     return container ? String(container.textContent || "").replace(/\s+/g, " ").trim() : "";
   }
 
+  function primaryVideo() {
+    const main = document.querySelector("video.html5-main-video");
+    if (main) return main;
+    const listed = document.querySelectorAll("video");
+    let best = null;
+    let area = 0;
+    for (let i = 0; i < listed.length; i++) {
+      const rect = listed[i].getBoundingClientRect();
+      const nextArea = Math.max(0, rect.width) * Math.max(0, rect.height);
+      if (nextArea > area) {
+        area = nextArea;
+        best = listed[i];
+      }
+    }
+    return best || listed[0] || null;
+  }
+
   function emitLive() {
     if (!relay) return;
     const text = collectCaptionText(document);
-    const video = document.querySelector("video.html5-main-video") || document.querySelector("video");
+    const video = primaryVideo();
     post("live", { body: text, time: video ? video.currentTime : 0 });
   }
 

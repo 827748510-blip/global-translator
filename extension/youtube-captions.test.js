@@ -136,6 +136,47 @@ const livePaint = cues.overlayState({
 });
 assertEqual(livePaint.cueText, "现在你好", "live cue paints chinese overlay");
 
+const dummyVideo = {
+  currentTime: 0,
+  getBoundingClientRect() { return { width: 2, height: 2 }; }
+};
+const mainVideo = {
+  currentTime: 412.2,
+  getBoundingClientRect() { return { width: 854, height: 480 }; }
+};
+const mixedDoc = {
+  querySelector(sel) {
+    if (sel === "video.html5-main-video") return mainVideo;
+    if (sel === "video" || sel === "video.html5-main-video, video") return dummyVideo;
+    return null;
+  },
+  querySelectorAll(sel) {
+    if (sel === "video") return [dummyVideo, mainVideo];
+    return [];
+  }
+};
+assertEqual(mixedDoc.querySelector("video.html5-main-video, video"), dummyVideo, "comma selector picks the dummy video");
+assertEqual(yt.primaryVideo(mixedDoc), mainVideo, "primaryVideo uses the playing player");
+const caption = "So you can be standing or you can be sitting.";
+const stale = yt.liveCueFromNow(caption, dummyVideo.currentTime);
+assertEqual(cues.activeCue(stale, 412.2), null, "dummy currentTime cannot drive overlay");
+const nowCues = yt.liveCueFromNow(caption, mainVideo.currentTime);
+assertEqual(cues.activeCue(nowCues, 412.2).text, caption, "player currentTime matches visible CC");
+const painted = cues.overlayState({
+  enabled: true,
+  cues: nowCues,
+  time: 412.2,
+  translations: { [caption]: "所以你可以站着，也可以坐着。" }
+});
+assertEqual(painted.cueText, "所以你可以站着，也可以坐着。", "visible CC becomes chinese overlay");
+const bits = yt.overlayDebugBits({
+  cues: nowCues,
+  time: 412.2,
+  translations: { [caption]: "所以你可以站着，也可以坐着。" }
+});
+assert(bits.indexOf("on") !== -1 && bits.indexOf("zh") !== -1, "debug bits show active translated cue");
+assert(bits.indexOf("standing") === -1, "debug bits omit caption text");
+
 assertEqual(yt.parseTimedText(")]}'\n" + json3)[0].text, "Hello from YouTube", "json3 xssi prefix");
 
 const captionsOff = {
@@ -201,6 +242,9 @@ assert(pageJs.indexOf("https://www.youtube.com/api/timedtext?") === -1, "page do
 assert(pageJs.indexOf("post(\"live\"") !== -1 || pageJs.indexOf("post('live'") !== -1 || pageJs.indexOf('kind: "live"') !== -1, "page relays live captions");
 assert(isolatedJs.indexOf("data.kind === \"live\"") !== -1, "isolated consumes live captions");
 assert(isolatedJs.indexOf("overlayParentNode") !== -1, "overlay parent helper");
-assert(isolatedJs.indexOf("selectCues") !== -1, "cue selection for overlay");
+assert(isolatedJs.indexOf("html5-main-video, video") === -1, "isolated does not use comma video selector");
+assert(pageJs.indexOf("html5-main-video, video") === -1, "page does not use comma video selector");
+assert(isolatedJs.indexOf("liveCueFromNow") !== -1, "stamps live cues on player time");
+assert(isolatedJs.indexOf("primaryVideo") !== -1, "selects youtube main video");
 
 console.log("extension/youtube-captions.test.js ok");

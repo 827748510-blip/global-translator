@@ -96,6 +96,9 @@
   function youtubeCues(video) {
     if (!Youtube || typeof Youtube.cuesFor !== "function") return [];
     if (!Youtube.isActivePage()) return [];
+    if (typeof Youtube.syncFromDom === "function") {
+      try { Youtube.syncFromDom(video); } catch (_error) {}
+    }
     return Youtube.cuesFor(video) || [];
   }
 
@@ -210,15 +213,25 @@
     if (!enabled || !video || !video.isConnected) return;
     const record = ensureOverlay(video);
     positionOverlay(record, video);
+    const cues = cuesFor(video);
+    const time = video.currentTime || 0;
+    const translationsNow = translationObject();
     const state = Cues.overlayState({
       enabled: true,
-      cues: cuesFor(video),
-      time: video.currentTime || 0,
-      translations: translationObject(),
+      cues,
+      time,
+      translations: translationsNow,
       serviceError,
       probed,
       noForeignMessage: youtubeNoForeignMessage()
     });
+    if (Youtube && typeof Youtube.overlayDebugBits === "function") {
+      record.host.setAttribute("data-gt-vt", Youtube.overlayDebugBits({
+        cues,
+        time,
+        translations: translationsNow
+      }));
+    }
     if (!state.show || (!state.cueText && !state.message)) {
       record.box.style.display = "none";
       record.pill.textContent = "";

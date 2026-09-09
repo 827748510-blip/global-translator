@@ -152,6 +152,8 @@ struct ExtensionBridgeServerTests {
         #expect(videoJs.contains("GlobalTranslatorYouTubeCaptions"))
         #expect(videoJs.contains("data-gt-video-translate"))
         #expect(!videoJs.contains("#movie_player"))
+        #expect(!videoJs.contains("html5-main-video, video"))
+        #expect(videoJs.contains("syncFromDom"))
         #expect(contentJs.contains("ytp-caption-segment"))
         #expect(!youtubeJs.lowercased().contains("whisper"))
         #expect(!youtubePage.contains("setOption"))
