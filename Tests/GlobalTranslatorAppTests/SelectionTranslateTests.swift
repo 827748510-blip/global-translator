@@ -134,6 +134,12 @@ struct SelectionTranslateControllerTests {
         #expect(popover.currentContent?.status != .failed)
         try await Task.sleep(for: .milliseconds(40))
         #expect(popover.currentContent?.status == .noTranslationNeeded)
+        popover.simulateTranslate()
+        try await waitUntil { popover.currentContent?.status == .failed }
+        #expect(translator.texts == [phrase])
+        #expect(popover.currentContent?.displayTranslation == "翻译失败")
+        #expect(popover.currentContent?.displayTranslation != "服务返回异常，请稍后重试")
+        #expect(popover.currentContent?.showsOptimizeAction == true)
     }
 
     @Test
@@ -604,14 +610,10 @@ extension ApplicationControllerTests {
         #expect(!session.isRunning)
         #expect(!session.isBridgeActive)
         #expect(try await session.translateSelection("Hello there") == "你好 Hello there")
-        do {
-            _ = try await session.translateSelection("Swift 6 + SwiftUI + ScreenCaptureKit")
-            Issue.record("expected noTranslationNeeded")
-        } catch let error as SelectionTranslateError {
-            #expect(error == .noTranslationNeeded)
-        } catch {
-            Issue.record("unexpected error type")
-        }
+        #expect(
+            try await session.translateSelection("Swift 6 + SwiftUI + ScreenCaptureKit")
+                == "你好 Swift 6 + SwiftUI + ScreenCaptureKit"
+        )
         #expect(try await session.optimizePrompt("一个女孩站在雨里") == "优化 一个女孩站在雨里")
         #expect(try await session.optimizePrompt("Swift 6 + SwiftUI + ScreenCaptureKit") == "优化 Swift 6 + SwiftUI + ScreenCaptureKit")
         await controller.stop()

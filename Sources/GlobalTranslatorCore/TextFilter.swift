@@ -70,8 +70,9 @@ public enum TextFilter {
         "and", "or", "with", "for", "to", "of", "in", "on", "vs", "versus", "plus"
     ]
 
-    /// Product names / CamelCase identifiers joined by `+`, `/`, or spaces.
-    /// "Swift 6 + SwiftUI + ScreenCaptureKit" should not hit the model.
+    /// Product names with *internal* CamelCase (SwiftUI, ScreenCaptureKit, NSView)
+    /// joined by spaces/`+`/`/`. Title-case UI labels like "File / Edit" still
+    /// translate. `+` or `/` alone is not a strong signal.
     private static func isTechnicalTokenPhrase(_ value: String) -> Bool {
         if value.contains(where: { $0 == "?" || $0 == "!" || $0 == "。" || $0 == "？" }) {
             return false
@@ -89,19 +90,13 @@ public enum TextFilter {
         guard tokens.allSatisfy({ isTechnicalToken($0) || glueWords.contains($0.lowercased()) }) else {
             return false
         }
-        let hasName = tokens.contains { token in
-            isCamelCaseIdentifier(token) || isAllCapsAbbreviation(token) || isCapitalizedProductWord(token)
-        }
-        guard hasName else { return false }
-        let hasStrongSignal = tokens.contains { isCamelCaseIdentifier($0) || isAllCapsAbbreviation($0) }
-            || value.contains("+")
-            || value.contains("/")
-        return hasStrongSignal
+        return tokens.contains { hasInternalCamelCase($0) }
     }
 
     private static func isTechnicalToken(_ token: String) -> Bool {
         isVersionToken(token)
-            || isCamelCaseIdentifier(token)
+            || hasInternalCamelCase(token)
+            || isIdentifierOrUnit(token)
             || isAllCapsAbbreviation(token)
             || technicalAbbreviations.contains(token.uppercased())
             || isCapitalizedProductWord(token)
@@ -121,8 +116,7 @@ public enum TextFilter {
         return token.allSatisfy { $0.isLetter || $0.isNumber }
     }
 
-    private static func isCamelCaseIdentifier(_ token: String) -> Bool {
-        if isIdentifierOrUnit(token) { return true }
+    private static func hasInternalCamelCase(_ token: String) -> Bool {
         let letters = token.filter(\.isLetter)
         guard letters.count >= 2 else { return false }
         let upperCount = letters.filter(\.isUppercase).count

@@ -253,10 +253,8 @@ public final class TranslationSession {
         guard let coordinator = selectionCoordinator else { throw SelectionTranslateError.translatorUnavailable }
         let capped = SelectionTranslateSupport.cappedSource(text)
         switch TextFilter.selectionDecision(capped) {
-        case .translate:
+        case .translate, .noTranslationNeeded:
             break
-        case .noTranslationNeeded:
-            throw SelectionTranslateError.noTranslationNeeded
         case .skip, .alreadyTargetLanguage:
             throw SelectionTranslateError.emptyResult
         }

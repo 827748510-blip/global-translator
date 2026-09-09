@@ -47,9 +47,7 @@ struct SelectionTranslateDecisionTests {
     @Test(arguments: [
         "Swift 6 + SwiftUI + ScreenCaptureKit",
         "SwiftUI + ScreenCaptureKit",
-        "NSView / SwiftUI",
-        "Vision + OCR",
-        "Xcode 16 + Swift 6"
+        "NSView / SwiftUI"
     ])
     func technicalTokenPhrasesDoNotCallTranslation(_ text: String) {
         #expect(TextFilter.selectionDecision(text) == .noTranslationNeeded)
@@ -59,7 +57,10 @@ struct SelectionTranslateDecisionTests {
         #expect(TextFilter.shouldOfferPromptOptimization(text))
     }
 
-    @Test(arguments: ["Hello world", "Open", "Apply Settings", "Translate this sentence"])
+    @Test(arguments: [
+        "Hello world", "Open", "Apply Settings", "Translate this sentence",
+        "File / Edit", "Copy + Paste", "Save / Export", "Vision + OCR", "Xcode 16 + Swift 6"
+    ])
     func ordinaryEnglishStillTranslates(_ text: String) {
         #expect(TextFilter.selectionDecision(text) == .translate)
         #expect(TextFilter.shouldTranslate(text))

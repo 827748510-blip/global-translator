@@ -289,9 +289,7 @@ public final class SelectionTranslateController {
             return
         case .alreadyTargetLanguage:
             presentAlreadyChinese(snapshot(from: content))
-        case .noTranslationNeeded:
-            presentNoTranslationNeeded(snapshot(from: content))
-        case .translate:
+        case .noTranslationNeeded, .translate:
             presentTranslation(snapshot(from: content))
         }
     }
