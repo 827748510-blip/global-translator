@@ -91,9 +91,38 @@ struct ExtensionBridgeServerTests {
             .deletingLastPathComponent()
             .appendingPathComponent("extension/manifest.json")
         let source = try String(contentsOf: url, encoding: .utf8)
-        #expect(source.contains("\"version\": \"1.0.5\""))
-        #expect(!source.contains("\"version\": \"1.0.4\""))
-        #expect(source.contains("\"js\": [\"text-filter.js\", \"content.js\"]"))
+        #expect(source.contains("\"version\": \"1.0.6\""))
+        #expect(!source.contains("\"version\": \"1.0.5\""))
+        #expect(source.contains("\"js\": [\"text-filter.js\", \"subtitle-cues.js\", \"content.js\", \"video-translate.js\"]"))
+    }
+
+    @Test
+    func videoTranslatePhaseAIsOffByDefaultAndSkipsAsr() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let popup = try String(contentsOf: root.appendingPathComponent("extension/popup.html"), encoding: .utf8)
+        let popupJs = try String(contentsOf: root.appendingPathComponent("extension/popup.js"), encoding: .utf8)
+        let videoJs = try String(contentsOf: root.appendingPathComponent("extension/video-translate.js"), encoding: .utf8)
+        let cuesJs = try String(contentsOf: root.appendingPathComponent("extension/subtitle-cues.js"), encoding: .utf8)
+        let visual = try String(
+            contentsOf: root.appendingPathComponent("Sources/GlobalTranslatorCapture/WindowVisualUpdates.swift"),
+            encoding: .utf8
+        )
+        #expect(popup.contains("视频翻译"))
+        #expect(popupJs.contains("videoTranslateEnabled: false"))
+        #expect(videoJs.contains("videoTranslateEnabled: false"))
+        #expect(videoJs.contains("type: \"translate\""))
+        #expect(!videoJs.contains("getUserMedia"))
+        #expect(!videoJs.contains("mediaDevices"))
+        #expect(!videoJs.contains("SpeechRecognition"))
+        #expect(!videoJs.lowercased().contains("whisper"))
+        #expect(cuesJs.contains("翻译服务不可用"))
+        #expect(cuesJs.contains("未检测到外语内容"))
+        #expect(cuesJs.contains("videoTranslateEnabled: false"))
+        #expect(visual.contains("configuration.capturesAudio = false"))
+        #expect(!visual.contains("capturesAudio = true"))
     }
 
     @Test
