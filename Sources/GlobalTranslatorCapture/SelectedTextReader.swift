@@ -57,7 +57,7 @@ public protocol ClipboardSelectionFallingBack: Sendable {
 
 /// Reads AX `selectedText` / selected range on the focused element.
 /// Clipboard copy is only used when AX reports a non-empty range but no
-/// string, and the pasteboard is always restored.
+/// string, and only if the pasteboard can be fully snapshotted first.
 public struct AXSelectedTextReader: SelectedTextReading, @unchecked Sendable {
     public let attributeReader: any AXAttributeReading
     public let clipboard: (any ClipboardSelectionFallingBack)?

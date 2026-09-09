@@ -61,4 +61,60 @@ struct SelectionTranslatePopoverTests {
         let translatedSize = SelectionTranslatePanelController.contentSize(for: translated)
         #expect(translatedSize.height > loadingSize.height)
     }
+
+    @Test
+    func contentSizeUsesBodyFontSoTranslationDoesNotClipCopy() {
+        let text = String(repeating: "这是一段需要换行的译文内容，", count: 8)
+        let textWidth = GTSelectionMetrics.width - GTOverlayMetrics.horizontalPadding * 2
+        let callout = OverlayLayout.estimatedTextSize(
+            for: text,
+            maxWidth: textWidth,
+            maxLines: GTSelectionMetrics.maxTranslationLines
+        )
+        let body = OverlayLayout.estimatedTextSize(
+            for: text,
+            maxWidth: textWidth,
+            maxLines: GTSelectionMetrics.maxTranslationLines,
+            font: NSFont.preferredFont(forTextStyle: .body)
+        )
+        #expect(body.height > callout.height)
+        let content = SelectionPopoverContent.translated(
+            original: "Hello",
+            translation: text,
+            screenFrame: .zero
+        )
+        let size = SelectionTranslatePanelController.contentSize(for: content)
+        let originalHeight = OverlayLayout.estimatedTextSize(
+            for: content.originalPreview,
+            maxWidth: textWidth,
+            maxLines: GTSelectionMetrics.maxOriginalLines,
+            font: NSFont.preferredFont(forTextStyle: .caption1)
+        ).height
+        let expectedMin = GTOverlayMetrics.verticalPadding * 2
+            + originalHeight
+            + GTSpacing.xSmall
+            + body.height
+            + GTSpacing.xSmall
+            + 28
+        #expect(size.height >= expectedMin - 0.5)
+    }
+
+    @Test
+    func outsideClickNotifiesUserDismissThenHides() {
+        var dismissed = 0
+        let controller = SelectionTranslatePanelController(
+            visibleFramesProvider: { [CGRect(x: 0, y: 0, width: 1440, height: 875)] },
+            pasteboardWriter: { _ in }
+        )
+        controller.onUserDismiss = { dismissed += 1 }
+        controller.show(.translated(
+            original: "Hello",
+            translation: "你好",
+            screenFrame: CGRect(x: 40, y: 80, width: 60, height: 14)
+        ))
+        #expect(controller.currentContent != nil)
+        controller.notifyUserDismiss()
+        #expect(dismissed == 1)
+        #expect(controller.currentContent == nil)
+    }
 }

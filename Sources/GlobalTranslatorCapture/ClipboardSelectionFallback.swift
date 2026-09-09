@@ -12,10 +12,18 @@ public struct PasteboardItemSnapshot: Equatable, Sendable {
     }
 }
 
+/// A pasteboard backup is only safe to steal-and-restore when every declared
+/// type already has bytes. Promised files and lazy providers yield nil data.
+public enum PasteboardCapture: Equatable, Sendable {
+    case empty
+    case complete([PasteboardItemSnapshot])
+    case incomplete
+}
+
 public protocol PasteboardSnapshotting: Sendable {
     var changeCount: Int { get }
     var stringValue: String? { get }
-    func capture() -> [PasteboardItemSnapshot]
+    func capture() -> PasteboardCapture
     func restore(_ items: [PasteboardItemSnapshot])
 }
 
@@ -45,6 +53,7 @@ public struct RestoringClipboardSelectionFallback: ClipboardSelectionFallingBack
 
     public func copySelectedTextRestoringClipboard() -> String? {
         let backup = pasteboard.capture()
+        guard backup != .incomplete else { return nil }
         let before = pasteboard.changeCount
         keystroke.issueCopyKeystroke()
         var changed = pasteboard.changeCount != before
@@ -58,7 +67,14 @@ public struct RestoringClipboardSelectionFallback: ClipboardSelectionFallingBack
             }
         }
         let copied = pasteboard.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
-        pasteboard.restore(backup)
+        switch backup {
+        case .complete(let items):
+            pasteboard.restore(items)
+        case .empty:
+            pasteboard.restore([])
+        case .incomplete:
+            break
+        }
         guard changed, let copied, !copied.isEmpty else { return nil }
         return copied
     }
@@ -73,17 +89,25 @@ public struct SystemPasteboardAccess: PasteboardSnapshotting, @unchecked Sendabl
         NSPasteboard.general.string(forType: .string)
     }
 
-    public func capture() -> [PasteboardItemSnapshot] {
-        guard let items = NSPasteboard.general.pasteboardItems else { return [] }
-        return items.map { item in
+    public func capture() -> PasteboardCapture {
+        guard let items = NSPasteboard.general.pasteboardItems else { return .empty }
+        if items.isEmpty { return .empty }
+        var snapshots: [PasteboardItemSnapshot] = []
+        snapshots.reserveCapacity(items.count)
+        for item in items {
             var dataByType: [String: Data] = [:]
             for type in item.types {
-                if let data = item.data(forType: type) {
-                    dataByType[type.rawValue] = data
+                guard let data = item.data(forType: type) else {
+                    return .incomplete
                 }
+                dataByType[type.rawValue] = data
             }
-            return PasteboardItemSnapshot(types: item.types.map(\.rawValue), dataByType: dataByType)
+            snapshots.append(PasteboardItemSnapshot(
+                types: item.types.map(\.rawValue),
+                dataByType: dataByType
+            ))
         }
+        return .complete(snapshots)
     }
 
     public func restore(_ items: [PasteboardItemSnapshot]) {

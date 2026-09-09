@@ -88,6 +88,7 @@ public final class SelectionTranslatePanel: NSPanel {
 public protocol SelectionPopoverControlling: AnyObject {
     var currentContent: SelectionPopoverContent? { get }
     var panelFrame: CGRect? { get }
+    var onUserDismiss: (() -> Void)? { get set }
     func show(_ content: SelectionPopoverContent)
     func dismiss()
 }
@@ -96,6 +97,7 @@ public protocol SelectionPopoverControlling: AnyObject {
 public final class NullSelectionPopover: SelectionPopoverControlling {
     public private(set) var currentContent: SelectionPopoverContent?
     public var panelFrame: CGRect? { nil }
+    public var onUserDismiss: (() -> Void)?
     public init() {}
     public func show(_ content: SelectionPopoverContent) { currentContent = content }
     public func dismiss() { currentContent = nil }
@@ -105,6 +107,7 @@ public final class NullSelectionPopover: SelectionPopoverControlling {
 public final class SelectionTranslatePanelController: SelectionPopoverControlling {
     public private(set) var currentContent: SelectionPopoverContent?
     public var onCopy: ((String) -> Void)?
+    public var onUserDismiss: (() -> Void)?
 
     private var panel: SelectionTranslatePanel?
     private let visibleFramesProvider: () -> [CGRect]
@@ -150,8 +153,8 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
             }
         } else {
             let panel = SelectionTranslatePanel(contentRect: frame)
-            panel.onOutsideClick = { [weak self] in self?.dismiss() }
-            panel.onEscape = { [weak self] in self?.dismiss() }
+            panel.onOutsideClick = { [weak self] in self?.notifyUserDismiss() }
+            panel.onEscape = { [weak self] in self?.notifyUserDismiss() }
             panel.contentView = hosting
             self.panel = panel
             panel.startDismissalMonitors()
@@ -163,6 +166,12 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
         currentContent = nil
         panel?.stopDismissalMonitors()
         panel?.orderOut(nil)
+    }
+
+    /// Escape and outside click: tell the app to suppress this selection, then hide.
+    public func notifyUserDismiss() {
+        onUserDismiss?()
+        dismiss()
     }
 
     /// Test seam and Copy button path: writes the displayed translation
@@ -181,14 +190,16 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
             height += OverlayLayout.estimatedTextSize(
                 for: content.originalPreview,
                 maxWidth: textWidth,
-                maxLines: GTSelectionMetrics.maxOriginalLines
+                maxLines: GTSelectionMetrics.maxOriginalLines,
+                font: NSFont.preferredFont(forTextStyle: .caption1)
             ).height
             height += GTSpacing.xSmall
         }
         height += OverlayLayout.estimatedTextSize(
             for: content.displayTranslation,
             maxWidth: textWidth,
-            maxLines: GTSelectionMetrics.maxTranslationLines
+            maxLines: GTSelectionMetrics.maxTranslationLines,
+            font: NSFont.preferredFont(forTextStyle: .body)
         ).height
         if content.allowsCopy {
             height += GTSpacing.xSmall + 28

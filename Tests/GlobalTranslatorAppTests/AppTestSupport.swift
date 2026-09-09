@@ -469,6 +469,7 @@ final class FakeSelectionPopover: SelectionPopoverControlling {
     private(set) var dismissCount = 0
     var currentContent: SelectionPopoverContent?
     var panelFrame: CGRect?
+    var onUserDismiss: (() -> Void)?
     func show(_ content: SelectionPopoverContent) {
         currentContent = content
         shown.append(content)
@@ -483,6 +484,10 @@ final class FakeSelectionPopover: SelectionPopoverControlling {
         dismissCount += 1
         currentContent = nil
         panelFrame = nil
+    }
+    func simulateUserDismiss() {
+        onUserDismiss?()
+        dismiss()
     }
 }
 
@@ -513,10 +518,14 @@ final class FakeSelectedTextReader: SelectedTextReading, @unchecked Sendable {
 final class StubSelectionTranslator: SelectionTranslating {
     var result = "你好世界"
     var error: Error?
+    var delay: Duration?
     private(set) var texts: [String] = []
 
     func translateSelection(_ text: String) async throws -> String {
         texts.append(text)
+        if let delay {
+            try await Task.sleep(for: delay)
+        }
         if let error { throw error }
         return result
     }

@@ -120,6 +120,22 @@ struct ClipboardRestoreTests {
         #expect(fallback.copySelectedTextRestoringClipboard() == nil)
         #expect(pasteboard.stringValue == "keep-me")
     }
+
+    @Test
+    func incompletePasteboardSkipsCopyKeystroke() {
+        let pasteboard = FakePasteboardAccess(initial: "promised-file", initialChange: 9)
+        pasteboard.captureResult = .incomplete
+        let keystroke = FakeCopyKeystroke { pasteboard.simulateCopy("stolen") }
+        let fallback = RestoringClipboardSelectionFallback(
+            pasteboard: pasteboard,
+            keystroke: keystroke,
+            wait: {}
+        )
+        #expect(fallback.copySelectedTextRestoringClipboard() == nil)
+        #expect(keystroke.callCount == 0)
+        #expect(pasteboard.restoreCount == 0)
+        #expect(pasteboard.stringValue == "promised-file")
+    }
 }
 
 final class FakeSelectionAXReader: AXAttributeReading, @unchecked Sendable {
@@ -185,11 +201,18 @@ final class FakePasteboardAccess: PasteboardSnapshotting, @unchecked Sendable {
     }
     var changeCount: Int { count }
     var stringValue: String? { stored }
-    func capture() -> [PasteboardItemSnapshot] {
-        guard let stored else { return [] }
-        return [PasteboardItemSnapshot(types: ["public.utf8-plain-text"], dataByType: ["public.utf8-plain-text": Data(stored.utf8)])]
+    var captureResult: PasteboardCapture?
+    private(set) var restoreCount = 0
+    func capture() -> PasteboardCapture {
+        if let captureResult { return captureResult }
+        guard let stored else { return .empty }
+        return .complete([PasteboardItemSnapshot(
+            types: ["public.utf8-plain-text"],
+            dataByType: ["public.utf8-plain-text": Data(stored.utf8)]
+        )])
     }
     func restore(_ items: [PasteboardItemSnapshot]) {
+        restoreCount += 1
         if let data = items.first?.dataByType["public.utf8-plain-text"] {
             stored = String(data: data, encoding: .utf8)
         } else {

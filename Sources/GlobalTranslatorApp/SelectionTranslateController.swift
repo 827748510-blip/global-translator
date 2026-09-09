@@ -88,6 +88,10 @@ public final class SelectionTranslateController {
     private var settleTask: Task<Void, Never>?
     private var translateTask: Task<Void, Never>?
     private var alreadyChineseTask: Task<Void, Never>?
+    private var presentationGeneration: UInt64 = 0
+    /// Source text the user just dismissed (Esc / outside click / new press).
+    /// Settle will not re-show it until the selection changes or becomes empty.
+    private var suppressedSource: String?
 
     public var isEnabled: Bool { enabled }
 
@@ -115,6 +119,11 @@ public final class SelectionTranslateController {
         self.targetLanguage = targetLanguage
         self.settleDelay = settleDelay
         self.alreadyChineseDismissDelay = alreadyChineseDismissDelay
+        var wired = self.popover
+        wired.onUserDismiss = { [weak self] in
+            self?.handleUserDismiss()
+        }
+        self.popover = wired
     }
 
     public func setEnabled(_ enabled: Bool) {
@@ -141,7 +150,10 @@ public final class SelectionTranslateController {
         }
         switch pointer.handle(phase) {
         case .cancelPending:
+            suppressCurrentSelectionIfShowing()
             cancelSettle()
+            cancelPresentation()
+            popover.dismiss()
         case .scheduleSettle:
             scheduleSettle(location: location)
         case .ignore:
@@ -149,13 +161,31 @@ public final class SelectionTranslateController {
         }
     }
 
-    private func stopWork() {
+    private func handleUserDismiss() {
+        suppressCurrentSelectionIfShowing()
         cancelSettle()
+        cancelPresentation()
+    }
+
+    private func suppressCurrentSelectionIfShowing() {
+        if let original = popover.currentContent?.original, !original.isEmpty {
+            suppressedSource = original
+        }
+    }
+
+    private func stopWork() {
+        suppressedSource = nil
+        cancelSettle()
+        cancelPresentation()
+        popover.dismiss()
+    }
+
+    private func cancelPresentation() {
+        presentationGeneration &+= 1
         translateTask?.cancel()
         translateTask = nil
         alreadyChineseTask?.cancel()
         alreadyChineseTask = nil
-        popover.dismiss()
     }
 
     private func cancelSettle() {
@@ -190,6 +220,7 @@ public final class SelectionTranslateController {
         }
         switch reader.readSelection(mouseLocation: location) {
         case .empty:
+            suppressedSource = nil
             popover.dismiss()
         case .unavailable:
             logger.event("selection_ax_unavailable", fields: ["reason": "ax"])
@@ -203,20 +234,24 @@ public final class SelectionTranslateController {
             case .skip:
                 popover.dismiss()
             case .alreadyTargetLanguage:
+                guard snapshot.text != suppressedSource else { return }
+                suppressedSource = nil
                 presentAlreadyChinese(snapshot)
             case .translate:
+                guard snapshot.text != suppressedSource else { return }
+                suppressedSource = nil
                 await presentTranslation(snapshot)
             }
         }
     }
 
     private func presentAlreadyChinese(_ snapshot: SelectedTextSnapshot) {
-        alreadyChineseTask?.cancel()
-        translateTask?.cancel()
+        cancelPresentation()
+        let generation = presentationGeneration
         popover.show(.alreadyChinese(original: snapshot.text, screenFrame: snapshot.screenFrame))
         alreadyChineseTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: self?.alreadyChineseDismissDelay ?? .milliseconds(1_500))
-            guard let self, !Task.isCancelled else { return }
+            guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
             if self.popover.currentContent?.status == .alreadyChinese {
                 self.popover.dismiss()
             }
@@ -228,8 +263,8 @@ public final class SelectionTranslateController {
            popover.currentContent?.status == .translated {
             return
         }
-        alreadyChineseTask?.cancel()
-        translateTask?.cancel()
+        cancelPresentation()
+        let generation = presentationGeneration
         popover.show(.loading(original: snapshot.text, screenFrame: snapshot.screenFrame))
         guard let translator = translator() else {
             popover.show(.failed(original: snapshot.text, message: "翻译服务未就绪", screenFrame: snapshot.screenFrame))
@@ -238,7 +273,7 @@ public final class SelectionTranslateController {
         translateTask = Task { @MainActor [weak self] in
             do {
                 let translated = try await translator.translateSelection(snapshot.text)
-                guard let self, !Task.isCancelled else { return }
+                guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
                 let text = translated.trimmingCharacters(in: .whitespacesAndNewlines)
                 if text.isEmpty {
                     self.popover.show(.failed(
@@ -256,7 +291,7 @@ public final class SelectionTranslateController {
             } catch is CancellationError {
                 return
             } catch {
-                guard let self, !Task.isCancelled else { return }
+                guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
                 self.logger.event("selection_translate_failed", fields: ["status": "error"])
                 self.popover.show(.failed(
                     original: snapshot.text,

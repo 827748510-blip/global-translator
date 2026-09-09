@@ -150,6 +150,57 @@ struct SelectionTranslateControllerTests {
         try await waitUntil { popover.currentContent == nil }
     }
 
+    @Test
+    func userDismissDoesNotRedisplayTheSameSelectionUntilItChanges() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Hello world")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "你好，世界"
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .translated }
+        popover.simulateUserDismiss()
+        #expect(popover.currentContent == nil)
+        select(controller)
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(popover.currentContent == nil)
+
+        reader.setResult(.snapshot(snapshot("Another sentence")))
+        translator.result = "另一句"
+        select(controller)
+        try await waitUntil { popover.currentContent?.original == "Another sentence" }
+        #expect(popover.currentContent?.displayTranslation == "另一句")
+
+        popover.simulateUserDismiss()
+        reader.setResult(.empty)
+        select(controller)
+        try await Task.sleep(for: .milliseconds(25))
+        reader.setResult(.snapshot(snapshot("Another sentence")))
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .translated }
+        #expect(popover.currentContent?.original == "Another sentence")
+    }
+
+    @Test
+    func dragCancelsInFlightTranslationAndDoesNotShowStaleResult() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Hello world")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.delay = .milliseconds(250)
+        translator.result = "你好，世界"
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .loading }
+        controller.handlePointer(SelectionPointerPhase.down, location: CGPoint(x: 10, y: 10))
+        controller.handlePointer(SelectionPointerPhase.dragged, location: CGPoint(x: 20, y: 12))
+        #expect(popover.currentContent == nil)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(popover.currentContent == nil)
+        #expect(!popover.shown.contains(where: { $0.status == .translated }))
+    }
+
     private func waitUntil(_ condition: @escaping () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(1)
         while !condition(), Date() < deadline {
