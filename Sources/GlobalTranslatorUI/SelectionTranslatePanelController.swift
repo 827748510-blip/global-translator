@@ -38,13 +38,18 @@ public final class SelectionTranslatePanel: NSPanel {
     func startDismissalMonitors() {
         guard eventMonitors.isEmpty else { return }
         var monitors: [Any] = []
+        // NSEvent monitors run on the main thread. Never capture `event` inside
+        // assumeIsolated, and never hop a `work` closure across DispatchQueue.main.sync.
         let outside: (NSEvent) -> Void = { [weak self] _ in
-            guard let self else { return }
             let location = NSEvent.mouseLocation
-            selectionPanelRunOnMainActor {
-                guard self.isVisible else { return }
-                if self.containsOwnedUI(at: location) { return }
-                self.onOutsideClick?()
+            guard let self else { return }
+            assert(Thread.isMainThread)
+            nonisolated(unsafe) let panel = self
+            _ = MainActor.assumeIsolated {
+                guard panel.isVisible else { return false }
+                if panel.containsOwnedUI(at: location) { return false }
+                panel.onOutsideClick?()
+                return true
             }
         }
         if let global = NSEvent.addGlobalMonitorForEvents(
@@ -56,12 +61,15 @@ public final class SelectionTranslatePanel: NSPanel {
         if let local = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown],
             handler: { [weak self] event in
-                guard let self else { return event }
                 let location = NSEvent.mouseLocation
-                selectionPanelRunOnMainActor {
-                    guard self.isVisible else { return }
-                    if self.containsOwnedUI(at: location) { return }
-                    self.onOutsideClick?()
+                guard let self else { return event }
+                assert(Thread.isMainThread)
+                nonisolated(unsafe) let panel = self
+                _ = MainActor.assumeIsolated {
+                    guard panel.isVisible else { return false }
+                    if panel.containsOwnedUI(at: location) { return false }
+                    panel.onOutsideClick?()
+                    return true
                 }
                 return event
             }
@@ -69,22 +77,30 @@ public final class SelectionTranslatePanel: NSPanel {
             monitors.append(local)
         }
         if let escapeGlobal = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
-            guard event.keyCode == 53 else { return }
+            let isEscape = event.keyCode == 53
+            guard isEscape else { return }
             guard let self else { return }
-            selectionPanelRunOnMainActor {
-                guard self.isVisible, !self.hasOwnedMenuOpen() else { return }
-                self.onEscape?()
+            assert(Thread.isMainThread)
+            nonisolated(unsafe) let panel = self
+            _ = MainActor.assumeIsolated {
+                guard panel.isVisible else { return false }
+                if panel.hasOwnedMenuOpen() { return false }
+                panel.onEscape?()
+                return true
             }
         }) {
             monitors.append(escapeGlobal)
         }
         if let escapeLocal = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
-            guard event.keyCode == 53 else { return event }
+            let isEscape = event.keyCode == 53
+            guard isEscape else { return event }
             guard let self else { return event }
-            let consume = selectionPanelRunOnMainActor {
-                guard self.isVisible else { return false }
-                if self.hasOwnedMenuOpen() { return false }
-                self.onEscape?()
+            assert(Thread.isMainThread)
+            nonisolated(unsafe) let panel = self
+            let consume = MainActor.assumeIsolated {
+                guard panel.isVisible else { return false }
+                if panel.hasOwnedMenuOpen() { return false }
+                panel.onEscape?()
                 return true
             }
             return consume ? nil : event
@@ -117,27 +133,6 @@ public final class SelectionTranslatePanel: NSPanel {
     func hasOwnedMenuOpen(windows: [NSWindow]? = nil) -> Bool {
         let windows = windows ?? NSApp.windows
         return windows.contains { $0.isVisible && $0 !== self && $0.level == .popUpMenu }
-    }
-}
-
-/// NSEvent monitors are not Sendable; never capture `NSEvent` inside `assumeIsolated`.
-/// Closures stay `() -> T` (not `@Sendable`) because they capture `self`.
-private func selectionPanelRunOnMainActor(_ work: () -> Void) {
-    if Thread.isMainThread {
-        MainActor.assumeIsolated(work)
-    } else {
-        DispatchQueue.main.sync {
-            MainActor.assumeIsolated(work)
-        }
-    }
-}
-
-private func selectionPanelRunOnMainActor<T: Sendable>(_ work: () -> T) -> T {
-    if Thread.isMainThread {
-        return MainActor.assumeIsolated(work)
-    }
-    return DispatchQueue.main.sync {
-        MainActor.assumeIsolated(work)
     }
 }
 
