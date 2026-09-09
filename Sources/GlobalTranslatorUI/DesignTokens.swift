@@ -63,8 +63,17 @@ public enum GTPopoverMetrics {
 
 /// Floating selection-translate popover (not the click-through overlay).
 public enum GTSelectionMetrics {
-    public static let width: CGFloat = 280
+    public static let width: CGFloat = 312
     public static let maxOriginalLines = 2
     public static let maxTranslationLines = 8
     public static let modePickerHeight: CGFloat = 22
+    public static let actionRowHeight: CGFloat = 28
+    public static let horizontalPadding: CGFloat = 14
+    public static let verticalPadding: CGFloat = 12
+    /// Original ↔ result. Tighter than the section gap so the pair reads as one block.
+    public static let textBlockSpacing: CGFloat = GTSpacing.xxSmall
+    /// Text block ↔ actions group.
+    public static let sectionSpacing: CGFloat = GTSpacing.small
+    /// Scene picker ↔ action buttons inside the actions group.
+    public static let actionsSpacing: CGFloat = GTSpacing.xSmall
 }

@@ -122,6 +122,66 @@ struct SelectionTranslatePopoverTests {
         #expect(translated.allowsCopy)
         #expect(translated.showsOptimizeAction)
         #expect(translatedSize.height >= loadingSize.height)
+        #expect(translatedSize.width == GTSelectionMetrics.width)
+    }
+
+    @Test
+    func selectionMetricsUseDedicatedPaddingAndWidth() {
+        #expect(GTSelectionMetrics.width >= 300)
+        #expect(GTSelectionMetrics.width <= 320)
+        #expect(GTSelectionMetrics.horizontalPadding > GTOverlayMetrics.horizontalPadding)
+        #expect(GTSelectionMetrics.verticalPadding > GTOverlayMetrics.verticalPadding)
+        #expect(GTSelectionMetrics.sectionSpacing > GTSpacing.xSmall)
+        #expect(GTSelectionMetrics.textBlockSpacing < GTSelectionMetrics.sectionSpacing)
+    }
+
+    @Test
+    func unavailableOmitsActionsWhileStatusStatesKeepTheGroup() {
+        let unavailable = SelectionPopoverContent.unavailable(screenFrame: .zero)
+        let alreadyChinese = SelectionPopoverContent.alreadyChinese(
+            original: "抖测已完成，本地已进行全面测试并完成安装。",
+            screenFrame: .zero
+        )
+        let failed = SelectionPopoverContent.failed(
+            original: "Hello",
+            message: "翻译失败",
+            screenFrame: .zero
+        )
+        #expect(!unavailable.showsActionButtons)
+        #expect(!unavailable.showsOptimizeAction)
+        #expect(alreadyChinese.showsActionButtons)
+        #expect(alreadyChinese.showsOptimizeAction)
+        #expect(failed.showsActionButtons)
+        let unavailableSize = SelectionTranslatePanelController.contentSize(for: unavailable)
+        let chineseSize = SelectionTranslatePanelController.contentSize(for: alreadyChinese)
+        let failedSize = SelectionTranslatePanelController.contentSize(for: failed)
+        #expect(chineseSize.height > unavailableSize.height)
+        #expect(failedSize.width == GTSelectionMetrics.width)
+        #expect(unavailableSize.width == GTSelectionMetrics.width)
+    }
+
+    @Test
+    func statusCopyUsesHeadlineMeasurement() {
+        let content = SelectionPopoverContent.alreadyChinese(
+            original: "抖测已完成",
+            screenFrame: .zero
+        )
+        let textWidth = GTSelectionMetrics.width - GTSelectionMetrics.horizontalPadding * 2
+        let headline = OverlayLayout.estimatedTextSize(
+            for: content.displayTranslation,
+            maxWidth: textWidth,
+            maxLines: GTSelectionMetrics.maxTranslationLines,
+            font: SelectionPopoverLayout.resultMeasuringFont(for: .alreadyChinese)
+        )
+        let body = OverlayLayout.estimatedTextSize(
+            for: content.displayTranslation,
+            maxWidth: textWidth,
+            maxLines: GTSelectionMetrics.maxTranslationLines,
+            font: NSFont.preferredFont(forTextStyle: .body)
+        )
+        #expect(headline.height >= body.height)
+        let size = SelectionTranslatePanelController.contentSize(for: content)
+        #expect(size.height >= GTSelectionMetrics.verticalPadding * 2 + headline.height + GTSelectionMetrics.sectionSpacing)
     }
 
     @Test
@@ -154,7 +214,7 @@ struct SelectionTranslatePopoverTests {
     @Test
     func contentSizeUsesBodyFontSoTranslationDoesNotClipCopy() {
         let text = String(repeating: "这是一段需要换行的译文内容，", count: 8)
-        let textWidth = GTSelectionMetrics.width - GTOverlayMetrics.horizontalPadding * 2
+        let textWidth = GTSelectionMetrics.width - GTSelectionMetrics.horizontalPadding * 2
         let callout = OverlayLayout.estimatedTextSize(
             for: text,
             maxWidth: textWidth,
@@ -179,15 +239,16 @@ struct SelectionTranslatePopoverTests {
             maxLines: GTSelectionMetrics.maxOriginalLines,
             font: NSFont.preferredFont(forTextStyle: .caption1)
         ).height
-        let expectedMin = GTOverlayMetrics.verticalPadding * 2
+        let expectedMin = GTSelectionMetrics.verticalPadding * 2
             + originalHeight
-            + GTSpacing.xSmall
+            + GTSelectionMetrics.textBlockSpacing
             + body.height
-            + GTSpacing.xSmall
+            + GTSelectionMetrics.sectionSpacing
             + GTSelectionMetrics.modePickerHeight
-            + GTSpacing.xSmall
-            + 28
+            + GTSelectionMetrics.actionsSpacing
+            + GTSelectionMetrics.actionRowHeight
         #expect(size.height >= expectedMin - 0.5)
+        #expect(size.width == GTSelectionMetrics.width)
     }
 
     @Test

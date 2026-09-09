@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import Combine
 import GlobalTranslatorCore
@@ -47,7 +48,22 @@ public struct SelectionTranslatePopoverView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: GTSpacing.xSmall) {
+        VStack(alignment: .leading, spacing: GTSelectionMetrics.sectionSpacing) {
+            textBlock
+            if content.showsOptimizeAction || content.showsActionButtons {
+                actionsGroup
+            }
+        }
+        .padding(.horizontal, GTSelectionMetrics.horizontalPadding)
+        .padding(.vertical, GTSelectionMetrics.verticalPadding)
+        .frame(width: GTSelectionMetrics.width, alignment: .leading)
+        .background(background)
+        .clipShape(RoundedRectangle(cornerRadius: GTRadius.overlay, style: .continuous))
+        .accessibilityElement(children: .contain)
+    }
+
+    private var textBlock: some View {
+        VStack(alignment: .leading, spacing: GTSelectionMetrics.textBlockSpacing) {
             if !content.originalPreview.isEmpty {
                 Text(content.originalPreview)
                     .font(GTType.caption)
@@ -55,18 +71,26 @@ public struct SelectionTranslatePopoverView: View {
                     .lineLimit(GTSelectionMetrics.maxOriginalLines)
                     .truncationMode(.tail)
                     .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityLabel("原文")
                     .accessibilityValue(content.originalPreview)
             }
             Text(content.displayTranslation)
-                .font(GTType.body)
-                .foregroundStyle(content.status == .failed || content.status == .unavailable ? GTColor.destructive : GTColor.primaryText)
+                .font(resultFont)
+                .foregroundStyle(resultColor)
                 .lineLimit(GTSelectionMetrics.maxTranslationLines)
                 .truncationMode(.tail)
                 .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
                 .accessibilityLabel(resultAccessibilityLabel)
                 .accessibilityValue(content.displayTranslation)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var actionsGroup: some View {
+        VStack(alignment: .leading, spacing: GTSelectionMetrics.actionsSpacing) {
             if content.showsOptimizeAction {
                 Picker("优化场景", selection: modeBinding) {
                     ForEach(PromptOptimizeMode.allCases) { mode in
@@ -77,6 +101,7 @@ public struct SelectionTranslatePopoverView: View {
                 .controlSize(.small)
                 .labelsHidden()
                 .disabled(content.status == .optimizing)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityLabel("优化场景")
                 .accessibilityValue(chrome.optimizeMode.title)
             }
@@ -87,6 +112,7 @@ public struct SelectionTranslatePopoverView: View {
                             .buttonStyle(.bordered)
                             .controlSize(.small)
                             .disabled(content.status == .loading)
+                            .frame(maxWidth: .infinity)
                             .accessibilityHint("把选区译成简体中文")
                     }
                     if content.showsOptimizeAction {
@@ -94,6 +120,7 @@ public struct SelectionTranslatePopoverView: View {
                             .buttonStyle(.bordered)
                             .controlSize(.small)
                             .disabled(content.status == .optimizing)
+                            .frame(maxWidth: .infinity)
                             .accessibilityHint(chrome.optimizeMode.optimizeAccessibilityHint)
                     }
                     if content.allowsCopy {
@@ -105,21 +132,18 @@ public struct SelectionTranslatePopoverView: View {
                                 }
                                 Text(chrome.copyFeedback.title)
                             }
+                            .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
+                        .frame(maxWidth: .infinity)
                         .accessibilityLabel(chrome.copyFeedback.title)
                         .accessibilityHint(chrome.copyFeedback == .idle ? "将结果复制到剪贴板" : chrome.copyFeedback.title)
                     }
                 }
             }
         }
-        .padding(.horizontal, GTOverlayMetrics.horizontalPadding)
-        .padding(.vertical, GTOverlayMetrics.verticalPadding)
-        .frame(width: GTSelectionMetrics.width, alignment: .leading)
-        .background(background)
-        .clipShape(RoundedRectangle(cornerRadius: GTRadius.overlay, style: .continuous))
-        .accessibilityElement(children: .contain)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var modeBinding: Binding<PromptOptimizeMode> {
@@ -127,6 +151,19 @@ public struct SelectionTranslatePopoverView: View {
             get: { chrome.optimizeMode },
             set: { onOptimizeModeChange($0) }
         )
+    }
+
+    private var resultFont: Font {
+        SelectionPopoverLayout.resultFont(for: content.status)
+    }
+
+    private var resultColor: Color {
+        switch content.status {
+        case .failed, .unavailable:
+            return GTColor.destructive
+        default:
+            return GTColor.primaryText
+        }
     }
 
     private var resultAccessibilityLabel: String {
@@ -144,6 +181,26 @@ public struct SelectionTranslatePopoverView: View {
             GTColor.overlaySolidFallback
         } else {
             Rectangle().fill(.regularMaterial)
+        }
+    }
+}
+
+enum SelectionPopoverLayout {
+    static func resultFont(for status: SelectionPopoverStatus) -> Font {
+        switch status {
+        case .translated, .optimized:
+            return GTType.body
+        default:
+            return GTType.stateLine
+        }
+    }
+
+    static func resultMeasuringFont(for status: SelectionPopoverStatus) -> NSFont {
+        switch status {
+        case .translated, .optimized:
+            return NSFont.preferredFont(forTextStyle: .body)
+        default:
+            return NSFont.preferredFont(forTextStyle: .headline)
         }
     }
 }

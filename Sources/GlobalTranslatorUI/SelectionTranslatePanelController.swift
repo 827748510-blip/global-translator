@@ -359,8 +359,8 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     }
 
     public static func contentSize(for content: SelectionPopoverContent) -> CGSize {
-        let textWidth = GTSelectionMetrics.width - GTOverlayMetrics.horizontalPadding * 2
-        var height = GTOverlayMetrics.verticalPadding * 2
+        let textWidth = GTSelectionMetrics.width - GTSelectionMetrics.horizontalPadding * 2
+        var height = GTSelectionMetrics.verticalPadding * 2
         if !content.originalPreview.isEmpty {
             height += OverlayLayout.estimatedTextSize(
                 for: content.originalPreview,
@@ -368,19 +368,26 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
                 maxLines: GTSelectionMetrics.maxOriginalLines,
                 font: NSFont.preferredFont(forTextStyle: .caption1)
             ).height
-            height += GTSpacing.xSmall
+            height += GTSelectionMetrics.textBlockSpacing
         }
         height += OverlayLayout.estimatedTextSize(
             for: content.displayTranslation,
             maxWidth: textWidth,
             maxLines: GTSelectionMetrics.maxTranslationLines,
-            font: NSFont.preferredFont(forTextStyle: .body)
+            font: SelectionPopoverLayout.resultMeasuringFont(for: content.status)
         ).height
-        if content.showsOptimizeAction {
-            height += GTSpacing.xSmall + GTSelectionMetrics.modePickerHeight
-        }
-        if content.showsActionButtons {
-            height += GTSpacing.xSmall + 28
+        let hasActions = content.showsOptimizeAction || content.showsActionButtons
+        if hasActions {
+            height += GTSelectionMetrics.sectionSpacing
+            if content.showsOptimizeAction {
+                height += GTSelectionMetrics.modePickerHeight
+            }
+            if content.showsActionButtons {
+                if content.showsOptimizeAction {
+                    height += GTSelectionMetrics.actionsSpacing
+                }
+                height += GTSelectionMetrics.actionRowHeight
+            }
         }
         return CGSize(width: GTSelectionMetrics.width, height: max(height, 44))
     }
