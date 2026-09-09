@@ -67,7 +67,15 @@ struct SelectionTranslatePopoverTests {
         #expect(copied == ["你好，世界"])
         #expect(controller.copyFeedback == .copied)
         #expect(SelectionCopyFeedback.copied.title == "已拷贝")
-        try await Task.sleep(for: .milliseconds(120))
+
+        let deadline = ContinuousClock.now + .seconds(2)
+        while controller.copyFeedback != .idle {
+            if ContinuousClock.now >= deadline {
+                Issue.record("copyFeedback stayed \(controller.copyFeedback) after copyFeedbackDelay")
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
         #expect(controller.copyFeedback == .idle)
         controller.dismiss()
     }
