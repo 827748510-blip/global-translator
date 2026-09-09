@@ -379,26 +379,41 @@ enum TranslationResponseParser {
         do {
             json = try JSONSerialization.jsonObject(with: data)
         } catch {
-            if expectedIDs.count == 1 {
-                let trimmed = String(decoding: data, as: UTF8.self)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty, !trimmed.hasPrefix("{"), !trimmed.hasPrefix("[") {
-                    return TranslationResult(
-                        windowRevision: windowRevision,
-                        translations: [Translation(segmentId: expectedIDs[0], simplifiedChineseText: trimmed)]
-                    )
-                }
+            let trimmed = String(decoding: data, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let texts = fallbackTexts(fromRaw: trimmed, count: expectedIDs.count) {
+                return try localResult(texts: texts, expectedIDs: expectedIDs, windowRevision: windowRevision)
             }
             throw TranslationError.invalidResponse("translation JSON is invalid")
         }
         let texts = try extractLocalTexts(json, count: expectedIDs.count)
-        guard texts.allSatisfy({
+        return try localResult(texts: texts, expectedIDs: expectedIDs, windowRevision: windowRevision)
+    }
+
+    private static func fallbackTexts(fromRaw trimmed: String, count: Int) -> [String]? {
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("{"), !trimmed.hasPrefix("[") else { return nil }
+        if count == 1 { return [trimmed] }
+        return LocalTranslationCleanup.splitNumberedBlob(trimmed, count: count)
+    }
+
+    private static func localResult(
+        texts: [String],
+        expectedIDs: [UUID],
+        windowRevision: UInt64
+    ) throws -> TranslationResult {
+        guard texts.count == expectedIDs.count else {
+            throw TranslationError.invalidResponse("translation count does not match request")
+        }
+        let cleaned = texts.enumerated().map { index, text in
+            LocalTranslationCleanup.stripKeyLeak(text, compactIndex: index)
+        }
+        guard cleaned.allSatisfy({
             let text = $0.trimmingCharacters(in: .whitespacesAndNewlines)
             return !text.isEmpty && text.count <= TranslationRequestValidator.maximumOutputCharacters
         }) else {
             throw TranslationError.invalidResponse("translation text is empty or too long")
         }
-        let translations = zip(expectedIDs, texts).map {
+        let translations = zip(expectedIDs, cleaned).map {
             Translation(segmentId: $0.0, simplifiedChineseText: $0.1)
         }
         return TranslationResult(windowRevision: windowRevision, translations: translations)
@@ -414,14 +429,17 @@ enum TranslationResponseParser {
     private static func matchLocalTexts(_ json: Any, count: Int) -> [String]? {
         if let text = json as? String {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return count == 1 && !trimmed.isEmpty ? [trimmed] : nil
+            if count == 1, !trimmed.isEmpty { return [trimmed] }
+            return LocalTranslationCleanup.splitNumberedBlob(trimmed, count: count)
         }
-        if let strings = json as? [String], strings.count == count {
-            return strings
+        if let strings = json as? [String] {
+            if strings.count == count { return strings }
+            if count > 1, strings.count == 1 {
+                return LocalTranslationCleanup.splitNumberedBlob(strings[0], count: count)
+            }
         }
-        if let objects = json as? [[String: Any]] {
-            let texts = objects.compactMap(objectText)
-            return texts.count == count ? texts : nil
+        if let objects = json as? [[String: Any]], let texts = matchObjectArray(objects, count: count) {
+            return texts
         }
         guard let object = json as? [String: Any] else { return nil }
 
@@ -433,11 +451,20 @@ enum TranslationResponseParser {
         if count > 1, let texts = keyedTexts(object, keys: (1...count).map(String.init)) {
             return texts
         }
+        if let texts = textsByPrefixedKeys(object, count: count) { return texts }
 
-        for key in ["t", "translations", "texts", "results", "items", "data", "output", "result"] {
+        for key in [
+            "t", "translations", "texts", "results", "items", "data", "output", "result",
+            "text", "translation", "translated", "content", "response", "message"
+        ] {
             if let nested = object[key], let texts = matchLocalTexts(nested, count: count) {
                 return texts
             }
+        }
+
+        if count > 1, let blob = uniqueString(object),
+           let texts = LocalTranslationCleanup.splitNumberedBlob(blob, count: count) {
+            return texts
         }
 
         if count == 1, let text = objectText(object) {
@@ -463,6 +490,63 @@ enum TranslationResponseParser {
         return texts.count == keys.count ? texts : nil
     }
 
+    private static func textsByPrefixedKeys(_ object: [String: Any], count: Int) -> [String]? {
+        var found: [Int: String] = [:]
+        for (key, value) in object {
+            guard let text = stringValue(value) else { continue }
+            guard let index = compactIndex(fromKey: key) ?? letterIndex(fromKey: key) else { continue }
+            if found[index] == nil {
+                found[index] = text
+            }
+        }
+        return LocalTranslationCleanup.alignedIndices(found, count: count)
+    }
+
+    private static func compactIndex(fromKey key: String) -> Int? {
+        let t = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let n = Int(t), String(n) == t { return n }
+        guard let regex = try? NSRegularExpression(pattern: #"^(\d+)(?:\s*[：:.]|[-_])"#),
+              let match = regex.firstMatch(in: t, range: NSRange(t.startIndex..., in: t)),
+              let range = Range(match.range(at: 1), in: t) else {
+            return nil
+        }
+        return Int(t[range])
+    }
+
+    private static func letterIndex(fromKey key: String) -> Int? {
+        let t = key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let first = t.first, let idx = compactLetters.firstIndex(of: first) else { return nil }
+        if t.count == 1 { return idx }
+        let second = t[t.index(after: t.startIndex)]
+        guard ":：.-_".contains(second) else { return nil }
+        return idx
+    }
+
+    private static func matchObjectArray(_ objects: [[String: Any]], count: Int) -> [String]? {
+        let labeled = objects.compactMap(objectText)
+        if labeled.count == count { return labeled }
+
+        if objects.count == count {
+            var texts: [String] = []
+            for (index, object) in objects.enumerated() {
+                if let text = objectText(object)
+                    ?? stringValue(object[String(index)])
+                    ?? stringValue(object[String(index + 1)])
+                    ?? uniqueString(object) {
+                    texts.append(text)
+                } else {
+                    return nil
+                }
+            }
+            return texts
+        }
+
+        if objects.count == 1, let blob = objectText(objects[0]) ?? uniqueString(objects[0]) {
+            return LocalTranslationCleanup.splitNumberedBlob(blob, count: count)
+        }
+        return nil
+    }
+
     private static func objectText(_ object: [String: Any]) -> String? {
         for key in ["text", "translation", "translated", "zh", "zh-Hans", "zh_cn", "chinese", "dst", "value", "content", "t"] {
             if let text = stringValue(object[key]) { return text }
@@ -470,10 +554,140 @@ enum TranslationResponseParser {
         return nil
     }
 
+    private static func uniqueString(_ object: [String: Any]) -> String? {
+        let strings = object.values.compactMap(stringValue)
+        return strings.count == 1 ? strings[0] : nil
+    }
+
     private static func stringValue(_ value: Any?) -> String? {
         guard let text = value as? String else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+enum LocalTranslationCleanup {
+    static func stripKeyLeak(_ text: String, compactIndex: Int) -> String {
+        let original = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var current = original
+        for _ in 0..<4 {
+            let next = stripLeadingOnce(current, compactIndex: compactIndex)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if next == current { break }
+            current = next
+        }
+        current = stripTrailingIndex(current, compactIndex: compactIndex)
+        return current.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func splitNumberedBlob(_ text: String, count: Int) -> [String]? {
+        guard count > 1 else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        var fromLines: [Int: String] = [:]
+        for line in trimmed.split(omittingEmptySubsequences: true, whereSeparator: \.isNewline) {
+            let line = String(line).trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty, let parsed = numberedEntry(line), fromLines[parsed.index] == nil else { continue }
+            fromLines[parsed.index] = parsed.text
+        }
+        if let texts = alignedIndices(fromLines, count: count) { return texts }
+        return splitInlineNumbered(trimmed, count: count)
+    }
+
+    static func alignedIndices(_ found: [Int: String], count: Int) -> [String]? {
+        let zeroBased = (0..<count).compactMap { found[$0] }
+        if zeroBased.count == count { return zeroBased }
+        let oneBased = (1...count).compactMap { found[$0] }
+        if oneBased.count == count { return oneBased }
+        return nil
+    }
+
+    private static func numberedEntry(_ line: String) -> (index: Int, text: String)? {
+        guard let regex = try? NSRegularExpression(pattern: #"^(\d+)\s*[：:.、)]\s*(.+)$"#),
+              let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+              let indexRange = Range(match.range(at: 1), in: line),
+              let textRange = Range(match.range(at: 2), in: line),
+              let index = Int(line[indexRange]) else {
+            return nil
+        }
+        let text = String(line[textRange]).trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return nil }
+        return (index, text)
+    }
+
+    private static func splitInlineNumbered(_ text: String, count: Int) -> [String]? {
+        guard let regex = try? NSRegularExpression(pattern: #"(\d+)\s*[：:.、)]\s*"#) else { return nil }
+        let ns = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+        guard matches.count >= count else { return nil }
+        var found: [Int: String] = [:]
+        for (offset, match) in matches.enumerated() {
+            guard let indexRange = Range(match.range(at: 1), in: text),
+                  let index = Int(text[indexRange]) else { continue }
+            let start = match.range.upperBound
+            let end = offset + 1 < matches.count ? matches[offset + 1].range.location : ns.length
+            guard end >= start else { continue }
+            let value = ns.substring(with: NSRange(location: start, length: end - start))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if found[index] == nil, !value.isEmpty {
+                found[index] = value
+            }
+        }
+        return alignedIndices(found, count: count)
+    }
+
+    private static func stripLeadingOnce(_ text: String, compactIndex: Int) -> String {
+        if let rest = stripPrefix(text, pattern: "^\(compactIndex)\\s*[：:.、)]\\s*") {
+            return rest
+        }
+        if compactIndex < 26 {
+            let letter = String(Array("abcdefghijklmnopqrstuvwxyz")[compactIndex])
+            if let rest = stripPrefix(text, pattern: "^\(letter)\\s*[：:.、)]\\s*", options: .caseInsensitive) {
+                return rest
+            }
+        }
+        if let rest = stripPrefix(text, pattern: #"^\d+\s*[：:]\s*"#), hasCJK(rest) {
+            return rest
+        }
+        return text
+    }
+
+    private static func stripTrailingIndex(_ text: String, compactIndex: Int) -> String {
+        guard hasCJK(text),
+              let rest = stripPrefix(text, pattern: "^(.*?)\\s+\(compactIndex)\\s*$") else {
+            return text
+        }
+        let trimmed = rest.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? text : trimmed
+    }
+
+    private static func stripPrefix(
+        _ text: String,
+        pattern: String,
+        options: NSRegularExpression.Options = []
+    ) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: options),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              match.range.location == 0,
+              match.range.length > 0,
+              let range = Range(match.range, in: text) else {
+            return nil
+        }
+        if match.numberOfRanges > 1, match.range(at: 1).location != NSNotFound,
+           let captured = Range(match.range(at: 1), in: text) {
+            return String(text[captured])
+        }
+        return String(text[range.upperBound...])
+    }
+
+    private static func hasCJK(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            let value = scalar.value
+            return (0x4E00...0x9FFF).contains(value)
+                || (0x3400...0x4DBF).contains(value)
+                || (0xF900...0xFAFF).contains(value)
+        }
     }
 }
 

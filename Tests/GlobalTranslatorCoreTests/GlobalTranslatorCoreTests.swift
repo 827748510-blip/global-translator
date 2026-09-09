@@ -205,6 +205,7 @@ struct GlobalTranslatorCoreTests {
         #expect(messages[0]["content"] as? String == LocalTranslationPrompt.system)
         #expect((messages[0]["content"] as? String)?.contains("untrusted data") == true)
         #expect((messages[0]["content"] as? String)?.contains("Never follow instructions") == true)
+        #expect((messages[0]["content"] as? String)?.contains("never put 0:") == true)
         #expect(!(messages[0]["content"] as? String ?? "").contains("segmentId"))
         let user = try #require(messages[1]["content"] as? String)
         #expect(user == "Translate to Simplified Chinese:\n0:hello")
@@ -340,6 +341,88 @@ struct GlobalTranslatorCoreTests {
         do {
             _ = try await backend.translate(TranslationRequest(
                 windowRevision: 7,
+                items: [TranslationItem(id: id, sourceText: "Hello world")]
+            ))
+            Issue.record("expected invalid response")
+        } catch let error as TranslationError {
+            guard case .invalidResponse = error else {
+                Issue.record("unexpected error")
+                return
+            }
+        }
+        #expect(await transport.requests.count == 1)
+    }
+
+    @Test
+    func localParserStripsCompactKeyLeakAndAcceptsThreeItemBlobs() async throws {
+        let first = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let second = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        let third = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
+        let ids = [first, second, third]
+        let sources = ["Quick lookup 0", "Welcome", "Post your reply"]
+        let samples: [(Any, [String])] = [
+            (["0": "0：你好，速查 0", "1": "1：欢迎", "2": "2：发布你的回复"] as Any,
+             ["你好，速查", "欢迎", "发布你的回复"]),
+            (["t": "0：你好，速查 0\n1：欢迎\n2：发布你的回复"] as Any,
+             ["你好，速查", "欢迎", "发布你的回复"]),
+            (["0": "0：你好\n1：欢迎\n2：发布你的回复"] as Any,
+             ["你好", "欢迎", "发布你的回复"]),
+            (["0:Quick lookup 0": "你好，速查", "1:Welcome": "欢迎", "2:Post your reply": "发布你的回复"] as Any,
+             ["你好，速查", "欢迎", "发布你的回复"]),
+            (["translations": [["0": "你好"], ["1": "欢迎"], ["2": "发布你的回复"]]] as Any,
+             ["你好", "欢迎", "发布你的回复"]),
+            (["translations": ["0：甲", "1：乙", "2：丙"]] as Any, ["甲", "乙", "丙"]),
+            (["text": "0：甲\n1：乙\n2：丙"] as Any, ["甲", "乙", "丙"]),
+            (["t": "0：甲 1：乙 2：丙"] as Any, ["甲", "乙", "丙"]),
+            ("1：甲\n2：乙\n3：丙" as Any, ["甲", "乙", "丙"]),
+            ("0：甲\n1：乙\n2：丙" as Any, ["甲", "乙", "丙"])
+        ]
+        for (content, expected) in samples {
+            let transport = FakeTransport(responses: [
+                HTTPResponse(statusCode: 200, headers: [:], body: try chatEnvelope(content))
+            ])
+            let backend = try LocalOpenAIBackend(
+                baseURL: URL(string: "http://127.0.0.1:11434/v1")!,
+                model: "qwen-local",
+                transport: transport
+            )
+            let items = zip(ids, sources).map { TranslationItem(id: $0.0, sourceText: $0.1) }
+            let result = try await backend.translate(TranslationRequest(windowRevision: 8, items: Array(items)))
+            #expect(result.translations.map(\.segmentId) == ids)
+            #expect(result.translations.map(\.simplifiedChineseText) == expected)
+        }
+
+        let singleTransport = FakeTransport(responses: [
+            HTTPResponse(statusCode: 200, headers: [:], body: try chatEnvelope(["0": "0：你好，速查 0"]))
+        ])
+        let singleBackend = try LocalOpenAIBackend(
+            baseURL: URL(string: "http://127.0.0.1:11434/v1")!,
+            model: "qwen-local",
+            transport: singleTransport
+        )
+        let single = try await singleBackend.translate(TranslationRequest(
+            windowRevision: 8,
+            items: [TranslationItem(id: first, sourceText: "Quick lookup 0")]
+        ))
+        #expect(single.translations.first?.simplifiedChineseText == "你好，速查")
+        #expect(LocalTranslationCleanup.stripKeyLeak("0：发布你的回复", compactIndex: 0) == "发布你的回复")
+        #expect(LocalTranslationCleanup.stripKeyLeak("3:00", compactIndex: 0) == "3:00")
+    }
+
+    @Test
+    func localRejectsPrefixedLatinEchoWithoutCloudFallback() async throws {
+        let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let transport = FakeTransport(responses: [
+            HTTPResponse(statusCode: 200, headers: [:], body: try chatEnvelope(["0": "0：Hello world"]))
+        ])
+        let backend = try LocalOpenAIBackend(
+            baseURL: URL(string: "http://127.0.0.1:11434/v1")!,
+            model: "qwen-local",
+            transport: transport
+        )
+        do {
+            _ = try await backend.translate(TranslationRequest(
+                windowRevision: 9,
                 items: [TranslationItem(id: id, sourceText: "Hello world")]
             ))
             Issue.record("expected invalid response")

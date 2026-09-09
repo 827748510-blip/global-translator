@@ -54,7 +54,7 @@ brew services stop ollama
 
 ## 接口与实测边界
 
-本地服务必须支持 OpenAI 风格 `/models`、`/chat/completions`，以及 `response_format.type=json_object` 与 `max_tokens`。本机对照：应用风格的长 system + UUID JSON 用户体，无论 `json_object` 还是 `json_schema` 都是约 1.26–1.32s/短句。极短提示 `Translate to Simplified Chinese only: Hello world` 约 0.12–0.21s 且会出中文。过短的 `To zh-Hans` 会让模型原样回英文。本地路径用短 JSON 合同 + `Translate to Simplified Chinese`、`0:`/`1:`/`2:` 短键（客户端映射回 UUID），并对「该译的拉丁文被原样回写」做校验失败重试。DeepSeek 云端仍用长提示 + JSON Schema。不静默切云。来源：[Ollama 结构化输出文档](https://docs.ollama.com/capabilities/structured-outputs)。
+本地服务必须支持 OpenAI 风格 `/models`、`/chat/completions`，以及 `response_format.type=json_object` 与 `max_tokens`。本机对照：应用风格的长 system + UUID JSON 用户体，无论 `json_object` 还是 `json_schema` 都是约 1.26–1.32s/短句。极短提示 `Translate to Simplified Chinese only: Hello world` 约 0.12–0.21s 且会出中文。过短的 `To zh-Hans` 会让模型原样回英文。本地路径用短 JSON 合同 + `Translate to Simplified Chinese`、`0:`/`1:`/`2:` 短键（客户端映射回 UUID）。解析后会剥掉译文里漏进来的 `0：`/`1:` 前缀，并接受把三句写进一条编号字符串、或把 `0:source` 当 JSON 键的回包。仍对「该译的拉丁文被原样回写」做校验失败重试。DeepSeek 云端仍用长提示 + JSON Schema。不静默切云。来源：[Ollama 结构化输出文档](https://docs.ollama.com/capabilities/structured-outputs)。
 
 生产适配器早期连续 10 个单句（当时还是 schema）中位数约 1.60 秒。PR #3 第一轮约 1.35s；第二轮瘦提示词约 **0.33s/句、0.80s/三句**，但曾把英文原样返回。本轮目标：短句本机常常 **0.3–0.6s** 且译文为简体中文。以本机 `engine_completed` 为准。
 
