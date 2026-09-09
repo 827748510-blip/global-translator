@@ -73,6 +73,7 @@ assertEqual(cues.activeCue(srtCues, 4), null, "end exclusive");
 assertEqual(cues.activeCue(srtCues, 4.5).text, "Second line", "second cue");
 assertEqual(cues.activeCue(srtCues, 61).text, "这是中文", "chinese cue");
 
+assertEqual(cues.normalizeCueText("Second &amp; last &#39;ok&#39;"), "Second & last 'ok'", "html entities");
 assertEqual(cues.shouldSendForVideoTranslate("Hello world"), true, "english");
 assertEqual(cues.shouldSendForVideoTranslate("Bonjour le monde"), true, "french");
 assertEqual(cues.shouldSendForVideoTranslate("これは日本語です"), true, "japanese");
@@ -126,6 +127,15 @@ const chineseActive = cues.overlayState({
   probed: true
 });
 assertDeep(chineseActive, { show: false, cueText: "", message: "" }, "keep original chinese cue");
+
+const youtubeHint = cues.overlayState({
+  enabled: true,
+  cues: [],
+  time: 1,
+  probed: true,
+  noForeignMessage: "未检测到外语字幕（请先打开 YouTube 字幕）"
+});
+assertDeep(youtubeHint, { show: true, cueText: "", message: "未检测到外语字幕（请先打开 YouTube 字幕）" }, "youtube empty hint");
 
 const noForeign = cues.overlayState({
   enabled: true,
