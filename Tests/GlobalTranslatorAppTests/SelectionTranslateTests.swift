@@ -33,13 +33,20 @@ struct SelectionTranslateControllerTests {
             logger: RecordingLogger(),
             translator: { translator },
             ownBundleIdentifiers: ["com.maodashu.global-translator"],
-            settleDelay: .milliseconds(5)
+            settleDelay: .milliseconds(5),
+            unavailableDismissDelay: .milliseconds(30)
         )
     }
 
     private func select(_ controller: SelectionTranslateController, at point: CGPoint = CGPoint(x: 90, y: 210)) {
         controller.handlePointer(SelectionPointerPhase.down, location: point)
         controller.handlePointer(SelectionPointerPhase.up, location: point)
+    }
+
+    private func dragSelect(_ controller: SelectionTranslateController, at point: CGPoint = CGPoint(x: 90, y: 210)) {
+        controller.handlePointer(SelectionPointerPhase.down, location: point)
+        controller.handlePointer(SelectionPointerPhase.dragged, location: CGPoint(x: point.x + 16, y: point.y))
+        controller.handlePointer(SelectionPointerPhase.up, location: CGPoint(x: point.x + 16, y: point.y))
     }
 
     @Test
@@ -125,16 +132,84 @@ struct SelectionTranslateControllerTests {
     }
 
     @Test
-    func axUnavailableShowsOneLineStatus() async throws {
+    func clickWithoutDragDoesNotShowUnavailableStatus() async throws {
         let reader = FakeSelectedTextReader(result: .unavailable)
         let popover = FakeSelectionPopover()
         let translator = StubSelectionTranslator()
         let controller = makeController(reader: reader, popover: popover, translator: translator)
         controller.setEnabled(true)
         select(controller)
+        try await Task.sleep(for: .milliseconds(25))
+        #expect(translator.texts.isEmpty)
+        #expect(popover.currentContent == nil)
+        #expect(popover.shown.isEmpty)
+    }
+
+    @Test
+    func dragThenUnavailableShowsBriefStatusThenAutoDismisses() async throws {
+        let reader = FakeSelectedTextReader(result: .unavailable)
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        dragSelect(controller)
         try await waitUntil { popover.currentContent?.status == .unavailable }
         #expect(translator.texts.isEmpty)
         #expect(popover.currentContent?.displayTranslation == "无法读取所选文字")
+        try await waitUntil { popover.currentContent == nil }
+        #expect(popover.dismissCount >= 1)
+    }
+
+    @Test
+    func unavailableDismissesImmediatelyOnPointerDown() async throws {
+        let reader = FakeSelectedTextReader(result: .unavailable)
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        dragSelect(controller)
+        try await waitUntil { popover.currentContent?.status == .unavailable }
+        controller.handlePointer(SelectionPointerPhase.down, location: CGPoint(x: 10, y: 10))
+        #expect(popover.currentContent == nil)
+        let shownCount = popover.shown.count
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(popover.currentContent == nil)
+        #expect(popover.shown.count == shownCount)
+    }
+
+    @Test
+    func unavailableDismissesImmediatelyOnEscape() async throws {
+        let reader = FakeSelectedTextReader(result: .unavailable)
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        dragSelect(controller)
+        try await waitUntil { popover.currentContent?.status == .unavailable }
+        popover.simulateUserDismiss()
+        #expect(popover.currentContent == nil)
+        let shownCount = popover.shown.count
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(popover.currentContent == nil)
+        #expect(popover.shown.count == shownCount)
+    }
+
+    @Test
+    func emptySelectionDismissesUnavailableStatus() async throws {
+        let reader = FakeSelectedTextReader(result: .unavailable)
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        dragSelect(controller)
+        try await waitUntil { popover.currentContent?.status == .unavailable }
+        reader.setResult(.empty)
+        controller.handlePointer(SelectionPointerPhase.up, location: CGPoint(x: 10, y: 10))
+        try await waitUntil { popover.currentContent == nil }
+        let shownCount = popover.shown.count
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(popover.currentContent == nil)
+        #expect(popover.shown.count == shownCount)
     }
 
     @Test
@@ -262,6 +337,28 @@ struct SelectionTranslateControllerTests {
         #expect(popover.currentContent?.status == .optimized)
         #expect(popover.currentContent?.displayTranslation == translator.optimizeResult)
         #expect(!popover.shown.suffix(2).contains(where: { $0.status == .translated }))
+    }
+
+    @Test
+    func translateDuringChineseOptimizeKeepsAlreadyChineseAndDropsLateOptimize() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("一个女孩站在雨里")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.delay = .milliseconds(250)
+        translator.optimizeResult = "主体：一位女孩站在雨中街道，电影感布光。"
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .alreadyChinese }
+        popover.simulateOptimize()
+        try await waitUntil { popover.currentContent?.status == .optimizing }
+        popover.simulateTranslate()
+        #expect(popover.currentContent?.status == .alreadyChinese)
+        #expect(popover.currentContent?.displayTranslation == "已是中文")
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(popover.currentContent?.status == .alreadyChinese)
+        #expect(popover.currentContent?.displayTranslation == "已是中文")
+        #expect(!popover.shown.contains(where: { $0.status == .optimized }))
     }
 
     private func waitUntil(_ condition: @escaping () -> Bool) async throws {

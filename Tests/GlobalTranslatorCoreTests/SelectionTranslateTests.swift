@@ -50,17 +50,32 @@ struct SelectionPointerAndDebounceTests {
     func mouseUpAfterDragSchedulesSettleAndDragCancels() {
         var state = SelectionPointerState()
         #expect(state.handle(.down) == .cancelPending)
+        #expect(!state.didDrag)
         #expect(state.handle(.dragged) == .cancelPending)
+        #expect(state.didDrag)
         #expect(state.handle(.dragged) == .cancelPending)
         #expect(state.handle(.up) == .scheduleSettle)
         #expect(!state.isButtonDown)
+        #expect(state.didDrag)
+    }
+
+    @Test
+    func clickWithoutDragIsNotASelection() {
+        var state = SelectionPointerState()
+        #expect(state.handle(.down) == .cancelPending)
+        #expect(state.handle(.up) == .scheduleSettle)
+        #expect(!state.didDrag)
+        #expect(state.handle(.down) == .cancelPending)
+        #expect(!state.didDrag)
     }
 
     @Test
     func dragWithoutButtonDownIsIgnored() {
         var state = SelectionPointerState()
         #expect(state.handle(.dragged) == .ignore)
+        #expect(!state.didDrag)
         #expect(state.handle(.up) == .scheduleSettle)
+        #expect(!state.didDrag)
     }
 
     @Test

@@ -43,11 +43,11 @@ JSON {"0":"中文","1":"中文"}. Chinese values only — never copy English, ne
     }
 }
 
-/// Generic generative-prompt rewrite (not Jimeng/Kling/Midjourney-specific).
+/// Generic generative-prompt rewrite (not a specific image/video product).
 public enum PromptOptimizationInstructions {
     public static let system = """
 Rewrite the user's rough idea into one generic generative prompt for image, video, or similar creative models.
-Do not target a specific vendor (not Jimeng, Kling, Midjourney, or weighted token syntax).
+Do not target a specific vendor, product, or weighted token syntax.
 Write Simplified Chinese unless the source is clearly English-only and better kept English. Keep proper nouns as written.
 Include subject, setting, style, composition, lighting, materials, and constraints when they help.
 Output only the improved prompt. No title, markdown, or explanation.

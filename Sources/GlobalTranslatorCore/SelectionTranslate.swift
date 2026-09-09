@@ -23,6 +23,9 @@ public enum SelectionPointerAction: Equatable, Sendable {
 /// drag cancel any pending settle; up schedules one.
 public struct SelectionPointerState: Equatable, Sendable {
     public private(set) var isButtonDown = false
+    /// True when this press included a drag. Click-without-drag is not a
+    /// selection, so AX `.unavailable` should not spawn a sticky status.
+    public private(set) var didDrag = false
 
     public init() {}
 
@@ -30,8 +33,10 @@ public struct SelectionPointerState: Equatable, Sendable {
         switch phase {
         case .down:
             isButtonDown = true
+            didDrag = false
             return .cancelPending
         case .dragged:
+            if isButtonDown { didDrag = true }
             return isButtonDown ? .cancelPending : .ignore
         case .up:
             isButtonDown = false
@@ -208,6 +213,7 @@ public struct SelectionPopoverContent: Equatable, Sendable {
 public enum SelectionTranslateSupport {
     public static let settleDelayMilliseconds = 150
     public static let alreadyChineseDismissMilliseconds = 1_500
+    public static let unavailableDismissMilliseconds = 1_500
     public static let maxSourceCharacters = 4_000
     public static let originalPreviewLimit = 80
     public static let alreadyChineseCopy = "已是中文"

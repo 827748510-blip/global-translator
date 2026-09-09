@@ -81,12 +81,14 @@ public final class SelectionTranslateController {
     private let ownBundleIdentifiers: Set<String>
     private let targetLanguage: String
     private let settleDelay: Duration
+    private let unavailableDismissDelay: Duration
 
     private var enabled = false
     private var pointer = SelectionPointerState()
     private var settleGate = SelectionSettleGate()
     private var settleTask: Task<Void, Never>?
     private var translateTask: Task<Void, Never>?
+    private var transientDismissTask: Task<Void, Never>?
     private var presentationGeneration: UInt64 = 0
     /// Source text the user just dismissed (Esc / outside click / new press).
     /// Settle will not re-show it until the selection changes or becomes empty.
@@ -103,7 +105,10 @@ public final class SelectionTranslateController {
         translator: @escaping () -> (any SelectionTranslating)?,
         ownBundleIdentifiers: Set<String> = [],
         targetLanguage: String = SelectionTranslateSupport.defaultTargetLanguage,
-        settleDelay: Duration = .milliseconds(SelectionTranslateSupport.settleDelayMilliseconds)
+        settleDelay: Duration = .milliseconds(SelectionTranslateSupport.settleDelayMilliseconds),
+        unavailableDismissDelay: Duration = .milliseconds(
+            SelectionTranslateSupport.unavailableDismissMilliseconds
+        )
     ) {
         self.reader = reader
         self.popover = popover
@@ -114,6 +119,7 @@ public final class SelectionTranslateController {
         self.ownBundleIdentifiers = ownBundleIdentifiers
         self.targetLanguage = targetLanguage
         self.settleDelay = settleDelay
+        self.unavailableDismissDelay = unavailableDismissDelay
         let wired = self.popover
         wired.onUserDismiss = { [weak self] in
             self?.handleUserDismiss()
@@ -184,6 +190,8 @@ public final class SelectionTranslateController {
         presentationGeneration &+= 1
         translateTask?.cancel()
         translateTask = nil
+        transientDismissTask?.cancel()
+        transientDismissTask = nil
     }
 
     private func cancelSettle() {
@@ -219,10 +227,15 @@ public final class SelectionTranslateController {
         switch reader.readSelection(mouseLocation: location) {
         case .empty:
             suppressedSource = nil
+            cancelPresentation()
             popover.dismiss()
         case .unavailable:
             logger.event("selection_ax_unavailable", fields: ["reason": "ax"])
-            popover.show(.unavailable(screenFrame: fallback))
+            if pointer.didDrag {
+                presentUnavailable(screenFrame: fallback)
+            } else {
+                popover.dismiss()
+            }
         case .snapshot(let snapshot):
             if ownBundleIdentifiers.contains(snapshot.bundleIdentifier) {
                 popover.dismiss()
@@ -249,7 +262,7 @@ public final class SelectionTranslateController {
         case .skip:
             return
         case .alreadyTargetLanguage:
-            popover.show(.alreadyChinese(original: content.original, screenFrame: content.screenFrame))
+            presentAlreadyChinese(snapshot(from: content))
         case .translate:
             presentTranslation(snapshot(from: content))
         }
@@ -277,6 +290,20 @@ public final class SelectionTranslateController {
         }
         cancelPresentation()
         popover.show(.alreadyChinese(original: snapshot.text, screenFrame: snapshot.screenFrame))
+    }
+
+    private func presentUnavailable(screenFrame: CGRect) {
+        cancelPresentation()
+        let generation = presentationGeneration
+        popover.show(.unavailable(screenFrame: screenFrame))
+        transientDismissTask = Task { @MainActor [weak self] in
+            guard let delay = self?.unavailableDismissDelay else { return }
+            try? await Task.sleep(for: delay)
+            guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
+            if self.popover.currentContent?.status == .unavailable {
+                self.popover.dismiss()
+            }
+        }
     }
 
     private func presentTranslation(_ snapshot: SelectedTextSnapshot) {
