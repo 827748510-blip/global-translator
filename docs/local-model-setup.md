@@ -31,7 +31,7 @@ PARAMETER num_predict 256
 
 翻译器默认选择 `local` 后端、`http://127.0.0.1:11434/v1`、`global-translator-local:qwen3-4b`；云端视觉回退关闭。默认排除 Codex、Passwords、CC Switch、微信和企业微信。未创建翻译器安装包、登录项或模型自动下载逻辑。
 
-本地页内/扩展桥与覆盖层都按最多 3 段拆批（与扩展 `CHUNK_SIZE` 对齐），并复用相同文字的在途结果。请求带 `max_tokens`（单条 128、三条约 256），`response_format` 为 `json_object`，由客户端校验条数并对齐 ID；不静默切到云端。用户已批准对 AX/OCR 当前窗口都启用最高 4 帧/秒、256×256 的本地变化检测；检测画面不保存、不上传。完整验收结果及性能边界见 [当前真实验收记录](real-acceptance-current.md)。
+本地页内/扩展桥与覆盖层都按最多 3 段拆批（与扩展 `CHUNK_SIZE` 对齐），并复用相同文字的在途结果。请求带 `max_tokens`（单条 128、三条约 256），`response_format` 为 `json_object`，系统提示极短，用户侧用 `0:`/`1:`/`2:` 短键（客户端映射回 UUID）。不静默切到云端。用户已批准对 AX/OCR 当前窗口都启用最高 4 帧/秒、256×256 的本地变化检测；检测画面不保存、不上传。完整验收结果及性能边界见 [当前真实验收记录](real-acceptance-current.md)。
 
 ## 启动与停止
 
@@ -54,8 +54,8 @@ brew services stop ollama
 
 ## 接口与实测边界
 
-本地服务必须支持 OpenAI 风格 `/models`、`/chat/completions`，以及 `response_format.type=json_object` 与 `max_tokens`。严格 `json_schema` 在 qwen3-4b 上大约要 0.70s/短句，而同模型纯翻译约 0.12–0.21s、三条纯翻译约 0.68s；schema 才是短句延迟的大头。应用改为 `json_object` + 客户端校验（条数、非空、按 ID 或输入顺序对齐），历史里裸数组/改写 ID 由解析器兜住，不静默降级到云端。DeepSeek 云端路径仍用 JSON Schema。来源：[Ollama 结构化输出文档](https://docs.ollama.com/capabilities/structured-outputs)。
+本地服务必须支持 OpenAI 风格 `/models`、`/chat/completions`，以及 `response_format.type=json_object` 与 `max_tokens`。本机对照：应用风格的长 system + UUID JSON 用户体，无论 `json_object` 还是 `json_schema` 都是约 1.26–1.32s/短句、约 3.5s/三句；更早的 ~0.12s 是极短提示（`Translate to Simplified Chinese only: Hello world`）。所以本地路径改成极短 system + `0:`/`1:`/`2:` 短键，客户端映射回 UUID，并放宽 `json_object` 解析（扁平键、`t`/`translation`、裸数组、尾逗号、content 数组）。DeepSeek 云端仍用长提示 + JSON Schema。不支持该能力的其他本地服务不会被静默降级或切到云端。来源：[Ollama 结构化输出文档](https://docs.ollama.com/capabilities/structured-outputs)。
 
-生产适配器早期连续 10 个单句（当时还是 schema）中位数约 1.60 秒。用户机器上桥接路径 `engine_completed` p50 约 1293ms/短句。本轮预期：短句本地桥在 json_object + 低 max_tokens 后常常能到约 0.4–0.6s/句等效吞吐（三句一批时接近 0.68s/批），以本机复测为准。整窗首次翻译仍可能数秒。不能承诺覆盖层路径的亚秒 SLA。
+生产适配器早期连续 10 个单句（当时还是 schema）中位数约 1.60 秒。PR #3 第一轮安装后桥接仍约 1.35s/短句，并有 `translation JSON is invalid` 重试。本轮目标仍是短句本机常常 **<0.4–0.6s/句等效**（接近极短提示的 0.12–0.21s，而不是 1.3s 的重提示词），以本机 `engine_completed` 为准。整窗首次翻译仍可能数秒。不能承诺覆盖层路径的亚秒 SLA。
 
 本地模式启动不读取 DeepSeek Keychain。切换云端或运行涉及 Keychain 的诊断时，重编译/移动二进制仍可能引起 macOS 的钥匙串授权提示；请直接在系统界面处理，不向助手发送登录密码。

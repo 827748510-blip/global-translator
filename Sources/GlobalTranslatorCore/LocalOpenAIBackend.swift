@@ -134,12 +134,11 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
     }
 
     private func makePayload(for request: TranslationRequest) throws -> Data {
-        let content = try TranslationInstructions.userContent(for: request.items)
         let payload = ChatPayload(
             model: model,
             messages: [
-                ChatPrompt(role: "system", content: TranslationInstructions.system),
-                ChatPrompt(role: "user", content: content)
+                ChatPrompt(role: "system", content: LocalTranslationPrompt.system),
+                ChatPrompt(role: "user", content: LocalTranslationPrompt.userContent(for: request.items))
             ],
             maxTokens: Self.maxTokens(itemCount: request.items.count),
             responseFormat: ChatResponseFormat()
@@ -190,9 +189,7 @@ private struct ChatPrompt: Codable {
     let content: String
 }
 
-/// Local-only: `json_object` is several times faster than strict
-/// `json_schema` on qwen3-4b (measured ~0.7s vs ~0.15s for one short
-/// string). Shape, count, and IDs are enforced by the client parser.
+/// Local-only. `json_object` plus a tiny prompt; UUIDs never go to the model.
 private struct ChatResponseFormat: Encodable {
     let type = "json_object"
 }
