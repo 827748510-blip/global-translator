@@ -739,6 +739,20 @@ enum LocalTranslationCleanup {
 
 enum LocalTranslationQuality {
     @discardableResult
+    static func applyCopiedSourcePolicy(
+        _ result: TranslationResult,
+        items: [TranslationItem],
+        policy: CopiedSourcePolicy
+    ) throws -> TranslationResult {
+        switch policy {
+        case .keep:
+            return result
+        case .reject:
+            return try rejectCopiedSource(result, items: items)
+        }
+    }
+
+    @discardableResult
     static func rejectCopiedSource(
         _ result: TranslationResult,
         items: [TranslationItem]

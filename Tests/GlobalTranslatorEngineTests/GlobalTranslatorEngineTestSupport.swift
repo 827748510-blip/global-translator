@@ -139,6 +139,13 @@ func makeSnapshot(
     ))
 }
 
+func localChatJSONObjectBody(_ content: [String: String]) throws -> Data {
+    let encoded = String(decoding: try JSONSerialization.data(withJSONObject: content), as: UTF8.self)
+    return try JSONSerialization.data(withJSONObject: [
+        "choices": [["message": ["role": "assistant", "content": encoded]]]
+    ])
+}
+
 func makeEngineTestImage() -> CGImage {
     let colorSpace = CGColorSpaceCreateDeviceGray()
     let context = CGContext(

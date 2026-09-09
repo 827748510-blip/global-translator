@@ -95,14 +95,15 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
         guard (200..<300).contains(response.statusCode) else {
             throw TranslationError.invalidResponse("unexpected local HTTP status")
         }
-        return try LocalTranslationQuality.rejectCopiedSource(
+        return try LocalTranslationQuality.applyCopiedSourcePolicy(
             TranslationResponseParser.parseChatCompletions(
                 response.body,
                 expectedIDs: request.items.map { $0.id },
                 windowRevision: request.windowRevision,
                 mode: .localRelaxed
             ),
-            items: request.items
+            items: request.items,
+            policy: request.copiedSourcePolicy
         )
     }
 

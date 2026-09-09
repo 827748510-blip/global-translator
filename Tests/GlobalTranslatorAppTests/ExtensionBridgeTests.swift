@@ -47,10 +47,26 @@ struct ExtensionBridgeServerTests {
         let source = try String(contentsOf: url, encoding: .utf8)
         #expect(source.contains("const CHUNK_SIZE = 3;"))
         #expect(!source.contains("const CHUNK_SIZE = 30;"))
+        #expect(source.contains("GlobalTranslatorTextFilter.shouldSendForPageTranslate"))
         #expect(source.contains("if (retry.has(i)) continue;"))
         #expect(source.contains("let retryPending = false;"))
         #expect(source.contains("retryPending = true;"))
         #expect(source.contains("scheduleRetry();"))
+    }
+
+    @Test
+    func contentScriptTextFilterSkipsNonTranslatableFragments() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("extension/text-filter.js")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        #expect(source.contains("function shouldSendForPageTranslate"))
+        #expect(source.contains("function isURL("))
+        #expect(source.contains("function isEmail("))
+        #expect(source.contains("function isIdentifierOrUnit("))
+        #expect(source.contains("function isTechnicalTokenPhrase("))
     }
 
     @Test
@@ -75,8 +91,9 @@ struct ExtensionBridgeServerTests {
             .deletingLastPathComponent()
             .appendingPathComponent("extension/manifest.json")
         let source = try String(contentsOf: url, encoding: .utf8)
-        #expect(source.contains("\"version\": \"1.0.4\""))
-        #expect(!source.contains("\"version\": \"1.0.3\""))
+        #expect(source.contains("\"version\": \"1.0.5\""))
+        #expect(!source.contains("\"version\": \"1.0.4\""))
+        #expect(source.contains("\"js\": [\"text-filter.js\", \"content.js\"]"))
     }
 
     @Test
@@ -266,7 +283,7 @@ extension ApplicationControllerTests {
         let session = try #require(controller.session)
         #expect(session.isBridgeActive)
         let result = try await session.translateBridgeTexts(["Hello there", "已经是中文", "General Kenobi"])
-        #expect(result.translations == ["你好 Hello there", nil, "你好 General Kenobi"])
+        #expect(result.translations == ["你好 Hello there", "已经是中文", "你好 General Kenobi"])
         #expect(result.retryIndexes.isEmpty)
         await controller.stop()
     }
@@ -487,6 +504,72 @@ extension ApplicationControllerTests {
         #expect(result.retryIndexes.isEmpty)
         #expect(await coordinator.itemCounts == Array(repeating: 3, count: 10))
         #expect(!session.isRunning)
+        await controller.stop()
+    }
+
+    @Test
+    func localBridgeKeepsIneligibleFragmentsWithoutCallingBackend() async throws {
+        let coordinator = RecordingBridgeCoordinator()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                permission: FakePermissionController(snapshot: PermissionSnapshot(
+                    accessibilityTrusted: false, screenCaptureAuthorized: false,
+                    secureInputEnabled: false, sessionLocked: false)),
+                coordinator: coordinator
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        let result = try await session.translateBridgeTexts([
+            "https://example.com/a",
+            "name@example.com",
+            "timeout_ms",
+            "Hello there friends now",
+            "已经是中文",
+            "getUserProfile"
+        ])
+        #expect(result.translations == [
+            "https://example.com/a",
+            "name@example.com",
+            "timeout_ms",
+            "你好 Hello there friends now",
+            "已经是中文",
+            "getUserProfile"
+        ])
+        #expect(result.retryIndexes.isEmpty)
+        #expect(await coordinator.sources == [["Hello there friends now"]])
+        await controller.stop()
+    }
+
+    @Test
+    func localBridgeKeepsCopiedSourceAsSuccessfulOriginal() async throws {
+        let coordinator = EchoingCoordinator()
+        let logger = RecordingLogger()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                permission: FakePermissionController(snapshot: PermissionSnapshot(
+                    accessibilityTrusted: false, screenCaptureAuthorized: false,
+                    secureInputEnabled: false, sessionLocked: false)),
+                coordinator: coordinator,
+                logger: logger
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        let result = try await session.translateBridgeTexts(["Hello world from the page"])
+        #expect(result.translations == ["Hello world from the page"])
+        #expect(result.retryIndexes.isEmpty)
+        #expect(!logger.records.contains { $0.0 == "bridge_item_failed" })
         await controller.stop()
     }
 

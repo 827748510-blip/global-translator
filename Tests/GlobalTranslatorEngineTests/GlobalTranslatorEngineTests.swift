@@ -17,6 +17,7 @@ struct GlobalTranslatorEngineTests {
         #expect(output.translations.count == 13)
         // Local models translate more reliably with small batches.
         #expect(await backend.requests.map { $0.items.count } == [3, 3, 3, 3, 1])
+        #expect(await backend.requests.allSatisfy { $0.copiedSourcePolicy == .reject })
     }
 
     @Test
@@ -73,6 +74,7 @@ struct GlobalTranslatorEngineTests {
         )
         #expect(output.translations.count == 30)
         #expect(await backend.requests.map { $0.items.count } == Array(repeating: 3, count: 10))
+        #expect(await backend.requests.allSatisfy { $0.copiedSourcePolicy == .keep })
         #expect(!(await breaker.isOpen))
         #expect(TranslationCoordinator.localPageTextBatchSize == 3)
         #expect(TranslationCoordinator.localOverlayBatchSize == 3)
@@ -299,5 +301,110 @@ struct GlobalTranslatorEngineTests {
         #expect(!(await breaker.isOpen))
         await breaker.recordFailure(.networkFailure)
         #expect(await breaker.isOpen)
+    }
+
+    @Test
+    func pageTextKeepsCopiedLatinSourceWithoutFailingTheBatch() async throws {
+        let transport = RecordingHTTPTransport(response: HTTPResponse(
+            statusCode: 200,
+            headers: [:],
+            body: try localChatJSONObjectBody(["0": "Hello world"])
+        ))
+        let backend = try LocalOpenAIBackend(
+            baseURL: URL(string: "http://127.0.0.1:11434/v1")!,
+            model: "qwen-local",
+            transport: transport
+        )
+        let coordinator = TranslationCoordinator(
+            backends: [backend],
+            permissions: SystemPermissionController(snapshotProvider: { .allGranted })
+        )
+        let snapshot = makeSnapshot(
+            regions: [makeRegion(text: "Hello world")],
+            revision: 0,
+            source: .pageText
+        )
+        let output = try await coordinator.translate(
+            snapshot: snapshot,
+            backend: .local,
+            modelIdentifier: "qwen-local",
+            visionFallbackEnabled: false
+        )
+        #expect(output.translations.map(\.text) == ["Hello world"])
+        #expect(await transport.requests.count == 1)
+    }
+
+    @Test
+    func overlayCopiedLatinSourceStillFails() async throws {
+        let transport = RecordingHTTPTransport(response: HTTPResponse(
+            statusCode: 200,
+            headers: [:],
+            body: try localChatJSONObjectBody(["0": "Hello world"])
+        ))
+        let backend = try LocalOpenAIBackend(
+            baseURL: URL(string: "http://127.0.0.1:11434/v1")!,
+            model: "qwen-local",
+            transport: transport
+        )
+        let coordinator = TranslationCoordinator(
+            backends: [backend],
+            permissions: SystemPermissionController(snapshotProvider: { .allGranted })
+        )
+        let snapshot = makeSnapshot(regions: [makeRegion(text: "Hello world")], revision: 1)
+        await #expect(throws: TranslationError.invalidResponse("translation copied the source")) {
+            _ = try await coordinator.translate(
+                snapshot: snapshot,
+                backend: .local,
+                modelIdentifier: "qwen-local",
+                visionFallbackEnabled: false
+            )
+        }
+        #expect(await transport.requests.count == 1)
+    }
+
+    @Test
+    func selectionPageTextCopiedLatinSourceStillFails() async throws {
+        let transport = RecordingHTTPTransport(response: HTTPResponse(
+            statusCode: 200,
+            headers: [:],
+            body: try localChatJSONObjectBody(["0": "Hello world"])
+        ))
+        let backend = try LocalOpenAIBackend(
+            baseURL: URL(string: "http://127.0.0.1:11434/v1")!,
+            model: "qwen-local",
+            transport: transport
+        )
+        let coordinator = TranslationCoordinator(
+            backends: [backend],
+            permissions: SystemPermissionController(snapshotProvider: { .allGranted })
+        )
+        let region = TextRegion(
+            id: UUID(),
+            sourceText: "Hello world",
+            screenFrame: .zero,
+            confidence: 1,
+            source: .accessibility,
+            windowRevision: 0
+        )
+        let descriptor = ActiveWindowDescriptor(
+            pid: 0,
+            bundleIdentifier: "selection.translate",
+            windowID: nil,
+            frame: .zero,
+            revision: 0,
+            invalidatesOverlay: false
+        )
+        let snapshot = CaptureSnapshot(
+            window: CapturedWindow(descriptor: descriptor, regions: [region], source: .pageText)
+        )
+        await #expect(throws: TranslationError.invalidResponse("translation copied the source")) {
+            _ = try await coordinator.translate(
+                snapshot: snapshot,
+                backend: .local,
+                modelIdentifier: "qwen-local",
+                visionFallbackEnabled: false
+            )
+        }
+        #expect(await transport.requests.count == 1)
     }
 }
