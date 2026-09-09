@@ -121,30 +121,23 @@ public final class SelectionTranslatePanel: NSPanel {
 }
 
 /// NSEvent monitors are not Sendable; never capture `NSEvent` inside `assumeIsolated`.
+/// Closures stay `() -> T` (not `@Sendable`) because they capture `self`.
 private func selectionPanelRunOnMainActor(_ work: () -> Void) {
     if Thread.isMainThread {
-        MainActor.assumeIsolated {
-            work()
-        }
+        MainActor.assumeIsolated(work)
     } else {
         DispatchQueue.main.sync {
-            MainActor.assumeIsolated {
-                work()
-            }
+            MainActor.assumeIsolated(work)
         }
     }
 }
 
 private func selectionPanelRunOnMainActor<T: Sendable>(_ work: () -> T) -> T {
     if Thread.isMainThread {
-        return MainActor.assumeIsolated {
-            work()
-        }
+        return MainActor.assumeIsolated(work)
     }
     return DispatchQueue.main.sync {
-        MainActor.assumeIsolated {
-            work()
-        }
+        MainActor.assumeIsolated(work)
     }
 }
 
