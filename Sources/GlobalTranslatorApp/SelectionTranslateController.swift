@@ -159,7 +159,7 @@ public final class SelectionTranslateController {
     }
 
     private func cancelSettle() {
-        settleGate.next()
+        settleGate.invalidate()
         settleTask?.cancel()
         settleTask = nil
     }

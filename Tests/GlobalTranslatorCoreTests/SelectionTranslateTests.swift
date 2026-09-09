@@ -56,6 +56,8 @@ struct SelectionPointerAndDebounceTests {
         let second = gate.next()
         #expect(!gate.isCurrent(first))
         #expect(gate.isCurrent(second))
+        gate.invalidate()
+        #expect(!gate.isCurrent(second))
     }
 }
 

@@ -46,8 +46,13 @@ public struct SelectionSettleGate: Equatable, Sendable {
 
     public init() {}
 
-    public mutating func next() -> UInt64 {
+    /// Drop in-flight settle work without issuing a new token.
+    public mutating func invalidate() {
         generation &+= 1
+    }
+
+    public mutating func next() -> UInt64 {
+        invalidate()
         return generation
     }
 
