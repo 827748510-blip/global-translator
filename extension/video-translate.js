@@ -15,6 +15,7 @@
   const PREFETCH = 4;
   const DESKTOP_SYNC_MS = 3000;
   const HOST_ATTR = "data-gt-video-translate";
+  const PAINT_MS = 250;
 
   let enabled = false;
   let sidecarCues = [];
@@ -23,6 +24,7 @@
   let serviceError = false;
   let runningTranslate = false;
   let observer = null;
+  let paintTimer = null;
   const translations = new Map();
   const originalTrackModes = new WeakMap();
   const overlays = new Map();
@@ -37,8 +39,21 @@
     }
   }
 
+  function isVisibleVideo(video) {
+    if (!video || !video.isConnected) return false;
+    const rect = video.getBoundingClientRect();
+    return rect.width >= 24 && rect.height >= 24;
+  }
+
   function listVideos() {
-    return Array.prototype.slice.call(document.querySelectorAll("video"));
+    const all = Array.prototype.slice.call(document.querySelectorAll("video"));
+    const main = document.querySelector("video.html5-main-video");
+    if (main) {
+      const rest = all.filter((video) => video !== main && isVisibleVideo(video));
+      return [main].concat(rest);
+    }
+    const visible = all.filter(isVisibleVideo);
+    return visible.length > 0 ? visible : all;
   }
 
   function restoreTrackModes(video) {
@@ -99,13 +114,12 @@
     return collectTrackCues(video);
   }
 
-  function overlayParent(video) {
+  function overlayParent(_video) {
+    if (Youtube && typeof Youtube.overlayParentNode === "function") {
+      return Youtube.overlayParentNode(document);
+    }
     const full = document.fullscreenElement;
     if (full) return full;
-    if (video && video.closest) {
-      const player = video.closest("#movie_player, .html5-video-player");
-      if (player) return player;
-    }
     return document.documentElement || document.body;
   }
 
@@ -128,9 +142,15 @@
     }
     const host = document.createElement("div");
     host.setAttribute(HOST_ATTR, "");
-    host.style.all = "initial";
-    host.style.pointerEvents = "none";
-    host.style.zIndex = "2147483646";
+    host.style.cssText = [
+      "all:initial",
+      "display:block",
+      "position:fixed",
+      "pointer-events:none",
+      "z-index:2147483646"
+    ].join(";");
+    host.style.setProperty("z-index", "2147483646", "important");
+    host.style.setProperty("pointer-events", "none", "important");
     const shadow = host.attachShadow({ mode: "closed" });
     const box = document.createElement("div");
     box.setAttribute("part", "box");
@@ -164,15 +184,26 @@
   function positionOverlay(record, video) {
     const rect = video.getBoundingClientRect();
     const host = record.host;
-    host.style.position = "fixed";
-    host.style.left = Math.max(0, rect.left) + "px";
-    host.style.width = Math.max(0, rect.width) + "px";
+    const parent = host.parentNode;
     const height = 56;
-    host.style.height = height + "px";
-    host.style.top = Math.max(0, rect.bottom - height - 8) + "px";
     const offscreen = rect.width < 24 || rect.height < 24 ||
       rect.bottom < 8 || rect.top > window.innerHeight - 8;
     host.style.display = offscreen ? "none" : "block";
+    host.style.pointerEvents = "none";
+    host.style.setProperty("z-index", "2147483646", "important");
+    const useAbsolute = parent && parent !== document.documentElement && parent !== document.body;
+    if (useAbsolute) {
+      const parentRect = parent.getBoundingClientRect();
+      host.style.position = "absolute";
+      host.style.left = Math.max(0, rect.left - parentRect.left) + "px";
+      host.style.top = Math.max(0, rect.bottom - parentRect.top - height - 8) + "px";
+    } else {
+      host.style.position = "fixed";
+      host.style.left = Math.max(0, rect.left) + "px";
+      host.style.top = Math.max(0, rect.bottom - height - 8) + "px";
+    }
+    host.style.width = Math.max(0, rect.width) + "px";
+    host.style.height = height + "px";
   }
 
   function renderVideo(video) {
@@ -334,6 +365,22 @@
     observer = null;
   }
 
+  function startPaintLoop() {
+    if (paintTimer) return;
+    paintTimer = setInterval(() => {
+      safe(() => {
+        if (!enabled) return;
+        scan();
+        listVideos().forEach((video) => prefetch(video));
+      });
+    }, PAINT_MS);
+  }
+
+  function stopPaintLoop() {
+    if (paintTimer) clearInterval(paintTimer);
+    paintTimer = null;
+  }
+
   function clearOverlays() {
     boundList.slice().forEach((video) => {
       try { unbindVideo(video); } catch (_error) {}
@@ -402,6 +449,7 @@
       });
     }
     startObserver();
+    startPaintLoop();
     scan();
     markProbedSoon();
     window.addEventListener("scroll", onViewportChange, true);
@@ -416,6 +464,7 @@
     if (probeTimer) clearTimeout(probeTimer);
     probeTimer = null;
     stopObserver();
+    stopPaintLoop();
     window.removeEventListener("scroll", onViewportChange, true);
     window.removeEventListener("resize", onViewportChange);
     document.removeEventListener("fullscreenchange", onViewportChange);

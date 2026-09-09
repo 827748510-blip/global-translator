@@ -53,7 +53,12 @@ assert(videoJs.indexOf("type: \"translate\"") !== -1, "reuses existing translate
 assert(popupJs.indexOf("YouTube 请先打开播放器字幕") !== -1, "popup youtube range");
 assert(videoJs.indexOf("GlobalTranslatorYouTubeCaptions") !== -1, "content uses youtube helper");
 assert(videoJs.indexOf("noYouTubeCaptions") !== -1, "youtube empty copy wired");
-assert(videoJs.indexOf("fullscreenchange") !== -1, "reposition in fullscreen");
+assert(videoJs.indexOf("data-gt-video-translate") !== -1, "overlay host marker");
+assert(videoJs.indexOf("#movie_player") === -1, "overlay not mounted inside youtube player");
+assert(videoJs.indexOf("html5-main-video") !== -1, "prefers youtube main video");
+assert(videoJs.indexOf("overlayParentNode") !== -1, "uses document/fullscreen overlay parent");
+assert(videoJs.indexOf("startPaintLoop") !== -1, "keeps overlay painted on youtube");
+assert(youtubePage.indexOf("post(\"live\"") !== -1, "page world live caption feed");
 assert(youtubeJs.indexOf("getUserMedia") === -1, "youtube helper no getUserMedia");
 assert(youtubePage.indexOf("getUserMedia") === -1, "youtube page no getUserMedia");
 assert(youtubeJs.toLowerCase().indexOf("whisper") === -1, "no whisper in youtube helper");

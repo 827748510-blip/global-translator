@@ -43,8 +43,9 @@
 
   function isTimedTextUrl(url) {
     const value = String(url || "");
-    if (!value) return false;
-    return /\/api\/timedtext(?:\?|$|#)/i.test(value);
+    if (!value || /timedtext_video/i.test(value)) return false;
+    if (/\/api\/timedtext(?:\?|$|#)/i.test(value)) return true;
+    return /\/timedtext(?:\?|$|#)/i.test(value);
   }
 
   function fmtHintFromUrl(url) {
@@ -69,7 +70,7 @@
     let data = payload;
     if (typeof payload === "string") {
       try {
-        data = JSON.parse(payload);
+        data = JSON.parse(String(payload).replace(/^\uFEFF/, "").replace(/^\)\]\}['"]?\s*/, ""));
       } catch (_error) {
         return [];
       }
@@ -211,18 +212,47 @@
     return copy;
   }
 
+  function captionSelectors() {
+    return ".ytp-caption-segment, .caption-visual-line";
+  }
+
   function collectDomCaptionText(doc) {
-    if (!doc || !doc.querySelectorAll) return "";
-    const nodes = doc.querySelectorAll(".ytp-caption-segment");
     const parts = [];
-    for (let i = 0; i < nodes.length; i++) {
-      const text = Cues ? Cues.normalizeCueText(nodes[i].textContent) : String(nodes[i].textContent || "").trim();
-      if (text) parts.push(text);
+    function walk(root) {
+      if (!root || !root.querySelectorAll) return;
+      const nodes = root.querySelectorAll(captionSelectors());
+      for (let i = 0; i < nodes.length; i++) {
+        const text = Cues ? Cues.normalizeCueText(nodes[i].textContent) : String(nodes[i].textContent || "").trim();
+        if (text) parts.push(text);
+      }
+      const all = root.querySelectorAll("*");
+      for (let i = 0; i < all.length; i++) {
+        if (all[i] && all[i].shadowRoot) walk(all[i].shadowRoot);
+      }
     }
+    walk(doc);
     if (parts.length > 0) return parts.join(" ");
-    const container = doc.querySelector(".ytp-caption-window-container, .caption-window");
+    if (!doc || !doc.querySelector) return "";
+    const container = doc.querySelector(".ytp-caption-window-container, .caption-window, .ytp-caption-window-bottom");
     if (!container) return "";
     return Cues ? Cues.normalizeCueText(container.textContent) : String(container.textContent || "").trim();
+  }
+
+  function overlayParentNode(doc) {
+    if (!doc) return null;
+    if (doc.fullscreenElement) return doc.fullscreenElement;
+    return doc.documentElement || doc.body || null;
+  }
+
+  function selectCues(timed, live, time) {
+    const timedList = Array.isArray(timed) ? timed : [];
+    const liveList = Array.isArray(live) ? live : [];
+    if (timedList.length === 0) return liveList;
+    const t = Number(time);
+    if (!Number.isFinite(t)) return timedList;
+    if (Cues && Cues.activeCue(timedList, t)) return timedList;
+    if (liveList.length > 0 && Cues && Cues.activeCue(liveList, t)) return liveList;
+    return timedList;
   }
 
   function userCaptionsEnabledFromDom(doc) {
@@ -261,7 +291,7 @@
 
   function onNavigate() {
     const nextId = currentVideoId(typeof location !== "undefined" ? location.href : "");
-    if (nextId === videoId && timedtextCues.length > 0) return;
+    if (!nextId || nextId === videoId) return;
     videoId = nextId;
     resetCues();
     notify();
@@ -275,7 +305,7 @@
   }
 
   function readDomCaptions() {
-    if (!enabled || timedtextCues.length > 0) return;
+    if (!enabled) return;
     if (typeof document === "undefined") return;
     const text = collectDomCaptionText(document);
     const video = document.querySelector && document.querySelector("video.html5-main-video, video");
@@ -336,13 +366,21 @@
         if (!data || data.source !== SOURCE_PAGE) return;
         if (data.kind === "timedtext") {
           applyTimedText(data.body, data.fmtHint);
+        } else if (data.kind === "live") {
+          const video = document.querySelector && document.querySelector("video.html5-main-video, video");
+          const time = Number(data.time);
+          const t = Number.isFinite(time) ? time : (video ? (video.currentTime || 0) : 0);
+          liveCues = liveCueUpdate(liveCues, data.body, t);
+          if (liveCues.length > 0 || data.body) notify();
         } else if (data.kind === "navigate") {
           const nextId = data.videoId || currentVideoId(location.href);
-          if (nextId !== videoId) {
-            videoId = nextId;
-            resetCues();
-            notify();
+          if (!nextId || nextId === videoId) {
+            videoId = nextId || videoId;
+            return;
           }
+          videoId = nextId;
+          resetCues();
+          notify();
         }
       };
       window.addEventListener("message", messageListener);
@@ -377,9 +415,9 @@
     byePage();
   }
 
-  function cuesFor(_video) {
-    if (timedtextCues.length > 0) return timedtextCues;
-    return liveCues;
+  function cuesFor(video) {
+    const time = video && Number(video.currentTime);
+    return selectCues(timedtextCues, liveCues, time);
   }
 
   const api = {
@@ -398,6 +436,8 @@
     liveCueUpdate,
     collectDomCaptionText,
     userCaptionsEnabledFromDom,
+    overlayParentNode,
+    selectCues,
     isActivePage,
     start,
     stop,

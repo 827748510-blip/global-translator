@@ -150,6 +150,8 @@ struct ExtensionBridgeServerTests {
         #expect(visual.contains("configuration.capturesAudio = false"))
         #expect(!visual.contains("capturesAudio = true"))
         #expect(videoJs.contains("GlobalTranslatorYouTubeCaptions"))
+        #expect(videoJs.contains("data-gt-video-translate"))
+        #expect(!videoJs.contains("#movie_player"))
         #expect(contentJs.contains("ytp-caption-segment"))
         #expect(!youtubeJs.lowercased().contains("whisper"))
         #expect(!youtubePage.contains("setOption"))

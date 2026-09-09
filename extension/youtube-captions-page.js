@@ -1,6 +1,6 @@
 // Phase B1 page-world observer for YouTube. Runs in MAIN world at
-// document_start so in-session /api/timedtext can be cloned after the
-// player already requested it. Never constructs timedtext URLs, never
+// document_start so in-session timedtext can be cloned after the
+// player already requested it. Never constructs caption URLs, never
 // copies PoToken, never clicks CC, never turns captions on via the player.
 (() => {
   if (window.__gtYoutubeCaptionsPage) return;
@@ -12,20 +12,32 @@
   let lastTimedText = null;
   let lastVideoId = "";
   let relay = false;
+  let liveTimer = null;
 
   function post(kind, payload) {
     try {
-      window.postMessage({ source: SOURCE_PAGE, kind, body: payload && payload.body, fmtHint: payload && payload.fmtHint, videoId: payload && payload.videoId }, origin);
+      window.postMessage({
+        source: SOURCE_PAGE,
+        kind,
+        body: payload && payload.body,
+        fmtHint: payload && payload.fmtHint,
+        videoId: payload && payload.videoId,
+        time: payload && payload.time
+      }, origin);
     } catch (_error) {}
   }
 
   function isTimedTextUrl(url) {
-    return /\/api\/timedtext(?:\?|$|#)/i.test(String(url || ""));
+    const value = String(url || "");
+    if (!value || /timedtext_video/i.test(value)) return false;
+    if (/\/api\/timedtext(?:\?|$|#)/i.test(value)) return true;
+    return /\/timedtext(?:\?|$|#)/i.test(value);
   }
 
   function hrefOf(input) {
     if (typeof input === "string") return input;
     if (input && typeof input.url === "string") return input.url;
+    if (typeof URL !== "undefined" && input instanceof URL) return String(input);
     return "";
   }
 
@@ -55,10 +67,48 @@
     if (relay) post("timedtext", lastTimedText);
   }
 
+  function collectCaptionText(root) {
+    const parts = [];
+    function walk(node) {
+      if (!node || !node.querySelectorAll) return;
+      const nodes = node.querySelectorAll(".ytp-caption-segment, .caption-visual-line");
+      for (let i = 0; i < nodes.length; i++) {
+        const text = String(nodes[i].textContent || "").replace(/\s+/g, " ").trim();
+        if (text) parts.push(text);
+      }
+      const all = node.querySelectorAll("*");
+      for (let i = 0; i < all.length; i++) {
+        if (all[i] && all[i].shadowRoot) walk(all[i].shadowRoot);
+      }
+    }
+    walk(root || document);
+    if (parts.length > 0) return parts.join(" ");
+    const container = (root || document).querySelector &&
+      (root || document).querySelector(".ytp-caption-window-container, .caption-window");
+    return container ? String(container.textContent || "").replace(/\s+/g, " ").trim() : "";
+  }
+
+  function emitLive() {
+    if (!relay) return;
+    const text = collectCaptionText(document);
+    const video = document.querySelector("video.html5-main-video") || document.querySelector("video");
+    post("live", { body: text, time: video ? video.currentTime : 0 });
+  }
+
+  function scheduleLive() {
+    if (!relay) return;
+    if (liveTimer) return;
+    liveTimer = setTimeout(() => {
+      liveTimer = null;
+      try { emitLive(); } catch (_error) {}
+    }, 60);
+  }
+
   function replay() {
-    if (lastTimedText) post("timedtext", lastTimedText);
     const videoId = currentVideoId();
     if (videoId) post("navigate", { videoId });
+    if (lastTimedText) post("timedtext", lastTimedText);
+    emitLive();
   }
 
   function wrapFetch() {
@@ -67,18 +117,18 @@
     window.fetch = function (input, init) {
       const promise = origFetch.apply(this, arguments);
       try {
-        const href = hrefOf(input);
-        if (isTimedTextUrl(href)) {
-          const hint = fmtHintFromUrl(href);
-          promise.then((response) => {
-            try {
-              if (!response || typeof response.clone !== "function") return;
-              response.clone().text().then((body) => {
-                rememberTimedText(body, hint);
-              }).catch(() => {});
-            } catch (_error) {}
-          }).catch(() => {});
-        }
+        promise.then((response) => {
+          try {
+            const href = hrefOf(input) || (response && response.url) || "";
+            const responseUrl = (response && response.url) || "";
+            if (!isTimedTextUrl(href) && !isTimedTextUrl(responseUrl)) return;
+            const hint = fmtHintFromUrl(href) || fmtHintFromUrl(responseUrl);
+            if (!response || typeof response.clone !== "function") return;
+            response.clone().text().then((body) => {
+              rememberTimedText(body, hint);
+            }).catch(() => {});
+          } catch (_error) {}
+        }).catch(() => {});
       } catch (_error) {}
       return promise;
     };
@@ -100,12 +150,15 @@
       return origOpen.apply(this, arguments);
     };
     XHR.prototype.send = function () {
-      if (this.__gtIsTimedText) {
+      if (!this.__gtCaptionBound) {
+        this.__gtCaptionBound = true;
         this.addEventListener("load", function () {
           try {
+            const responseUrl = this.responseURL || "";
+            if (!this.__gtIsTimedText && !isTimedTextUrl(responseUrl)) return;
             const body = this.responseText;
             if (typeof body === "string" && body) {
-              rememberTimedText(body, this.__gtTimedTextHint || fmtHintFromUrl(this.responseURL));
+              rememberTimedText(body, this.__gtTimedTextHint || fmtHintFromUrl(responseUrl));
             }
           } catch (_error) {}
         });
@@ -117,8 +170,9 @@
   function emitNavigate() {
     const videoId = currentVideoId();
     if (videoId === lastVideoId) return;
+    const previous = lastVideoId;
     lastVideoId = videoId;
-    lastTimedText = null;
+    if (previous) lastTimedText = null;
     post("navigate", { videoId });
   }
 
@@ -135,9 +189,18 @@
     } else if (data.kind === "bye") {
       relay = false;
       lastTimedText = null;
+      if (liveTimer) {
+        clearTimeout(liveTimer);
+        liveTimer = null;
+      }
     }
   });
 
   document.addEventListener("yt-navigate-finish", emitNavigate);
   window.addEventListener("yt-navigate-finish", emitNavigate);
+
+  const domObserver = new MutationObserver(scheduleLive);
+  try {
+    domObserver.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+  } catch (_error) {}
 })();

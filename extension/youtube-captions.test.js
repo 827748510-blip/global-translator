@@ -101,6 +101,43 @@ const fakeDoc = {
 };
 assertEqual(yt.collectDomCaptionText(fakeDoc), "Hello world", "dom segments");
 
+const shadowSegment = { textContent: "Hello from shadow" };
+const shadowRoot = {
+  querySelectorAll(sel) {
+    if (String(sel).indexOf("ytp-caption-segment") !== -1) return [shadowSegment];
+    return [];
+  }
+};
+const shadowHost = { shadowRoot, querySelectorAll() { return []; } };
+const shadowDoc = {
+  querySelectorAll(sel) {
+    if (sel === "*") return [shadowHost];
+    return [];
+  },
+  querySelector() { return null; }
+};
+assertEqual(yt.collectDomCaptionText(shadowDoc), "Hello from shadow", "shadow captions");
+
+const parentDoc = { documentElement: { id: "html" }, body: { id: "body" } };
+assertEqual(yt.overlayParentNode(parentDoc).id, "html", "overlay mounts on documentElement");
+const fullDoc = { fullscreenElement: { id: "full" }, documentElement: { id: "html" } };
+assertEqual(yt.overlayParentNode(fullDoc).id, "full", "overlay follows fullscreen");
+
+const timed = [{ start: 0, end: 2, text: "Hello from YouTube" }];
+const liveOnly = [{ start: 10, end: 12, text: "Hello now" }];
+assertEqual(yt.selectCues(timed, liveOnly, 1)[0].text, "Hello from YouTube", "timedtext feeds overlay when active");
+assertEqual(yt.selectCues(timed, liveOnly, 10.5)[0].text, "Hello now", "live fills overlay when timedtext misses");
+assertEqual(yt.selectCues([], liveOnly, 10.5)[0].text, "Hello now", "dom fallback alone");
+const livePaint = cues.overlayState({
+  enabled: true,
+  cues: liveOnly,
+  time: 10.5,
+  translations: { "Hello now": "现在你好" }
+});
+assertEqual(livePaint.cueText, "现在你好", "live cue paints chinese overlay");
+
+assertEqual(yt.parseTimedText(")]}'\n" + json3)[0].text, "Hello from YouTube", "json3 xssi prefix");
+
 const captionsOff = {
   querySelectorAll() { return []; },
   querySelector() { return null; }
@@ -161,5 +198,9 @@ assert(isolatedJs.toLowerCase().indexOf("whisper") === -1, "no whisper in isolat
 assert(pageJs.toLowerCase().indexOf("whisper") === -1, "no whisper in page");
 assert(isolatedJs.indexOf("/api/timedtext") === -1, "isolated does not name timedtext path for fetching");
 assert(pageJs.indexOf("https://www.youtube.com/api/timedtext?") === -1, "page does not build timedtext urls");
+assert(pageJs.indexOf("post(\"live\"") !== -1 || pageJs.indexOf("post('live'") !== -1 || pageJs.indexOf('kind: "live"') !== -1, "page relays live captions");
+assert(isolatedJs.indexOf("data.kind === \"live\"") !== -1, "isolated consumes live captions");
+assert(isolatedJs.indexOf("overlayParentNode") !== -1, "overlay parent helper");
+assert(isolatedJs.indexOf("selectCues") !== -1, "cue selection for overlay");
 
 console.log("extension/youtube-captions.test.js ok");
