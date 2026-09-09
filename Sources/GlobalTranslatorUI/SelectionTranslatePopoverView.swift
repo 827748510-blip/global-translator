@@ -1,11 +1,28 @@
 import SwiftUI
+import Combine
 import GlobalTranslatorCore
+
+/// Live chrome for the selection popover (scene + copy button). Observed so
+/// copy feedback can update without rebuilding the hosting view — replacing
+/// `NSHostingView` on copy was resetting feedback to idle on Mac.
+@MainActor
+public final class SelectionPopoverChrome: ObservableObject {
+    @Published public var optimizeMode: PromptOptimizeMode = .generativePrompt
+    @Published public var copyFeedback: SelectionCopyFeedback = .idle
+
+    public init(
+        optimizeMode: PromptOptimizeMode = .generativePrompt,
+        copyFeedback: SelectionCopyFeedback = .idle
+    ) {
+        self.optimizeMode = optimizeMode
+        self.copyFeedback = copyFeedback
+    }
+}
 
 /// Interactive selection popover: truncated original, result, 翻译 / 优化提示词 / 拷贝.
 public struct SelectionTranslatePopoverView: View {
     let content: SelectionPopoverContent
-    var optimizeMode: PromptOptimizeMode = .generativePrompt
-    var copyFeedback: SelectionCopyFeedback = .idle
+    @ObservedObject var chrome: SelectionPopoverChrome
     var onCopy: () -> Void = {}
     var onTranslate: () -> Void = {}
     var onOptimize: () -> Void = {}
@@ -15,16 +32,14 @@ public struct SelectionTranslatePopoverView: View {
 
     public init(
         content: SelectionPopoverContent,
-        optimizeMode: PromptOptimizeMode = .generativePrompt,
-        copyFeedback: SelectionCopyFeedback = .idle,
+        chrome: SelectionPopoverChrome,
         onCopy: @escaping () -> Void = {},
         onTranslate: @escaping () -> Void = {},
         onOptimize: @escaping () -> Void = {},
         onOptimizeModeChange: @escaping (PromptOptimizeMode) -> Void = { _ in }
     ) {
         self.content = content
-        self.optimizeMode = optimizeMode
-        self.copyFeedback = copyFeedback
+        self.chrome = chrome
         self.onCopy = onCopy
         self.onTranslate = onTranslate
         self.onOptimize = onOptimize
@@ -63,7 +78,7 @@ public struct SelectionTranslatePopoverView: View {
                 .labelsHidden()
                 .disabled(content.status == .optimizing)
                 .accessibilityLabel("优化场景")
-                .accessibilityValue(optimizeMode.title)
+                .accessibilityValue(chrome.optimizeMode.title)
             }
             if content.showsActionButtons {
                 HStack(spacing: GTSpacing.xSmall) {
@@ -79,22 +94,22 @@ public struct SelectionTranslatePopoverView: View {
                             .buttonStyle(.bordered)
                             .controlSize(.small)
                             .disabled(content.status == .optimizing)
-                            .accessibilityHint(optimizeMode.optimizeAccessibilityHint)
+                            .accessibilityHint(chrome.optimizeMode.optimizeAccessibilityHint)
                     }
                     if content.allowsCopy {
                         Button(action: onCopy) {
                             HStack(spacing: GTSpacing.xxSmall) {
-                                if copyFeedback == .copied {
+                                if chrome.copyFeedback == .copied {
                                     Image(systemName: "checkmark")
                                         .accessibilityHidden(true)
                                 }
-                                Text(copyFeedback.title)
+                                Text(chrome.copyFeedback.title)
                             }
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
-                        .accessibilityLabel(copyFeedback.title)
-                        .accessibilityHint(copyFeedback == .idle ? "将结果复制到剪贴板" : copyFeedback.title)
+                        .accessibilityLabel(chrome.copyFeedback.title)
+                        .accessibilityHint(chrome.copyFeedback == .idle ? "将结果复制到剪贴板" : chrome.copyFeedback.title)
                     }
                 }
             }
@@ -109,7 +124,7 @@ public struct SelectionTranslatePopoverView: View {
 
     private var modeBinding: Binding<PromptOptimizeMode> {
         Binding(
-            get: { optimizeMode },
+            get: { chrome.optimizeMode },
             set: { onOptimizeModeChange($0) }
         )
     }

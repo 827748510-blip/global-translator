@@ -121,19 +121,19 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     public var onTranslate: (() -> Void)?
     public var onOptimize: (() -> Void)?
     public var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
-    public var optimizeMode: PromptOptimizeMode = .generativePrompt {
-        didSet {
-            guard oldValue != optimizeMode, currentContent != nil else { return }
-            presentCurrent(resize: true)
-        }
+    public var optimizeMode: PromptOptimizeMode {
+        get { chrome.optimizeMode }
+        set { chrome.optimizeMode = newValue }
     }
-    public private(set) var copyFeedback: SelectionCopyFeedback = .idle
+    public var copyFeedback: SelectionCopyFeedback { chrome.copyFeedback }
 
+    private let chrome = SelectionPopoverChrome()
     private var panel: SelectionTranslatePanel?
     private let visibleFramesProvider: () -> [CGRect]
     private let pasteboardWriter: (String) throws -> Void
     private let copyFeedbackDelay: Duration
     private var copyFeedbackTask: Task<Void, Never>?
+    private var copyFeedbackGeneration: UInt64 = 0
 
     public var panelFrame: CGRect? { panel?.isVisible == true ? panel?.frame : nil }
 
@@ -154,8 +154,7 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     }
 
     public func show(_ content: SelectionPopoverContent) {
-        copyFeedbackTask?.cancel()
-        copyFeedback = .idle
+        resetCopyFeedback(.idle)
         currentContent = content
         presentCurrent(resize: true)
     }
@@ -176,8 +175,7 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
         )
         let hosting = NSHostingView(rootView: SelectionTranslatePopoverView(
             content: content,
-            optimizeMode: optimizeMode,
-            copyFeedback: copyFeedback,
+            chrome: chrome,
             onCopy: { [weak self] in self?.copyCurrentTranslation() },
             onTranslate: { [weak self] in self?.onTranslate?() },
             onOptimize: { [weak self] in self?.onOptimize?() },
@@ -207,9 +205,7 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     }
 
     public func dismiss() {
-        copyFeedbackTask?.cancel()
-        copyFeedbackTask = nil
-        copyFeedback = .idle
+        resetCopyFeedback(.idle)
         currentContent = nil
         panel?.stopDismissalMonitors()
         panel?.orderOut(nil)
@@ -235,18 +231,29 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
         }
     }
 
-    private func applyCopyFeedback(_ feedback: SelectionCopyFeedback) {
+    private func resetCopyFeedback(_ feedback: SelectionCopyFeedback) {
+        copyFeedbackGeneration &+= 1
         copyFeedbackTask?.cancel()
-        copyFeedback = feedback
-        presentCurrent(resize: true)
+        copyFeedbackTask = nil
+        chrome.copyFeedback = feedback
+    }
+
+    /// Sets copy-button chrome immediately. Does not rebuild the panel — that
+    /// was resetting feedback to idle via dismissal / hosting-view replacement.
+    private func applyCopyFeedback(_ feedback: SelectionCopyFeedback) {
+        copyFeedbackGeneration &+= 1
+        let token = copyFeedbackGeneration
+        copyFeedbackTask?.cancel()
+        chrome.copyFeedback = feedback
+        let delay = copyFeedbackDelay
         copyFeedbackTask = Task { @MainActor [weak self] in
-            guard let delay = self?.copyFeedbackDelay else { return }
-            try? await Task.sleep(for: delay)
-            guard let self, !Task.isCancelled else { return }
-            self.copyFeedback = .idle
-            if self.currentContent != nil {
-                self.presentCurrent(resize: true)
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
             }
+            guard let self, !Task.isCancelled, self.copyFeedbackGeneration == token else { return }
+            self.chrome.copyFeedback = .idle
         }
     }
 

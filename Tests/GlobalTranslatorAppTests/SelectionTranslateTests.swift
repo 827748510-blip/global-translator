@@ -322,8 +322,11 @@ struct SelectionTranslateControllerTests {
         reader.setResult(.snapshot(snapshot("Another sentence")))
         translator.result = "另一句"
         select(controller)
-        try await waitUntil { popover.currentContent?.original == "Another sentence" }
-        #expect(popover.currentContent?.displayTranslation == "另一句")
+        try await waitUntil(timeout: 2) {
+            popover.currentContent?.status == .translated
+                && popover.currentContent?.displayTranslation == "另一句"
+        }
+        #expect(popover.currentContent?.original == "Another sentence")
 
         popover.simulateUserDismiss()
         reader.setResult(.empty)
@@ -331,7 +334,10 @@ struct SelectionTranslateControllerTests {
         try await Task.sleep(for: .milliseconds(25))
         reader.setResult(.snapshot(snapshot("Another sentence")))
         select(controller)
-        try await waitUntil { popover.currentContent?.status == .translated }
+        try await waitUntil(timeout: 2) {
+            popover.currentContent?.status == .translated
+                && popover.currentContent?.displayTranslation == "另一句"
+        }
         #expect(popover.currentContent?.original == "Another sentence")
     }
 
@@ -534,8 +540,8 @@ struct SelectionTranslateControllerTests {
         #expect(!popover.shown.contains(where: { $0.status == .optimized }))
     }
 
-    private func waitUntil(_ condition: @escaping () -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(1)
+    private func waitUntil(_ condition: @escaping () -> Bool, timeout: TimeInterval = 1) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
         while !condition(), Date() < deadline {
             try await Task.sleep(for: .milliseconds(5))
         }
