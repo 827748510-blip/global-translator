@@ -43,7 +43,7 @@
 ## 失败表现
 
 - 桌面端未运行或 `POST /translate` 失败：叠加「翻译服务不可用」，继续播放。外语 cue 等译文超过数秒仍无结果时同样提示「翻译服务不可用」，不停播。
-- 打开开关后一段时间仍无外语 cue：HTML5 页叠加「未检测到外语内容」；YouTube 且 cue 为空时叠加「未检测到外语字幕（请先打开 YouTube 字幕）」；**已开简体中文轨**时叠加「未检测到外语内容」，原字幕保持不动，`data-gt-vt` 为 `on skip`（不是 `on wait`）。
+- 打开开关后一段时间仍无外语 cue：HTML5 页叠加「未检测到外语内容」；YouTube 且 cue 为空时叠加「未检测到外语字幕（请先打开 YouTube 字幕）」；**选用的 timedtext/live cue 文本已是简体中文**（CC 菜单里的中文轨，不是「英语>>中文」）时叠加「未检测到外语内容」，原字幕保持不动，`data-gt-vt` 为 `on skip`（不是 `on wait`）。
 - 脚本异常被吞掉，不得中断页面。
 
 侧车字幕只放在 `chrome.storage.session`；译文缓存在内存，不写盘。API Key 仍只在 macOS Keychain，扩展请求体只有待译句子。`/health` 会带上 `videoTranslateEnabled`，扩展跟菜单栏开关走。
@@ -69,10 +69,12 @@
 
 推荐片源：
 
-- 英文 CC：`https://www.youtube.com/watch?v=Ks-_Mh1QhMc`
-- 简体中文 CC（反例，应提示而非空等）：`https://www.youtube.com/watch?v=iJ53c1zKgr8`（走廊片「我在伦敦住了一家五星级酒店」）
+- 英文 CC（人工轨，叠层应变 `on zh`）：`https://www.youtube.com/watch?v=Ks-_Mh1QhMc`（TED / Amy Cuddy）
+- 英语自动生成字幕（外语路径，**不是** `on skip`）：`https://www.youtube.com/watch?v=iJ53c1zKgr8`（走廊片「我在伦敦住了一家五星级酒店」）。播放器里的「英语>>中文」只是 YouTube 把英文字幕机翻显示，timedtext 仍是外语。
 
 不要用只有烧录字幕、没有 CC 按钮的片子。页面简介被整页翻译成中文 **不算** 通过。
+
+**`on skip` / 「未检测到外语内容」** 不拿走廊片做线上验收：该片没有稳定的原生简体字幕轨。跳过逻辑由 Node 单测覆盖（`subtitle-cues.test.js` / `youtube-captions.test.js` 里的简体 live cue），本机还可看 Phase A 演示页 9–12 秒那条「这是中文，不应再译」。公开 YouTube 上「CC 菜单里单独列出的中文（简体）人工轨」（不是自动翻译、也不是「英语>>中文」）会随上传者改轨，这里不钉死某个 video id；若本机遇到这种轨，预期是 `on skip` + 「未检测到外语内容」，且不停播。
 
 1. 保持桌面端运行、视频翻译 **开**、扩展已加载（若刚更新，在 `chrome://extensions` 点「重新加载」，然后 **刷新 YouTube 标签页**；已打开的标签不会自动注入新脚本）。
 2. 打开上述 watch 页，先 **不要** 开 CC：播放数秒后，**视频画面底部**可出现「未检测到外语字幕（请先打开 YouTube 字幕）」；视频必须继续。DevTools 应能看到 `<body>` 下的 `[data-gt-video-translate]`（不要找 `#movie_player` 内部，也不要找 `<html>` 直接子节点以外的旧挂载点）。
@@ -84,7 +86,8 @@
 8. 全屏播放：中文叠层仍应可见。
 9. 关掉菜单栏「视频翻译」：叠层消失，YouTube 字幕与播放不受影响。
 10. **反例（应失败/提示，不算回归）**：CC 始终关闭；无字幕的 Shorts；YouTube Music；第三方博客里的 youtube-nocookie iframe。
-11. **走廊片中文轨**（`iJ53c1zKgr8`）：打开播放器简体中文字幕。应出现「未检测到外语内容」（或保持原中文幕、不叠另一层假译文）；`data-gt-vt` 为 `on skip`，**不得**停在 `on wait`。`chrome.storage.local.videoTranslateEnabled` 须与菜单栏开关一致（桌面开则为 `true`）。不要去 `/translate` 把中文再译一遍。
+11. **走廊片自动英文字幕**（`iJ53c1zKgr8`）：打开播放器 **English (auto-generated)**。不要把 YouTube「英语>>中文」当成原生简体轨。timedtext 是外语，GT 叠层应变 `on zh`（允许短暂 `on wait`），**不应**稳定停在 `on skip`。`chrome.storage.local.videoTranslateEnabled` 须与菜单栏/桥 `videoTranslateEnabled` 一致（桌面开则为 `true`）。YouTube 自己画的中文机翻框不算 GT 叠层。
+12. **`on skip`**：用自动化单测 + Phase A 演示页中文 cue；不要用走廊片当 skip 样例。
 
 诊断（不打印原文、不含 cue 文本）：
 
@@ -105,7 +108,7 @@ document.querySelector("[data-gt-video-translate]")?.getAttribute("data-gt-vt")
 | `pw1` / `pw0` | MAIN 世界 `youtube-captions-page.js` 是否打了 `data-gt-ytcap` |
 | `dom1` / `dom0` | 隔离世界能否读到 `.ytp-caption-segment` |
 
-英文 CC 可见但没有中文叠层时：有 host 且 `on wait` = 正在等这条 cue 的 `/translate`（数秒后应变 `zh` 或出现「翻译服务不可用」）；`on zh` 但看不见 = CSS/挂载问题；`on skip` = 当前轨已是简体中文；`off` 且 `dom0` = 没抓到画面字幕；`pw0` = 页脚本没注入（仍应靠 `dom1` 走 live DOM）。需要控制台轨迹时：`localStorage.setItem("gtVtDebug","1")` 后刷新，过滤 `[gt-vt]`（仍不含字幕原文）。
+英文 CC 可见但没有中文叠层时：有 host 且 `on wait` = 正在等这条 cue 的 `/translate`（数秒后应变 `zh` 或出现「翻译服务不可用」）；`on zh` 但看不见 = CSS/挂载问题；`on skip` = **当前选用的 cue 文本已是简体中文**（不是 YouTube「英语>>中文」机翻显示）；`off` 且 `dom0` = 没抓到画面字幕；`pw0` = 页脚本没注入（仍应靠 `dom1` 走 live DOM）。走廊片在自动英文字幕下应走 `wait`/`zh`，不要当 skip 样例。需要控制台轨迹时：`localStorage.setItem("gtVtDebug","1")` 后刷新，过滤 `[gt-vt]`（仍不含字幕原文）。
 
 ### 自动化（任意机器）
 

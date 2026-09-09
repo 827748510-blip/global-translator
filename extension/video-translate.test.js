@@ -126,4 +126,14 @@ const mid = cues.overlayState({
 assertEqual(mid.cueText, "来自轨道的问候", "translated overlay text");
 assertEqual(mid.message, "", "no failure message when translated");
 
+const docs = fs.readFileSync(path.join(dir, "../docs/video-translate.md"), "utf8");
+assert(docs.indexOf("Ks-_Mh1QhMc") !== -1, "docs keep TED english fixture");
+assert(docs.indexOf("iJ53c1zKgr8") !== -1, "docs still list corridor video");
+assert(docs.indexOf("英语>>中文") !== -1, "docs distinguish youtube UI machine translation");
+assert(docs.indexOf("English (auto-generated)") !== -1, "corridor live path is auto english");
+assert(docs.indexOf("走廊片中文轨") === -1, "docs no longer treat corridor as native zh track");
+assert(docs.indexOf("不要用走廊片当 skip") !== -1, "docs say skip is not the corridor fixture");
+const youtubeCaptionsTest = fs.readFileSync(path.join(dir, "youtube-captions.test.js"), "utf8");
+assert(youtubeCaptionsTest.indexOf("Do not treat YouTube iJ53c1zKgr8") !== -1, "unit skip fixture is not the corridor watch page");
+
 console.log("extension/video-translate.test.js ok");

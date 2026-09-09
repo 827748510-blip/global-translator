@@ -80,7 +80,7 @@ assertEqual(cues.shouldSendForVideoTranslate("これは日本語です"), true, 
 assertEqual(cues.shouldSendForVideoTranslate("안녕하세요"), true, "korean");
 assertEqual(cues.shouldSendForVideoTranslate("这是中文"), false, "chinese skipped");
 assertEqual(cues.shouldSendForVideoTranslate("你好世界！"), false, "chinese punct");
-assertEqual(cues.shouldSendForVideoTranslate("我很兴奋能去一个有空调的地方。酒店就"), false, "corridor live chinese");
+assertEqual(cues.shouldSendForVideoTranslate("我很兴奋能去一个有空调的地方。酒店就"), false, "native zh cue skipped");
 assertEqual(cues.shouldSendForVideoTranslate("我很兴奋能去 Aethos 酒店住一晚"), false, "chinese with latin name");
 assertEqual(cues.shouldSendForVideoTranslate(""), false, "empty");
 assertEqual(cues.hasForeignCues(srtCues), true, "srt has foreign");
@@ -139,14 +139,14 @@ const chineseActive = cues.overlayState({
 });
 assertDeep(chineseActive, { show: false, cueText: "", message: "" }, "keep original chinese cue");
 
-const corridorChinese = cues.overlayState({
+const nativeZhActive = cues.overlayState({
   enabled: true,
   cues: [{ start: 10, end: 20, text: "我很兴奋能去一个有空调的地方。酒店就" }],
   time: 12,
   translations: {},
   probed: true
 });
-assertDeep(corridorChinese, {
+assertDeep(nativeZhActive, {
   show: true,
   cueText: "",
   message: "未检测到外语内容"

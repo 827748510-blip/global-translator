@@ -245,40 +245,42 @@ assert(tedBits.indexOf("on") !== -1 && tedBits.indexOf("zh") !== -1, "retest bit
 assert(tedBits.indexOf("pw1") !== -1 && tedBits.indexOf("dom1") !== -1, "retest bits include pw1 dom1");
 assert(tedBits.indexOf("Dana") === -1 && tedBits.indexOf("collaborator") === -1, "bits omit cue text");
 
-const corridorCaption = "我很兴奋能去一个有空调的地方。酒店就";
-const corridorLive = yt.liveCueFromNow(corridorCaption, 12);
+// Native-zh live cue (synthetic). Do not treat YouTube iJ53c1zKgr8 as this
+// fixture: that video is English auto-generated CC; 「英语>>中文」 is UI MT.
+const nativeZhCaption = "我很兴奋能去一个有空调的地方。酒店就";
+const nativeZhLive = yt.liveCueFromNow(nativeZhCaption, 12);
 const englishTimed = [{
   start: 10,
   end: 20,
   text: "I am so excited to go somewhere with air conditioning."
 }];
 assertEqual(
-  yt.selectCues(englishTimed, corridorLive, 12)[0].text,
+  yt.selectCues(englishTimed, nativeZhLive, 12)[0].text,
   englishTimed[0].text,
   "prefer foreign timedtext over chinese live CC"
 );
 assertEqual(
-  yt.selectCues([{ start: 10, end: 20, text: corridorCaption }], corridorLive, 12)[0].text,
-  corridorCaption,
+  yt.selectCues([{ start: 10, end: 20, text: nativeZhCaption }], nativeZhLive, 12)[0].text,
+  nativeZhCaption,
   "zh-only live stays when timedtext is also chinese"
 );
 assertEqual(
-  yt.selectCues([], corridorLive, 12)[0].text,
-  corridorCaption,
+  yt.selectCues([], nativeZhLive, 12)[0].text,
+  nativeZhCaption,
   "zh-only live with no timedtext"
 );
-assertEqual(cues.shouldSendForVideoTranslate(corridorCaption), false, "corridor cue is not sent to /translate");
-const corridorState = cues.overlayState({
+assertEqual(cues.shouldSendForVideoTranslate(nativeZhCaption), false, "native zh cue is not sent to /translate");
+const nativeZhState = cues.overlayState({
   enabled: true,
-  cues: corridorLive,
+  cues: nativeZhLive,
   time: 12,
   translations: {},
   probed: true
 });
-assertEqual(corridorState.message, "未检测到外语内容", "zh live cue shows no-foreign");
-assertEqual(corridorState.cueText, "", "zh live cue does not invent a translation");
+assertEqual(nativeZhState.message, "未检测到外语内容", "zh live cue shows no-foreign");
+assertEqual(nativeZhState.cueText, "", "zh live cue does not invent a translation");
 const skipBits = yt.overlayDebugBits({
-  cues: corridorLive,
+  cues: nativeZhLive,
   time: 12,
   translations: {},
   pageWorld: true,
