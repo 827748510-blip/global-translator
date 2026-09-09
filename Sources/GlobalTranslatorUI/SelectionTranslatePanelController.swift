@@ -39,9 +39,11 @@ public final class SelectionTranslatePanel: NSPanel {
         guard eventMonitors.isEmpty else { return }
         var monitors: [Any] = []
         let outside: (NSEvent) -> Void = { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, self.isVisible else { return }
-                if self.containsOwnedUI(at: NSEvent.mouseLocation) { return }
+            guard let self else { return }
+            let location = NSEvent.mouseLocation
+            selectionPanelRunOnMainActor {
+                guard self.isVisible else { return }
+                if self.containsOwnedUI(at: location) { return }
                 self.onOutsideClick?()
             }
         }
@@ -54,20 +56,23 @@ public final class SelectionTranslatePanel: NSPanel {
         if let local = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown],
             handler: { [weak self] event in
-                MainActor.assumeIsolated {
-                    guard let self, self.isVisible else { return event }
-                    if self.containsOwnedUI(at: NSEvent.mouseLocation) { return event }
+                guard let self else { return event }
+                let location = NSEvent.mouseLocation
+                selectionPanelRunOnMainActor {
+                    guard self.isVisible else { return }
+                    if self.containsOwnedUI(at: location) { return }
                     self.onOutsideClick?()
-                    return event
                 }
+                return event
             }
         ) {
             monitors.append(local)
         }
         if let escapeGlobal = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
             guard event.keyCode == 53 else { return }
-            MainActor.assumeIsolated {
-                guard let self, self.isVisible, !self.hasOwnedMenuOpen() else { return }
+            guard let self else { return }
+            selectionPanelRunOnMainActor {
+                guard self.isVisible, !self.hasOwnedMenuOpen() else { return }
                 self.onEscape?()
             }
         }) {
@@ -75,12 +80,14 @@ public final class SelectionTranslatePanel: NSPanel {
         }
         if let escapeLocal = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
             guard event.keyCode == 53 else { return event }
-            return MainActor.assumeIsolated {
-                guard let self, self.isVisible else { return event }
-                if self.hasOwnedMenuOpen() { return event }
+            guard let self else { return event }
+            let consume = selectionPanelRunOnMainActor {
+                guard self.isVisible else { return false }
+                if self.hasOwnedMenuOpen() { return false }
                 self.onEscape?()
-                return nil
+                return true
             }
+            return consume ? nil : event
         }) {
             monitors.append(escapeLocal)
         }
@@ -109,7 +116,35 @@ public final class SelectionTranslatePanel: NSPanel {
     @MainActor
     func hasOwnedMenuOpen(windows: [NSWindow]? = nil) -> Bool {
         let windows = windows ?? NSApp.windows
-        windows.contains { $0.isVisible && $0 !== self && $0.level == .popUpMenu }
+        return windows.contains { $0.isVisible && $0 !== self && $0.level == .popUpMenu }
+    }
+}
+
+/// NSEvent monitors are not Sendable; never capture `NSEvent` inside `assumeIsolated`.
+private func selectionPanelRunOnMainActor(_ work: () -> Void) {
+    if Thread.isMainThread {
+        MainActor.assumeIsolated {
+            work()
+        }
+    } else {
+        DispatchQueue.main.sync {
+            MainActor.assumeIsolated {
+                work()
+            }
+        }
+    }
+}
+
+private func selectionPanelRunOnMainActor<T>(_ work: () -> T) -> T {
+    if Thread.isMainThread {
+        return MainActor.assumeIsolated {
+            work()
+        }
+    }
+    return DispatchQueue.main.sync {
+        MainActor.assumeIsolated {
+            work()
+        }
     }
 }
 
