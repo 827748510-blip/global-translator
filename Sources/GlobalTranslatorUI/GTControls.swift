@@ -310,24 +310,6 @@ struct GTEqualWidthSegmentedPicker<Value: Hashable>: View {
     }
 }
 
-/// Same segmented control as Settings 「翻译后端」: DeepSeek 云端 | 本地模型.
-struct GTSelectionBackendPicker: View {
-    @Binding var selection: BackendKind
-    var isEnabled: Bool = true
-
-    var body: some View {
-        GTEqualWidthSegmentedPicker(
-            options: [BackendKind.deepSeekCloud, .local],
-            selection: $selection,
-            title: { $0.displayTitle },
-            isEnabled: isEnabled,
-            accessibilityLabelText: "翻译后端"
-        )
-        .accessibilityValue(selection.displayTitle)
-        .accessibilityHint("与设置页共用，切换后翻译和优化都走当前后端")
-    }
-}
-
 /// Three-scene control used in settings and the selection popover.
 struct GTOptimizeModePicker: View {
     @Binding var selection: PromptOptimizeMode

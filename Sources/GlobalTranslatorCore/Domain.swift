@@ -5,7 +5,7 @@ public enum BackendKind: String, Codable, Sendable, Equatable, Hashable {
     case deepSeekCloud
     case local
 
-    /// Same copy as Settings 「翻译后端」. Popup and settings must stay in sync.
+    /// Same copy as Settings 「翻译后端」.
     public var displayTitle: String {
         switch self {
         case .deepSeekCloud: return "DeepSeek 云端"

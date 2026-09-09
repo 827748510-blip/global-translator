@@ -103,6 +103,6 @@ public enum GTSelectionMetrics {
     public static let textBlockSpacing: CGFloat = GTSpacing.xxSmall
     /// Text block ↔ actions group.
     public static let sectionSpacing: CGFloat = GTSpacing.small
-    /// Backend picker ↔ scene picker ↔ action buttons inside the actions group.
+    /// Scene picker ↔ action buttons inside the actions group.
     public static let actionsSpacing: CGFloat = GTSpacing.xSmall
 }

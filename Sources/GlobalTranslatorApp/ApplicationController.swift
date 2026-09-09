@@ -258,9 +258,6 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         controller.onOptimizeModeChange = { [weak self] mode in
             self?.setPromptOptimizeMode(mode)
         }
-        controller.onBackendChange = { [weak self] kind in
-            self?.selectBackend(kind)
-        }
         controller.setEnabled(configuration.selectionTranslateEnabled)
     }
 
