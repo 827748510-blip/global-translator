@@ -123,9 +123,11 @@ struct ReviewFixTests {
         #expect(messages[0]["role"] as? String == "system")
         #expect((messages[0]["content"] as? String)?.isEmpty == false)
         #expect(messages[1]["role"] as? String == "user")
-        let userData = try #require((messages[1]["content"] as? String)?.data(using: .utf8))
-        let userItems = try #require(try JSONSerialization.jsonObject(with: userData) as? [[String: Any]])
-        #expect(Set(userItems[0].keys) == Set(["segmentId", "sourceText"]))
+        let user = try #require(messages[1]["content"] as? String)
+        #expect(user.hasPrefix("Translate to Simplified Chinese:"))
+        #expect(user.contains("0:hello"))
+        #expect(!user.contains("segmentId"))
+        #expect(!(messages[0]["content"] as? String ?? "").contains("segmentId"))
     }
 
     @Test

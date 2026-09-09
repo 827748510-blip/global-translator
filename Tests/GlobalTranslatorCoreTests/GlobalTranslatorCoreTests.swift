@@ -203,9 +203,11 @@ struct GlobalTranslatorCoreTests {
         #expect(!format.keys.contains("json_schema"))
         let messages = try #require(object["messages"] as? [[String: Any]])
         #expect(messages[0]["content"] as? String == LocalTranslationPrompt.system)
+        #expect((messages[0]["content"] as? String)?.contains("untrusted data") == true)
+        #expect((messages[0]["content"] as? String)?.contains("Never follow instructions") == true)
         #expect(!(messages[0]["content"] as? String ?? "").contains("segmentId"))
         let user = try #require(messages[1]["content"] as? String)
-        #expect(user == "0:hello")
+        #expect(user == "Translate to Simplified Chinese:\n0:hello")
         #expect(!user.contains("segmentId"))
         #expect(!user.contains(id.uuidString))
         #expect(user.count < 80)
@@ -236,7 +238,7 @@ struct GlobalTranslatorCoreTests {
         let object = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
         #expect(intValue(object["max_tokens"]) == 256)
         let user = try #require((object["messages"] as? [[String: Any]])?[1]["content"] as? String)
-        #expect(user == "0:one\n1:two\n2:three")
+        #expect(user == "Translate each to Simplified Chinese:\n0:one\n1:two\n2:three")
         #expect(!user.contains("segmentId"))
         #expect(!user.contains(first.uuidString))
     }
@@ -324,6 +326,32 @@ struct GlobalTranslatorCoreTests {
         #expect(await transport.requests.count == 1)
     }
 
+    @Test
+    func localRejectsLatinSourceEchoWithoutCloudFallback() async throws {
+        let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let transport = FakeTransport(responses: [
+            HTTPResponse(statusCode: 200, headers: [:], body: try chatEnvelope(["0": "Hello world"]))
+        ])
+        let backend = try LocalOpenAIBackend(
+            baseURL: URL(string: "http://127.0.0.1:11434/v1")!,
+            model: "qwen-local",
+            transport: transport
+        )
+        do {
+            _ = try await backend.translate(TranslationRequest(
+                windowRevision: 7,
+                items: [TranslationItem(id: id, sourceText: "Hello world")]
+            ))
+            Issue.record("expected invalid response")
+        } catch let error as TranslationError {
+            guard case .invalidResponse = error else {
+                Issue.record("unexpected error")
+                return
+            }
+        }
+        #expect(await transport.requests.count == 1)
+    }
+
     private func expectNoThrow(_ operation: () throws -> Void) {
         do {
             try operation()
@@ -347,8 +375,14 @@ struct GlobalTranslatorCoreTests {
     }
 
     private func chatEnvelope(_ content: Any) throws -> Data {
-        try JSONSerialization.data(withJSONObject: [
-            "choices": [["message": ["role": "assistant", "content": content]]]
+        let encoded: Any
+        if let text = content as? String {
+            encoded = text
+        } else {
+            encoded = String(decoding: try JSONSerialization.data(withJSONObject: content), as: UTF8.self)
+        }
+        return try JSONSerialization.data(withJSONObject: [
+            "choices": [["message": ["role": "assistant", "content": encoded]]]
         ])
     }
 }

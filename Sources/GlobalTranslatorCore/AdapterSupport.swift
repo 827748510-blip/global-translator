@@ -280,7 +280,8 @@ enum TranslationResponseParser {
         if let text = value as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return text
         }
-        if let parts = value as? [[String: Any]] {
+        if let parts = value as? [[String: Any]],
+           parts.contains(where: { ($0["type"] as? String)?.isEmpty == false }) {
             let joined = parts.compactMap { $0["text"] as? String }.joined()
             if !joined.isEmpty { return joined }
         }
@@ -450,9 +451,11 @@ enum TranslationResponseParser {
         return nil
     }
 
+    private static let compactLetters = Array("abcdefghijklmnopqrstuvwxyz")
+
     private static func letterKeys(count: Int) -> [String]? {
         guard (1...26).contains(count) else { return nil }
-        return (0..<count).map { String(UnicodeScalar(UInt8(97 + $0))) }
+        return (0..<count).map { String(compactLetters[$0]) }
     }
 
     private static func keyedTexts(_ object: [String: Any], keys: [String]) -> [String]? {
@@ -471,6 +474,38 @@ enum TranslationResponseParser {
         guard let text = value as? String else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+enum LocalTranslationQuality {
+    @discardableResult
+    static func rejectCopiedSource(
+        _ result: TranslationResult,
+        items: [TranslationItem]
+    ) throws -> TranslationResult {
+        let sourceByID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0.sourceText) })
+        for translation in result.translations {
+            guard let source = sourceByID[translation.segmentId] else { continue }
+            try rejectCopiedSource(
+                translated: translation.simplifiedChineseText,
+                source: source
+            )
+        }
+        return result
+    }
+
+    static func rejectCopiedSource(translated: String, source: String) throws {
+        let translated = translated.trimmingCharacters(in: .whitespacesAndNewlines)
+        let original = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isEligibleLatin(original) else { return }
+        if translated.caseInsensitiveCompare(original) == .orderedSame {
+            throw TranslationError.invalidResponse("translation copied the source")
+        }
+    }
+
+    private static func isEligibleLatin(_ text: String) -> Bool {
+        guard TextFilter.shouldTranslate(text) else { return false }
+        return text.unicodeScalars.contains { CharacterSet.letters.contains($0) && $0.isASCII }
     }
 }
 
