@@ -47,7 +47,9 @@ final class StubBackendFactory: TranslationBackendFactory, @unchecked Sendable {
         StubBackend(kind: kind)
     }
     func healthCheck(kind: BackendKind, configuration: AppConfiguration, credentials: any CredentialStoring) async -> BackendHealth {
-        if let value = try? credentials.read() { healthCredentials.append(value) }
+        if kind == .deepSeekCloud, let value = try? credentials.read() {
+            healthCredentials.append(value)
+        }
         return health
     }
 }
@@ -105,6 +107,41 @@ final class GatedBackendFactory: TranslationBackendFactory, @unchecked Sendable 
         credentials: any CredentialStoring
     ) async -> BackendHealth {
         await gate.check()
+    }
+}
+
+final class RecordingModelBackendFactory: TranslationBackendFactory, @unchecked Sendable {
+    private var healthResults: [BackendHealth]
+    private(set) var madeDeepSeekModels: [String] = []
+
+    init(healthResults: [BackendHealth]) {
+        self.healthResults = healthResults
+    }
+
+    func makeBackend(
+        kind: BackendKind,
+        configuration: AppConfiguration,
+        credentials: any CredentialStoring
+    ) throws -> any TranslationBackend {
+        if kind == .deepSeekCloud {
+            madeDeepSeekModels.append(configuration.deepSeekModel)
+        }
+        return StubBackend(kind: kind)
+    }
+
+    func healthCheck(
+        kind: BackendKind,
+        configuration: AppConfiguration,
+        credentials: any CredentialStoring
+    ) async -> BackendHealth {
+        if kind != .deepSeekCloud {
+            return BackendHealth(status: .healthy, message: "ok")
+        }
+        _ = try? credentials.read()
+        guard !healthResults.isEmpty else {
+            return BackendHealth(status: .healthy, message: "ok")
+        }
+        return healthResults.removeFirst()
     }
 }
 

@@ -185,9 +185,13 @@ struct CloudBackendSection: View {
 
             GTLabeledControl(title: "模型") {
                 if viewModel.availableModels.isEmpty {
-                    GTReadOnlyField(value: viewModel.keyConfigured ? "尚未获取模型列表，请先测试连接" : "请先配置 API Key")
+                    GTReadOnlyField(value: viewModel.keyConfigured
+                        ? "尚未获取模型列表，请先测试连接"
+                        : "可测试连接验证已有钥匙串密钥，或保存 API Key")
                         .accessibilityLabel("模型")
-                        .accessibilityValue(viewModel.keyConfigured ? "尚未获取模型列表" : "请先配置 API Key")
+                        .accessibilityValue(viewModel.keyConfigured
+                            ? "尚未获取模型列表"
+                            : "可测试连接或保存 API Key")
                 } else {
                     GTSelectField(
                         options: viewModel.availableModels,
@@ -305,9 +309,15 @@ struct ConnectionTestRow: View {
     }
 
     static func testHint(for viewModel: SettingsViewModel) -> String {
-        viewModel.canTestConnection
-            ? "向当前后端发送一次健康检查"
-            : (viewModel.selectedBackend == .deepSeekCloud ? "请先配置 API Key" : "请先填写本地服务地址")
+        if viewModel.canTestConnection {
+            if viewModel.selectedBackend == .deepSeekCloud, !viewModel.keyConfigured {
+                return "向当前后端发送一次健康检查，可验证已保存在钥匙串中的密钥"
+            }
+            return "向当前后端发送一次健康检查"
+        }
+        return viewModel.selectedBackend == .deepSeekCloud
+            ? "请先配置 API Key"
+            : "请先填写本地服务地址"
     }
 }
 

@@ -12,6 +12,7 @@ struct GlobalTranslatorCoreTests {
         #expect(configuration.localBaseURL.absoluteString == "http://127.0.0.1:11434/v1")
         #expect(configuration.localModel.isEmpty)
         #expect(configuration.deepSeekModel == "deepseek-chat")
+        #expect(!configuration.deepSeekAPIKeyConfigured)
         #expect(configuration.translatedBundleIDs.isEmpty)
         #expect(configuration.selectionTranslateEnabled)
         #expect(configuration.promptOptimizeMode == .communicationPolish)
@@ -34,6 +35,7 @@ struct GlobalTranslatorCoreTests {
         #expect(decoded.selectionTranslateEnabled)
         #expect(decoded.promptOptimizeMode == .communicationPolish)
         #expect(decoded.deepSeekModel == "deepseek-chat")
+        #expect(!decoded.deepSeekAPIKeyConfigured)
 
         let allowJSON = Data(#"{"translatedBundleIDs":["com.google.Chrome"]}"#.utf8)
         let allow = try JSONDecoder().decode(AppConfiguration.self, from: allowJSON)
@@ -63,7 +65,20 @@ struct GlobalTranslatorCoreTests {
         let object = try #require(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         #expect(object["promptOptimizeMode"] as? String == "communicationPolish")
         #expect(object["deepSeekModel"] as? String == "deepseek-chat")
+        #expect(object["deepSeekAPIKeyConfigured"] as? Bool == false)
         #expect(object["apiKey"] == nil)
+    }
+
+    @Test
+    func missingDeepSeekKeyConfiguredFlagDefaultsFalseAndNeverEncodesSecret() throws {
+        let legacyJSON = Data(#"{"backend":"deepSeekCloud","deepSeekModel":"deepseek-chat"}"#.utf8)
+        let decoded = try JSONDecoder().decode(AppConfiguration.self, from: legacyJSON)
+        #expect(!decoded.deepSeekAPIKeyConfigured)
+        let encoded = try JSONEncoder().encode(AppConfiguration(deepSeekAPIKeyConfigured: true))
+        let object = try #require(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        #expect(object["deepSeekAPIKeyConfigured"] as? Bool == true)
+        #expect(object["apiKey"] == nil)
+        #expect(object["deepSeekAPIKey"] == nil)
     }
 
     @Test

@@ -421,9 +421,9 @@ struct SettingsViewModelTests {
     }
 
     @Test
-    func testConnectionRequiresKeyForCloudAndURLForLocal() {
+    func testConnectionAllowsDeepSeekWithoutConfiguredFlagAndRequiresURLForLocal() {
         let (cloudWithoutKey, _) = makeViewModel(keyConfigured: false, backend: .deepSeekCloud)
-        #expect(!cloudWithoutKey.canTestConnection)
+        #expect(cloudWithoutKey.canTestConnection)
         let (cloudWithKey, _) = makeViewModel(keyConfigured: true, backend: .deepSeekCloud)
         #expect(cloudWithKey.canTestConnection)
         let (localEmpty, _) = makeViewModel(backend: .local)
@@ -431,6 +431,21 @@ struct SettingsViewModelTests {
         #expect(!localEmpty.canTestConnection)
         localEmpty.localBaseURL = "http://127.0.0.1:11434/v1"
         #expect(localEmpty.canTestConnection)
+    }
+
+    @Test
+    func testConnectionWithoutConfiguredFlagStillRunsHealthCheck() async {
+        let (viewModel, actions) = makeViewModel(keyConfigured: false, backend: .deepSeekCloud)
+        actions.health = BackendHealth(
+            status: .healthy,
+            message: "连接正常",
+            availableModels: ["deepseek-chat"]
+        )
+        await viewModel.testConnection()
+        #expect(actions.testConnectionCallCount == 1)
+        #expect(viewModel.connectionTest == .healthy("连接正常"))
+        #expect(viewModel.backendReady)
+        #expect(viewModel.availableModels == ["deepseek-chat"])
     }
 
     @Test

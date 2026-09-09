@@ -505,38 +505,288 @@ struct ApplicationControllerTests {
         #expect(draftFactory.healthCredentials == ["draft-key"])
         #expect(credentials.savedValues == ["draft-key"])
         #expect(controller.viewModel.keyConfigured)
+        #expect(controller.configuration.deepSeekAPIKeyConfigured)
         #expect(!controller.viewModel.keyDraft.contains("draft-key"))
         #expect(!controller.viewModel.showsKeyEntry)
         #expect(controller.configuration.deepSeekModel == AppConfiguration.defaultDeepSeekModel)
     }
 
     @Test
-    func switchingToDeepSeekWithStoredKeyDoesNotReopenEmptyKeyForm() async throws {
-        let gate = HealthCheckGate()
+    func switchingToDeepSeekDoesNotReadKeychain() async throws {
         let credentials = RecordingCredentialStore(value: "stored-key")
         let controller = ApplicationController(
             paths: try RuntimePaths(validatingRoot: temporaryRoot()),
             components: makeComponents(
                 store: RecordingConfigurationStore(configuration: AppConfiguration(
                     backend: .local, localModel: "test")),
-                credentials: credentials,
-                backendFactory: GatedBackendFactory(gate: gate)
+                credentials: credentials
             )
         )
         try await controller.start()
+        await waitForStartupHealthCheck(controller)
         #expect(credentials.readCount == 0)
         #expect(!controller.viewModel.keyConfigured)
 
         controller.selectBackend(.deepSeekCloud)
+        await waitForStartupHealthCheck(controller)
 
-        #expect(credentials.readCount == 1)
+        #expect(credentials.readCount == 0)
+        #expect(controller.viewModel.selectedBackend == .deepSeekCloud)
+        #expect(!controller.viewModel.keyConfigured)
+        #expect(controller.viewModel.showsKeyEntry)
+        #expect(!controller.viewModel.isReplacingKey)
+        #expect(controller.viewModel.keyDraft == "")
+        #expect(controller.modelIdentifier == AppConfiguration.defaultDeepSeekModel)
+        await controller.stop()
+    }
+
+    @Test
+    func switchingToDeepSeekUsesPersistedConfiguredFlagWithoutReading() async throws {
+        let credentials = RecordingCredentialStore(value: "stored-key")
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: RecordingConfigurationStore(configuration: AppConfiguration(
+                    backend: .local, localModel: "test", deepSeekAPIKeyConfigured: true)),
+                credentials: credentials
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        #expect(credentials.readCount == 0)
+        #expect(controller.viewModel.keyConfigured)
+
+        controller.selectBackend(.deepSeekCloud)
+
+        #expect(credentials.readCount == 0)
         #expect(controller.viewModel.selectedBackend == .deepSeekCloud)
         #expect(controller.viewModel.keyConfigured)
         #expect(!controller.viewModel.showsKeyEntry)
         #expect(!controller.viewModel.isReplacingKey)
         #expect(controller.viewModel.keyDraft == "")
-        #expect(controller.modelIdentifier == AppConfiguration.defaultDeepSeekModel)
-        await gate.release(BackendHealth(status: .healthy, message: "ok"))
+        await controller.stop()
+    }
+
+    @Test
+    func setDeepSeekModelDoesNotReadKeychain() async throws {
+        let credentials = RecordingCredentialStore(value: "stored-key")
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: RecordingConfigurationStore(configuration: AppConfiguration(
+                    backend: .local, localModel: "test", deepSeekAPIKeyConfigured: true)),
+                credentials: credentials
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        controller.selectBackend(.deepSeekCloud)
+        controller.viewModel.availableModels = ["deepseek-chat", "deepseek-reasoner"]
+        controller.setDeepSeekModel("deepseek-reasoner")
+        #expect(credentials.readCount == 0)
+        #expect(controller.configuration.deepSeekModel == "deepseek-reasoner")
+        #expect(controller.viewModel.deepSeekModel == "deepseek-reasoner")
+        await controller.stop()
+    }
+
+    @Test
+    func openingSettingsDoesNotReadKeychain() async throws {
+        let credentials = RecordingCredentialStore(value: "stored-key")
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: RecordingConfigurationStore(configuration: AppConfiguration(
+                    backend: .local, localModel: "test", deepSeekAPIKeyConfigured: true)),
+                credentials: credentials
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        controller.showSettings()
+        #expect(credentials.readCount == 0)
+        #expect(controller.viewModel.keyConfigured)
+        await controller.stop()
+    }
+
+    @Test
+    func deepSeekHealthCheckReadsKeychainAndMigratesConfiguredFlag() async throws {
+        let store = RecordingConfigurationStore()
+        let credentials = RecordingCredentialStore(value: "stored-key")
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, credentials: credentials)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        #expect(credentials.readCount == 1)
+        #expect(controller.configuration.deepSeekAPIKeyConfigured)
+        #expect(controller.viewModel.keyConfigured)
+        try await controller.persistence.flush()
+        #expect(await store.saved.last?.deepSeekAPIKeyConfigured == true)
+        await controller.stop()
+    }
+
+    @Test
+    func testConnectionAfterSwitchingToDeepSeekReadsKeychain() async throws {
+        let credentials = RecordingCredentialStore(value: "stored-key")
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: RecordingConfigurationStore(configuration: AppConfiguration(
+                    backend: .local, localModel: "test")),
+                credentials: credentials
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        controller.selectBackend(.deepSeekCloud)
+        #expect(credentials.readCount == 0)
+        #expect(!controller.viewModel.keyConfigured)
+        #expect(controller.viewModel.canTestConnection)
+        #expect(controller.viewModel.showsKeyEntry)
+        _ = try await controller.testConnection()
+        #expect(credentials.readCount == 1)
+        #expect(controller.configuration.deepSeekAPIKeyConfigured)
+        #expect(controller.viewModel.keyConfigured)
+        await controller.stop()
+    }
+
+    @Test
+    func failedDeepSeekHealthDoesNotBlockRetryWhenConfiguredFlagIsFalse() async throws {
+        let credentials = RecordingCredentialStore(value: "stored-key")
+        let factory = StubBackendFactory(health: BackendHealth(status: .unavailable, message: "down"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: RecordingConfigurationStore(configuration: AppConfiguration(
+                    backend: .local, localModel: "test")),
+                credentials: credentials,
+                backendFactory: factory
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        controller.selectBackend(.deepSeekCloud)
+        #expect(!controller.viewModel.keyConfigured)
+        #expect(controller.viewModel.canTestConnection)
+        _ = try await controller.testConnection()
+        #expect(credentials.readCount == 1)
+        #expect(!controller.configuration.deepSeekAPIKeyConfigured)
+        #expect(controller.viewModel.canTestConnection)
+        _ = try await controller.testConnection()
+        #expect(credentials.readCount == 2)
+        #expect(!controller.configuration.deepSeekAPIKeyConfigured)
+        await controller.stop()
+    }
+
+    @Test
+    func testConnectionDoesNotPermanentlyStopOverlayWhileAutomaticTranslationIsOn() async throws {
+        let monitor = FakeWindowMonitor()
+        let overlay = FakeOverlay()
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: RecordingConfigurationStore(configuration: AppConfiguration(
+                    autoTranslateEnabled: true, deepSeekAPIKeyConfigured: true)),
+                credentials: RecordingCredentialStore(value: "stored-key"),
+                monitor: monitor,
+                overlay: overlay
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        #expect(controller.session?.isRunning == true)
+        #expect(controller.viewModel.isAutomaticTranslationEnabled)
+        let startCount = monitor.startCount
+        let hideCount = overlay.hideCount
+
+        _ = try await controller.testConnection()
+
+        #expect(controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(controller.configuration.autoTranslateEnabled)
+        #expect(controller.session?.isRunning == true)
+        #expect(monitor.startCount == startCount)
+        #expect(overlay.hideCount == hideCount)
+        await controller.stop()
+    }
+
+    @Test
+    func testConnectionAfterSwitchAdoptsDeepSeekModelAndKeepsOverlayRunning() async throws {
+        let factory = RecordingModelBackendFactory(healthResults: [
+            BackendHealth(status: .healthy, message: "ok", availableModels: ["model-b"])
+        ])
+        let credentials = RecordingCredentialStore(value: "stored-key")
+        let monitor = FakeWindowMonitor()
+        let overlay = FakeOverlay()
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: RecordingConfigurationStore(configuration: AppConfiguration(
+                    backend: .local,
+                    localModel: "test",
+                    deepSeekModel: "model-a",
+                    deepSeekAPIKeyConfigured: true
+                )),
+                credentials: credentials,
+                backendFactory: factory,
+                monitor: monitor,
+                overlay: overlay
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        controller.selectBackend(.deepSeekCloud)
+        #expect(credentials.readCount == 0)
+        #expect(controller.session?.configuredModel == "model-a")
+        #expect(factory.madeDeepSeekModels.last == "model-a")
+
+        controller.configuration.autoTranslateEnabled = true
+        controller.viewModel.isAutomaticTranslationEnabled = true
+        controller.viewModel.backendReady = true
+        controller.session?.setBridgeActive(true)
+        controller.session?.start()
+        #expect(controller.session?.isRunning == true)
+        #expect(controller.session?.isBridgeActive == true)
+
+        _ = try await controller.testConnection()
+
+        #expect(controller.configuration.deepSeekModel == "model-b")
+        #expect(controller.viewModel.deepSeekModel == "model-b")
+        #expect(controller.session?.configuredModel == "model-b")
+        #expect(factory.madeDeepSeekModels.last == "model-b")
+        #expect(controller.session?.isRunning == true)
+        #expect(controller.session?.isBridgeActive == true)
+        #expect(controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(credentials.readCount == 1)
+        await controller.stop()
+    }
+
+    @Test
+    func savingAndDeletingAPIKeyUpdatesConfiguredFlagWithoutStoringSecret() async throws {
+        let store = RecordingConfigurationStore()
+        let credentials = RecordingCredentialStore(value: nil)
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, credentials: credentials)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        try await controller.saveAPIKey("draft-key")
+        #expect(controller.configuration.deepSeekAPIKeyConfigured)
+        #expect(controller.viewModel.keyConfigured)
+        try await controller.persistence.flush()
+        #expect(await store.saved.last?.deepSeekAPIKeyConfigured == true)
+        let encoded = try JSONEncoder().encode(controller.configuration)
+        let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        #expect(object["apiKey"] == nil)
+        #expect(object["deepSeekAPIKey"] == nil)
+        #expect(object["deepSeekAPIKeyConfigured"] as? Bool == true)
+
+        try await controller.deleteAPIKey()
+        #expect(!controller.configuration.deepSeekAPIKeyConfigured)
+        #expect(!controller.viewModel.keyConfigured)
+        try await controller.persistence.flush()
+        #expect(await store.saved.last?.deepSeekAPIKeyConfigured == false)
         await controller.stop()
     }
 

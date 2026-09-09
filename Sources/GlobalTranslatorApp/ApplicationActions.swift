@@ -137,13 +137,18 @@ extension ApplicationController {
         viewModel.backendReady = false
         viewModel.connectionTest = .idle
         viewModel.availableModels = []
-        if kind == .deepSeekCloud {
-            probeKeychainIfNeeded()
-        }
+        viewModel.keyConfigured = configuration.deepSeekAPIKeyConfigured
         Task { await previousSession?.clearCache() }
         rebuildSession()
         queueSave()
-        scheduleBackendRefresh()
+        if kind == .deepSeekCloud {
+            // Switching tabs must not `read()` Keychain (that pops the
+            // login-keychain dialog). Wire backends without a health check;
+            // translate / 测连接 / 保存密钥 still read when they need the secret.
+            applyDeepSeekSessionBackendsWithoutHealthCheck()
+        } else {
+            scheduleBackendRefresh()
+        }
     }
 
     public func saveAPIKey(_ draft: String) async throws {
@@ -165,7 +170,7 @@ extension ApplicationController {
             throw ApplicationActionError.backendUnhealthy(health.status)
         }
         try components.credentialStore.save(apiKey: value)
-        viewModel.keyConfigured = true
+        persistDeepSeekAPIKeyConfigured(true)
         viewModel.isReplacingKey = false
         viewModel.keyDraft = ""
         viewModel.availableModels = health.availableModels
@@ -200,7 +205,7 @@ extension ApplicationController {
 
     public func deleteAPIKey() async throws {
         try components.credentialStore.delete()
-        viewModel.keyConfigured = false
+        persistDeepSeekAPIKeyConfigured(false)
         viewModel.isReplacingKey = false
         viewModel.keyDraft = ""
         viewModel.backendReady = false
@@ -221,7 +226,20 @@ extension ApplicationController {
             credentials: components.credentialStore
         )
         applyHealth(health)
+        rewireDeepSeekSessionIfAdoptedModelDiffers(from: health)
         return health
+    }
+
+    /// After a successful DeepSeek health, `applyHealth` may adopt a different
+    /// model id. Rewire backends to that id without leaving overlay stopped.
+    func rewireDeepSeekSessionIfAdoptedModelDiffers(from health: BackendHealth) {
+        guard configuration.backend == .deepSeekCloud else { return }
+        let healthOK = health.status == .healthy
+            || (health.status == .modelUnavailable && !health.availableModels.isEmpty)
+        guard healthOK else { return }
+        let adopted = AppConfiguration.resolvedDeepSeekModel(configuration.deepSeekModel)
+        guard session?.configuredModel != adopted else { return }
+        rewireDeepSeekBackendsPreservingCapture()
     }
 
     public func setVisionFallback(_ enabled: Bool) {
@@ -232,7 +250,11 @@ extension ApplicationController {
         Task { await previousSession?.clearCache() }
         rebuildSession()
         queueSave()
-        scheduleBackendRefresh()
+        if configuration.backend == .deepSeekCloud {
+            applyDeepSeekSessionBackendsWithoutHealthCheck()
+        } else {
+            scheduleBackendRefresh()
+        }
     }
 
     public func setLocalConfiguration(baseURL: String, model: String) {
@@ -274,13 +296,8 @@ extension ApplicationController {
         Task { await previousSession?.clearCache() }
         rebuildSession()
         queueSave()
-        if viewModel.backendReady, configuration.backend == .deepSeekCloud,
-           let backend = try? components.backendFactory.makeBackend(
-            kind: configuration.backend,
-            configuration: configuration,
-            credentials: components.credentialStore
-           ) {
-            applySessionBackends(overlay: backend, configuration: configuration)
+        if configuration.backend == .deepSeekCloud {
+            applyDeepSeekSessionBackendsWithoutHealthCheck()
         } else {
             scheduleBackendRefresh()
         }
