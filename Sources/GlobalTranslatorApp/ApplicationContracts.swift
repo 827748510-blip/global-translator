@@ -210,6 +210,8 @@ public protocol TranslationCoordinating: Sendable {
 
 extension TranslationCoordinator: TranslationCoordinating {}
 
+extension TranslationSession: SelectionTranslating {}
+
 public extension TranslationCoordinating {
     func cancelPendingRequests() async {}
 }
@@ -348,6 +350,9 @@ public typealias MonitorFactory = @MainActor (Set<String>) -> any ActiveWindowMo
 public typealias CaptureFactory = @MainActor (Set<String>) -> any CapturePipelining
 public typealias StatusFactory = @MainActor (SettingsViewModel) -> any StatusItemControlling
 public typealias OverlayFactory = @MainActor () -> any OverlayControlling
+public typealias SelectionPopoverFactory = @MainActor () -> any SelectionPopoverControlling
+public typealias SelectedTextReaderFactory = @MainActor () -> any SelectedTextReading
+public typealias SelectionPointerMonitorFactory = @MainActor () -> any SelectionPointerMonitoring
 public typealias CoordinatorFactory = @Sendable ([any TranslationBackend], EngineEventSink?) -> any TranslationCoordinating
 public typealias SchedulerFactory = @MainActor (
     TranslationCoordinating,
@@ -365,6 +370,9 @@ public struct ApplicationControllerComponents {
     public let capturePipelineFactory: CaptureFactory
     public let statusItemFactory: StatusFactory
     public let overlayFactory: OverlayFactory
+    public let selectedTextReaderFactory: SelectedTextReaderFactory
+    public let selectionPopoverFactory: SelectionPopoverFactory
+    public let selectionPointerMonitorFactory: SelectionPointerMonitorFactory
     public let coordinatorFactory: CoordinatorFactory
     public let schedulerFactory: SchedulerFactory
     public let logger: any AppRuntimeLogger
@@ -380,6 +388,9 @@ public struct ApplicationControllerComponents {
         capturePipelineFactory: @escaping CaptureFactory,
         statusItemFactory: @escaping StatusFactory,
         overlayFactory: @escaping OverlayFactory,
+        selectedTextReaderFactory: @escaping SelectedTextReaderFactory = { NullSelectedTextReader() },
+        selectionPopoverFactory: @escaping SelectionPopoverFactory = { NullSelectionPopover() },
+        selectionPointerMonitorFactory: @escaping SelectionPointerMonitorFactory = { NullSelectionPointerMonitor() },
         coordinatorFactory: @escaping CoordinatorFactory,
         schedulerFactory: @escaping SchedulerFactory,
         logger: any AppRuntimeLogger,
@@ -393,6 +404,9 @@ public struct ApplicationControllerComponents {
         self.capturePipelineFactory = capturePipelineFactory
         self.statusItemFactory = statusItemFactory
         self.overlayFactory = overlayFactory
+        self.selectedTextReaderFactory = selectedTextReaderFactory
+        self.selectionPopoverFactory = selectionPopoverFactory
+        self.selectionPointerMonitorFactory = selectionPointerMonitorFactory
         self.coordinatorFactory = coordinatorFactory
         self.schedulerFactory = schedulerFactory
         self.logger = logger

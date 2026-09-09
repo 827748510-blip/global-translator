@@ -36,6 +36,9 @@ extension ApplicationControllerComponents {
             },
             statusItemFactory: { viewModel in StatusItemController(viewModel: viewModel) },
             overlayFactory: { OverlayPanelController() },
+            selectedTextReaderFactory: { AXSelectedTextReader() },
+            selectionPopoverFactory: { SelectionTranslatePanelController() },
+            selectionPointerMonitorFactory: { SystemSelectionPointerMonitor() },
             coordinatorFactory: { backends, eventSink in
                 TranslationCoordinator(backends: backends, eventSink: eventSink)
             },

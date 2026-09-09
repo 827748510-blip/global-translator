@@ -107,6 +107,13 @@ extension ApplicationController {
         }
     }
 
+    public func setSelectionTranslate(_ enabled: Bool) {
+        configuration.selectionTranslateEnabled = enabled
+        viewModel.isSelectionTranslateEnabled = enabled
+        selectionTranslate?.setEnabled(enabled)
+        queueSave()
+    }
+
     public func selectBackend(_ kind: BackendKind) {
         guard configuration.backend != kind else { return }
         backendHealthToken &+= 1
@@ -154,18 +161,7 @@ extension ApplicationController {
             configuration: configuration,
             credentials: components.credentialStore
         ) {
-            let bridgeBackend = (try? components.backendFactory.makeBackend(
-                kind: configuration.backend,
-                configuration: configuration,
-                credentials: components.credentialStore
-            )) ?? backend
-            session?.configure(
-                backends: [backend],
-                backend: configuration.backend,
-                model: modelIdentifier,
-                visionFallbackEnabled: configuration.visionFallbackEnabled,
-                bridgeBackends: [bridgeBackend]
-            )
+            applySessionBackends(overlay: backend, configuration: configuration)
         }
         queueSave()
     }
@@ -401,12 +397,7 @@ extension ApplicationController {
         if viewModel.backendReady, let backend = try? components.backendFactory.makeBackend(
             kind: configuration.backend, configuration: configuration, credentials: components.credentialStore
         ) {
-            let bridgeBackend = (try? components.backendFactory.makeBackend(
-                kind: configuration.backend, configuration: configuration, credentials: components.credentialStore
-            )) ?? backend
-            session?.configure(backends: [backend], backend: configuration.backend,
-                               model: modelIdentifier, visionFallbackEnabled: configuration.visionFallbackEnabled,
-                               bridgeBackends: [bridgeBackend])
+            applySessionBackends(overlay: backend, configuration: configuration)
             if shouldResume { maybeStartPersistedSession() }
         } else {
             scheduleBackendRefresh(startPersistedSession: shouldResume)

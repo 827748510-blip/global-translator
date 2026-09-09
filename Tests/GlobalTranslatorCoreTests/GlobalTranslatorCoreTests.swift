@@ -12,6 +12,7 @@ struct GlobalTranslatorCoreTests {
         #expect(configuration.localBaseURL.absoluteString == "http://127.0.0.1:11434/v1")
         #expect(configuration.localModel.isEmpty)
         #expect(configuration.translatedBundleIDs.isEmpty)
+        #expect(configuration.selectionTranslateEnabled)
 
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = ConfigStore(url: path)
@@ -28,11 +29,13 @@ struct GlobalTranslatorCoreTests {
         let decoded = try JSONDecoder().decode(AppConfiguration.self, from: legacyJSON)
         #expect(decoded.translatedBundleIDs.isEmpty)
         #expect(decoded.autoTranslateEnabled)
+        #expect(decoded.selectionTranslateEnabled)
 
         let allowJSON = Data(#"{"translatedBundleIDs":["com.google.Chrome"]}"#.utf8)
         let allow = try JSONDecoder().decode(AppConfiguration.self, from: allowJSON)
         #expect(allow.translatedBundleIDs == ["com.google.Chrome"])
         #expect(!allow.autoTranslateEnabled)
+        #expect(allow.selectionTranslateEnabled)
     }
 
     @Test

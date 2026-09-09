@@ -12,42 +12,53 @@ struct SettingsHeaderSection: View {
     @ObservedObject var viewModel: SettingsViewModel
 
     var body: some View {
-        HStack(alignment: .center, spacing: GTSpacing.small) {
-            Image(systemName: viewModel.status.symbolName)
-                .font(.title3)
-                .symbolRenderingMode(.monochrome)
-                .foregroundStyle(GTColor.primaryText)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: GTSpacing.xxSmall) {
-                Text(viewModel.status.accessibilityLabel)
-                    .font(GTType.stateLine)
-                if let message = viewModel.visibleAutomaticEnableBlockedReason ?? viewModel.healthMessage,
-                   !message.isEmpty {
-                    Text(message)
-                        .font(GTType.secondary)
-                        .foregroundStyle(GTColor.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: GTSpacing.xSmall) {
+            HStack(alignment: .center, spacing: GTSpacing.small) {
+                Image(systemName: viewModel.status.symbolName)
+                    .font(.title3)
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundStyle(GTColor.primaryText)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: GTSpacing.xxSmall) {
+                    Text(viewModel.status.accessibilityLabel)
+                        .font(GTType.stateLine)
+                    if let message = viewModel.visibleAutomaticEnableBlockedReason ?? viewModel.healthMessage,
+                       !message.isEmpty {
+                        Text(message)
+                            .font(GTType.secondary)
+                            .foregroundStyle(GTColor.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
+                Spacer(minLength: GTSpacing.small)
+                Toggle(
+                    "自动翻译",
+                    isOn: Binding(
+                        get: { viewModel.isAutomaticTranslationEnabled },
+                        set: { viewModel.setAutomaticTranslation($0) }
+                    )
+                )
+                .toggleStyle(.switch)
+                // Disabled only for OFF→ON when the gate fails; turning OFF is
+                // always possible.
+                .disabled(!viewModel.isAutomaticTranslationEnabled && !viewModel.canEnableAutomaticTranslation)
+                .accessibilityHint(
+                    viewModel.isAutomaticTranslationEnabled
+                        ? "关闭自动翻译"
+                        : (viewModel.automaticEnableBlockedReason ?? "开启后自动翻译活动窗口文本")
+                )
             }
-            Spacer(minLength: GTSpacing.small)
+            .accessibilityElement(children: .contain)
             Toggle(
-                "自动翻译",
+                "滑词翻译",
                 isOn: Binding(
-                    get: { viewModel.isAutomaticTranslationEnabled },
-                    set: { viewModel.setAutomaticTranslation($0) }
+                    get: { viewModel.isSelectionTranslateEnabled },
+                    set: { viewModel.setSelectionTranslate($0) }
                 )
             )
             .toggleStyle(.switch)
-            // Disabled only for OFF→ON when the gate fails; turning OFF is
-            // always possible.
-            .disabled(!viewModel.isAutomaticTranslationEnabled && !viewModel.canEnableAutomaticTranslation)
-            .accessibilityHint(
-                viewModel.isAutomaticTranslationEnabled
-                    ? "关闭自动翻译"
-                    : (viewModel.automaticEnableBlockedReason ?? "开启后自动翻译活动窗口文本")
-            )
+            .accessibilityHint("划选文字后在附近显示译文，默认开启")
         }
-        .accessibilityElement(children: .contain)
     }
 }
 

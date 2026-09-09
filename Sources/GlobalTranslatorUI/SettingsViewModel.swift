@@ -15,6 +15,7 @@ public final class SettingsViewModel: ObservableObject {
     /// Current runtime status shown in the status item and popover header.
     @Published public var status: MenuBarStatus = .off
     @Published public var isAutomaticTranslationEnabled = false
+    @Published public var isSelectionTranslateEnabled = true
     @Published public var selectedBackend: BackendKind = .deepSeekCloud
     @Published public var visionFallbackEnabled = false
     @Published public var keyConfigured = false
@@ -141,6 +142,12 @@ public final class SettingsViewModel: ObservableObject {
             isAutomaticTranslationEnabled = false
             actions.setAutomaticTranslation(false)
         }
+    }
+
+    public func setSelectionTranslate(_ enabled: Bool) {
+        guard isSelectionTranslateEnabled != enabled else { return }
+        isSelectionTranslateEnabled = enabled
+        actions.setSelectionTranslate(enabled)
     }
 
     public func selectBackend(_ kind: BackendKind) {

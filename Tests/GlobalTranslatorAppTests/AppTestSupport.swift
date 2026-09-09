@@ -463,6 +463,65 @@ final class FakeOverlay: OverlayControlling {
     func hideAll() { hideCount += 1 }
 }
 
+@MainActor
+final class FakeSelectionPopover: SelectionPopoverControlling {
+    private(set) var shown: [SelectionPopoverContent] = []
+    private(set) var dismissCount = 0
+    var currentContent: SelectionPopoverContent?
+    var panelFrame: CGRect?
+    func show(_ content: SelectionPopoverContent) {
+        currentContent = content
+        shown.append(content)
+        panelFrame = CGRect(
+            x: content.screenFrame.minX,
+            y: content.screenFrame.maxY + 6,
+            width: 280,
+            height: 80
+        )
+    }
+    func dismiss() {
+        dismissCount += 1
+        currentContent = nil
+        panelFrame = nil
+    }
+}
+
+final class FakeSelectedTextReader: SelectedTextReading, @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: SelectedTextReadResult
+    private(set) var readCount = 0
+
+    init(result: SelectedTextReadResult = .empty) {
+        self.result = result
+    }
+
+    func setResult(_ result: SelectedTextReadResult) {
+        lock.lock()
+        self.result = result
+        lock.unlock()
+    }
+
+    func readSelection(mouseLocation: CGPoint) -> SelectedTextReadResult {
+        lock.lock()
+        defer { lock.unlock() }
+        readCount += 1
+        return result
+    }
+}
+
+@MainActor
+final class StubSelectionTranslator: SelectionTranslating {
+    var result = "你好世界"
+    var error: Error?
+    private(set) var texts: [String] = []
+
+    func translateSelection(_ text: String) async throws -> String {
+        texts.append(text)
+        if let error { throw error }
+        return result
+    }
+}
+
 actor FakeCoordinator: TranslationCoordinating {
     private(set) var selectedKinds: [BackendKind] = []
     func selectBackend(kind: BackendKind, modelIdentifier: String) async { selectedKinds.append(kind) }
