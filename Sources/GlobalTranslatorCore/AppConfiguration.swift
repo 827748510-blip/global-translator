@@ -8,6 +8,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     public var localModel: String
     /// Cloud model id persisted in config.json. The API key itself is never stored here.
     public var deepSeekModel: String
+    /// Non-secret UI flag: a DeepSeek key was saved (or later seen on a real API read).
+    /// Settings must not call Keychain `read()` just to show 「已配置 · 钥匙串保存」.
+    public var deepSeekAPIKeyConfigured: Bool
     public var translatedBundleIDs: [String]
     /// 划选文字后弹出译文。默认开启，与窗口覆盖层、扩展桥独立。
     public var selectionTranslateEnabled: Bool
@@ -21,6 +24,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         localBaseURL: URL = Self.defaultLocalBaseURL,
         localModel: String = "",
         deepSeekModel: String = Self.defaultDeepSeekModel,
+        deepSeekAPIKeyConfigured: Bool = false,
         translatedBundleIDs: [String] = [],
         selectionTranslateEnabled: Bool = true,
         promptOptimizeMode: PromptOptimizeMode = .communicationPolish
@@ -31,6 +35,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         self.localBaseURL = localBaseURL
         self.localModel = localModel
         self.deepSeekModel = Self.resolvedDeepSeekModel(deepSeekModel)
+        self.deepSeekAPIKeyConfigured = deepSeekAPIKeyConfigured
         self.translatedBundleIDs = translatedBundleIDs
         self.selectionTranslateEnabled = selectionTranslateEnabled
         self.promptOptimizeMode = promptOptimizeMode
@@ -58,6 +63,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         case localBaseURL
         case localModel
         case deepSeekModel
+        case deepSeekAPIKeyConfigured
         case translatedBundleIDs
         case selectionTranslateEnabled
         case promptOptimizeMode
@@ -71,6 +77,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         localBaseURL = try container.decodeIfPresent(URL.self, forKey: .localBaseURL) ?? Self.defaultLocalBaseURL
         localModel = try container.decodeIfPresent(String.self, forKey: .localModel) ?? ""
         deepSeekModel = Self.resolvedDeepSeekModel(try container.decodeIfPresent(String.self, forKey: .deepSeekModel) ?? "")
+        deepSeekAPIKeyConfigured = try container.decodeIfPresent(Bool.self, forKey: .deepSeekAPIKeyConfigured) ?? false
         // Legacy `excludedBundleIDs` was a deny list and must never be
         // reinterpreted as the translation allow list: missing field means
         // "translate nothing" until the user picks applications.
@@ -87,6 +94,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         try container.encode(localBaseURL, forKey: .localBaseURL)
         try container.encode(localModel, forKey: .localModel)
         try container.encode(deepSeekModel, forKey: .deepSeekModel)
+        try container.encode(deepSeekAPIKeyConfigured, forKey: .deepSeekAPIKeyConfigured)
         try container.encode(translatedBundleIDs, forKey: .translatedBundleIDs)
         try container.encode(selectionTranslateEnabled, forKey: .selectionTranslateEnabled)
         try container.encode(promptOptimizeMode, forKey: .promptOptimizeMode)

@@ -43,9 +43,6 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
     static let maxBackendRetryAttempts = 30
     var applicationPicker: NSOpenPanel?
     var bridgeServer: ExtensionBridgeServer?
-    /// Cloud Keychain is probed at DeepSeek launch or the first switch to it,
-    /// never on a local-only startup.
-    var didProbeKeychain = false
 
     public init(
         paths: RuntimePaths,
@@ -135,7 +132,6 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         statusItem = nil
         overlay?.hideAll()
         overlay = nil
-        didProbeKeychain = false
         do {
             try await persistence.flush()
         } catch {
@@ -157,19 +153,44 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         viewModel.promptOptimizeMode = configuration.promptOptimizeMode
         viewModel.deepSeekModel = AppConfiguration.resolvedDeepSeekModel(configuration.deepSeekModel)
         viewModel.permissionSnapshot = components.permissionController.snapshot
-        if configuration.backend == .deepSeekCloud {
-            probeKeychainIfNeeded()
+        viewModel.keyConfigured = configuration.deepSeekAPIKeyConfigured
+    }
+
+    /// Persist the non-secret "key is configured" flag. Never logs or stores the secret.
+    func persistDeepSeekAPIKeyConfigured(_ configured: Bool) {
+        viewModel.keyConfigured = configured
+        guard configuration.deepSeekAPIKeyConfigured != configured else { return }
+        configuration.deepSeekAPIKeyConfigured = configured
+        queueSave()
+    }
+
+    /// First real DeepSeek API use that obtained a model list also means a
+    /// non-empty key was read. Startup/backend switching must not `read()`
+    /// just to discover this.
+    func migrateDeepSeekAPIKeyConfiguredIfNeeded(from health: BackendHealth) {
+        guard configuration.backend == .deepSeekCloud else { return }
+        guard !configuration.deepSeekAPIKeyConfigured else {
+            viewModel.keyConfigured = true
+            return
+        }
+        switch health.status {
+        case .healthy:
+            persistDeepSeekAPIKeyConfigured(true)
+        case .modelUnavailable where !health.availableModels.isEmpty:
+            persistDeepSeekAPIKeyConfigured(true)
+        case .unavailable, .invalidCredentials, .invalidConfiguration, .modelUnavailable:
+            break
         }
     }
 
-    /// Keychain is only touched for the cloud backend: once at DeepSeek
-    /// launch, or once when the user later switches to it. Local startup
-    /// must not read the item (that can pop a system prompt).
-    func probeKeychainIfNeeded() {
-        guard !didProbeKeychain else { return }
-        didProbeKeychain = true
-        let storedKey = try? components.credentialStore.read()
-        viewModel.keyConfigured = !(storedKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    func applyDeepSeekSessionBackendsWithoutHealthCheck() {
+        guard configuration.backend == .deepSeekCloud else { return }
+        guard let backend = try? components.backendFactory.makeBackend(
+            kind: .deepSeekCloud,
+            configuration: configuration,
+            credentials: components.credentialStore
+        ) else { return }
+        applySessionBackends(overlay: backend, configuration: configuration)
     }
 
     func makeSession() {
@@ -325,6 +346,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
     }
 
     func applyHealth(_ health: BackendHealth) {
+        migrateDeepSeekAPIKeyConfiguredIfNeeded(from: health)
         if !health.availableModels.isEmpty {
             viewModel.availableModels = health.availableModels
             if configuration.backend == .deepSeekCloud {

@@ -42,8 +42,9 @@ public final class SettingsViewModel: ObservableObject {
 
     /// Never prefilled; cleared on successful save only.
     @Published public var keyDraft = ""
-    /// When a key is already in Keychain, the SecureField stays hidden until
-    /// the user explicitly chooses 替换密钥. Switching backends must not open it.
+    /// When a key is marked configured, the SecureField stays hidden until
+    /// the user explicitly chooses 替换密钥. Switching backends must not open it
+    /// and must not read Keychain to decide.
     @Published public var isReplacingKey = false
     @Published public var keyOperation: KeyOperationState = .idle
     @Published public var connectionTest: ConnectionTestState = .idle
@@ -80,6 +81,8 @@ public final class SettingsViewModel: ObservableObject {
     }
 
     /// Empty key field is only for first-time setup or an explicit replace.
+    /// `keyConfigured` is a persisted non-secret flag — never populated by
+    /// reading Keychain just to render this form.
     public var showsKeyEntry: Bool {
         !keyConfigured || isReplacingKey
     }

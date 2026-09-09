@@ -47,7 +47,9 @@ final class StubBackendFactory: TranslationBackendFactory, @unchecked Sendable {
         StubBackend(kind: kind)
     }
     func healthCheck(kind: BackendKind, configuration: AppConfiguration, credentials: any CredentialStoring) async -> BackendHealth {
-        if let value = try? credentials.read() { healthCredentials.append(value) }
+        if kind == .deepSeekCloud, let value = try? credentials.read() {
+            healthCredentials.append(value)
+        }
         return health
     }
 }

@@ -39,17 +39,31 @@ public struct MacOSKeychainStore: CredentialStoring, Sendable {
               let data = apiKey.data(using: .utf8) else {
             throw CredentialStoreError.invalidValue
         }
+        let attributes = itemAttributes(value: data)
         let query = baseQuery()
-        let updateStatus = SecItemUpdate(query as CFDictionary, [kSecValueData: data] as CFDictionary)
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if updateStatus == errSecItemNotFound {
             var addQuery = query
-            addQuery[kSecValueData as String] = data
+            for (key, value) in attributes {
+                addQuery[key] = value
+            }
             let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
-            guard addStatus == errSecSuccess else {
+            if addStatus == errSecSuccess { return }
+            // Some macOS versions reject combining ACL + accessibility; keep the secret.
+            var fallbackAdd = query
+            fallbackAdd[kSecValueData as String] = data
+            fallbackAdd[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            let fallbackStatus = SecItemAdd(fallbackAdd as CFDictionary, nil)
+            guard fallbackStatus == errSecSuccess else {
                 throw CredentialStoreError.keychainFailure(status: addStatus)
             }
         } else if updateStatus != errSecSuccess {
-            throw CredentialStoreError.keychainFailure(status: updateStatus)
+            // ACL / accessibility updates can fail on older items; still rotate the secret.
+            let valueOnly = [kSecValueData as String: data] as CFDictionary
+            let retryStatus = SecItemUpdate(query as CFDictionary, valueOnly)
+            guard retryStatus == errSecSuccess else {
+                throw CredentialStoreError.keychainFailure(status: updateStatus)
+            }
         }
     }
 
@@ -84,5 +98,32 @@ public struct MacOSKeychainStore: CredentialStoring, Sendable {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
+    }
+
+    /// Persist with this app as a trusted caller so the same signed binary
+    /// can later `read()` without a login-keychain prompt. Ad-hoc re-signing
+    /// changes the designated requirement, so macOS may ask once more.
+    private func itemAttributes(value: Data) -> [String: Any] {
+        var attributes: [String: Any] = [
+            kSecValueData as String: value,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+        if let access = makeTrustedAccess() {
+            attributes[kSecAttrAccess as String] = access
+        }
+        return attributes
+    }
+
+    private func makeTrustedAccess() -> SecAccess? {
+        var access: SecAccess?
+        // `nil` trusted list means the creating application is trusted, so the
+        // same signed binary can later read without a login-keychain prompt.
+        let status = SecAccessCreate(
+            "Global Translator DeepSeek API key" as CFString,
+            nil,
+            &access
+        )
+        guard status == errSecSuccess else { return nil }
+        return access
     }
 }
