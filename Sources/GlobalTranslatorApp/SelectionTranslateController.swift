@@ -419,9 +419,10 @@ public final class SelectionTranslateController {
             ))
             return
         }
+        let mode = optimizeMode
         translateTask = Task { @MainActor [weak self] in
             do {
-                let optimized = try await translator.optimizePrompt(original, mode: optimizeMode)
+                let optimized = try await translator.optimizePrompt(original, mode: mode)
                 guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
                 let text = optimized.trimmingCharacters(in: .whitespacesAndNewlines)
                 if text.isEmpty {
