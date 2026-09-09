@@ -5,6 +5,7 @@ import Testing
 import GlobalTranslatorCapture
 import GlobalTranslatorCore
 import GlobalTranslatorEngine
+import GlobalTranslatorRuntime
 import GlobalTranslatorUI
 
 @MainActor
@@ -38,8 +39,8 @@ struct SelectionTranslateControllerTests {
     }
 
     private func select(_ controller: SelectionTranslateController, at point: CGPoint = CGPoint(x: 90, y: 210)) {
-        controller.handlePointer(.down, location: point)
-        controller.handlePointer(.up, location: point)
+        controller.handlePointer(SelectionPointerPhase.down, location: point)
+        controller.handlePointer(SelectionPointerPhase.up, location: point)
     }
 
     @Test
@@ -65,13 +66,13 @@ struct SelectionTranslateControllerTests {
         let translator = StubSelectionTranslator()
         let controller = makeController(reader: reader, popover: popover, translator: translator)
         controller.setEnabled(true)
-        controller.handlePointer(.down, location: CGPoint(x: 10, y: 10))
-        controller.handlePointer(.dragged, location: CGPoint(x: 20, y: 12))
-        controller.handlePointer(.dragged, location: CGPoint(x: 40, y: 14))
+        controller.handlePointer(SelectionPointerPhase.down, location: CGPoint(x: 10, y: 10))
+        controller.handlePointer(SelectionPointerPhase.dragged, location: CGPoint(x: 20, y: 12))
+        controller.handlePointer(SelectionPointerPhase.dragged, location: CGPoint(x: 40, y: 14))
         try await Task.sleep(for: .milliseconds(20))
         #expect(reader.readCount == 0)
         #expect(popover.currentContent == nil)
-        controller.handlePointer(.up, location: CGPoint(x: 40, y: 14))
+        controller.handlePointer(SelectionPointerPhase.up, location: CGPoint(x: 40, y: 14))
         try await waitUntil { popover.currentContent?.status == .translated }
         #expect(reader.readCount == 1)
         #expect(translator.texts == ["Hello world"])
@@ -223,8 +224,8 @@ extension ApplicationControllerTests {
         #expect(overlay.lastTranslations.isEmpty)
         #expect(try await session.translateSelection("Hello from Chrome") == "你好 Hello from Chrome")
         let selection = try #require(controller.selectionTranslate)
-        selection.handlePointer(.down, location: CGPoint(x: 50, y: 90))
-        selection.handlePointer(.up, location: CGPoint(x: 50, y: 90))
+        selection.handlePointer(SelectionPointerPhase.down, location: CGPoint(x: 50, y: 90))
+        selection.handlePointer(SelectionPointerPhase.up, location: CGPoint(x: 50, y: 90))
         let deadline = Date().addingTimeInterval(1)
         while popover.currentContent?.status != .translated, Date() < deadline {
             try await Task.sleep(for: .milliseconds(10))
