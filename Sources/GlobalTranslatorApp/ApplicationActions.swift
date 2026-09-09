@@ -226,15 +226,10 @@ extension ApplicationController {
             credentials: components.credentialStore
         )
         applyHealth(health)
-        let shouldWireSession = health.status == .healthy
-            || (health.status == .modelUnavailable && !health.availableModels.isEmpty)
-        if shouldWireSession, let backend = try? components.backendFactory.makeBackend(
-            kind: configuration.backend,
-            configuration: configuration,
-            credentials: components.credentialStore
-        ) {
-            applySessionBackends(overlay: backend, configuration: configuration)
-        }
+        // Do not `applySessionBackends` here: `configure()` always `stop()`s
+        // overlay capture and does not restart. A live auto-translate session
+        // would go dark until the user toggled the switch. Health/migrate is
+        // enough; backends are wired on start/switch without this path.
         return health
     }
 

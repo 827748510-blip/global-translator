@@ -91,7 +91,10 @@ public final class SettingsViewModel: ObservableObject {
         guard connectionTest != .testing else { return false }
         switch selectedBackend {
         case .deepSeekCloud:
-            return keyConfigured
+            // Legacy installs may have a Keychain key without the config flag.
+            // Allow a health check to migrate the flag; never Keychain-read
+            // just to enable this button.
+            return true
         case .local:
             return !localBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }

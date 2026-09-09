@@ -641,10 +641,72 @@ struct ApplicationControllerTests {
         await waitForStartupHealthCheck(controller)
         controller.selectBackend(.deepSeekCloud)
         #expect(credentials.readCount == 0)
+        #expect(!controller.viewModel.keyConfigured)
+        #expect(controller.viewModel.canTestConnection)
+        #expect(controller.viewModel.showsKeyEntry)
         _ = try await controller.testConnection()
         #expect(credentials.readCount == 1)
         #expect(controller.configuration.deepSeekAPIKeyConfigured)
         #expect(controller.viewModel.keyConfigured)
+        await controller.stop()
+    }
+
+    @Test
+    func failedDeepSeekHealthDoesNotBlockRetryWhenConfiguredFlagIsFalse() async throws {
+        let credentials = RecordingCredentialStore(value: "stored-key")
+        let factory = StubBackendFactory(health: BackendHealth(status: .unavailable, message: "down"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: RecordingConfigurationStore(configuration: AppConfiguration(
+                    backend: .local, localModel: "test")),
+                credentials: credentials,
+                backendFactory: factory
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        controller.selectBackend(.deepSeekCloud)
+        #expect(!controller.viewModel.keyConfigured)
+        #expect(controller.viewModel.canTestConnection)
+        _ = try await controller.testConnection()
+        #expect(credentials.readCount == 1)
+        #expect(!controller.configuration.deepSeekAPIKeyConfigured)
+        #expect(controller.viewModel.canTestConnection)
+        _ = try await controller.testConnection()
+        #expect(credentials.readCount == 2)
+        #expect(!controller.configuration.deepSeekAPIKeyConfigured)
+        await controller.stop()
+    }
+
+    @Test
+    func testConnectionDoesNotPermanentlyStopOverlayWhileAutomaticTranslationIsOn() async throws {
+        let monitor = FakeWindowMonitor()
+        let overlay = FakeOverlay()
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: RecordingConfigurationStore(configuration: AppConfiguration(
+                    autoTranslateEnabled: true, deepSeekAPIKeyConfigured: true)),
+                credentials: RecordingCredentialStore(value: "stored-key"),
+                monitor: monitor,
+                overlay: overlay
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        #expect(controller.session?.isRunning == true)
+        #expect(controller.viewModel.isAutomaticTranslationEnabled)
+        let startCount = monitor.startCount
+        let hideCount = overlay.hideCount
+
+        _ = try await controller.testConnection()
+
+        #expect(controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(controller.configuration.autoTranslateEnabled)
+        #expect(controller.session?.isRunning == true)
+        #expect(monitor.startCount == startCount)
+        #expect(overlay.hideCount == hideCount)
         await controller.stop()
     }
 
