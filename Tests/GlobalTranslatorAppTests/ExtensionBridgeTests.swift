@@ -485,7 +485,7 @@ extension ApplicationControllerTests {
         let result = try await session.translateBridgeTexts(texts)
         #expect(result.translations == texts.map { "你好 " + $0 })
         #expect(result.retryIndexes.isEmpty)
-        #expect(await coordinator.itemCounts == Array(repeating: 1, count: 30))
+        #expect(await coordinator.itemCounts == Array(repeating: 3, count: 10))
         #expect(!session.isRunning)
         await controller.stop()
     }
@@ -511,10 +511,18 @@ extension ApplicationControllerTests {
         let result = try await session.translateBridgeTexts([
             "Hello from page one now",
             "Hello from page two now",
-            "Hello from page three now"
+            "Hello from page three now",
+            "Hello from page four now",
+            "Hello from page five now",
+            "Hello from page six now"
         ])
-        #expect(result.translations == ["你好 Hello from page one now", nil, "你好 Hello from page three now"])
-        #expect(result.retryIndexes == [1])
+        #expect(result.translations == [
+            "你好 Hello from page one now",
+            "你好 Hello from page two now",
+            "你好 Hello from page three now",
+            nil, nil, nil
+        ])
+        #expect(result.retryIndexes == [3, 4, 5])
         await controller.stop()
     }
 

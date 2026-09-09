@@ -6,10 +6,12 @@ import GlobalTranslatorCore
 
 public actor TranslationCoordinator {
     /// Overlay labels: a few short strings per Ollama call.
-    public static let localOverlayBatchSize = 3
-    /// Extension/page text: one string per call. qwen3 thinking + JSON
-    /// schema over several items often stalls past the HTTP TTFB timeout.
-    public static let localPageTextBatchSize = 1
+    nonisolated public static let localOverlayBatchSize = 3
+    /// Extension/page text: keep aligned with `extension/content.js`
+    /// `CHUNK_SIZE`. With serialized Ollama, `json_object`, and a low
+    /// `max_tokens`, 3 short strings in one call beat 1×N schema round-trips
+    /// without the 30-item hang that opened the circuit (PR #2).
+    nonisolated public static let localPageTextBatchSize = 3
 
     public let cache: TranslationCache
     public let circuitBreaker: CircuitBreaker

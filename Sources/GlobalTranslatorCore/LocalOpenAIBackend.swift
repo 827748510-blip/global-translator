@@ -95,11 +95,22 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
         guard (200..<300).contains(response.statusCode) else {
             throw TranslationError.invalidResponse("unexpected local HTTP status")
         }
-        return try TranslationResponseParser.parseChatCompletions(
-            response.body,
-            expectedIDs: request.items.map { $0.id },
-            windowRevision: request.windowRevision
+        return try LocalTranslationQuality.rejectCopiedSource(
+            TranslationResponseParser.parseChatCompletions(
+                response.body,
+                expectedIDs: request.items.map { $0.id },
+                windowRevision: request.windowRevision,
+                mode: .localRelaxed
+            ),
+            items: request.items
         )
+    }
+
+    /// Caps generation so a short UI string does not walk toward the
+    /// Modelfile `num_predict` default. One translation JSON object fits in
+    /// 128 tokens; three items still fit in 256.
+    static func maxTokens(itemCount: Int) -> Int {
+        min(256, 64 + 64 * max(itemCount, 1))
     }
 
     private func listModels() async throws -> [String] {
@@ -126,14 +137,14 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
     }
 
     private func makePayload(for request: TranslationRequest) throws -> Data {
-        let content = try TranslationInstructions.userContent(for: request.items)
         let payload = ChatPayload(
             model: model,
             messages: [
-                ChatPrompt(role: "system", content: TranslationInstructions.system),
-                ChatPrompt(role: "user", content: content)
+                ChatPrompt(role: "system", content: LocalTranslationPrompt.system),
+                ChatPrompt(role: "user", content: LocalTranslationPrompt.userContent(for: request.items))
             ],
-            responseFormat: ChatResponseFormat(jsonSchema: ChatJSONSchema(schema: TranslationSchema.object(segmentIDs: request.items.map(\.id))))
+            maxTokens: Self.maxTokens(itemCount: request.items.count),
+            responseFormat: ChatResponseFormat()
         )
         do {
             let encoder = JSONEncoder()
@@ -163,6 +174,7 @@ private struct ChatPayload: Encodable {
     let messages: [ChatPrompt]
     let stream = false
     let temperature = 0.0
+    let maxTokens: Int
     let responseFormat: ChatResponseFormat
 
     private enum CodingKeys: String, CodingKey {
@@ -170,6 +182,7 @@ private struct ChatPayload: Encodable {
         case messages
         case stream
         case temperature
+        case maxTokens = "max_tokens"
         case responseFormat = "response_format"
     }
 }
@@ -179,18 +192,7 @@ private struct ChatPrompt: Codable {
     let content: String
 }
 
+/// Local-only. `json_object` plus a tiny prompt; UUIDs never go to the model.
 private struct ChatResponseFormat: Encodable {
-    let type = "json_schema"
-    let jsonSchema: ChatJSONSchema
-
-    private enum CodingKeys: String, CodingKey {
-        case type
-        case jsonSchema = "json_schema"
-    }
-}
-
-private struct ChatJSONSchema: Encodable {
-    let name = "translation_result"
-    let strict = true
-    let schema: JSONSchemaObject
+    let type = "json_object"
 }

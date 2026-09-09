@@ -20,7 +20,7 @@ struct GlobalTranslatorEngineTests {
     }
 
     @Test
-    func pageTextLocalBatchesAreSingleItemsSoDensePagesDoNotTripTheCircuit() async throws {
+    func pageTextLocalBatchesStaySmallSoDensePagesDoNotTripTheCircuit() async throws {
         let regions = (0..<30).map { makeRegion(text: "Visible label \($0)", y: CGFloat(100 + $0 * 25)) }
         let backend = RecordingBackend(kind: .local) { request, _ in
             TranslationResult(windowRevision: request.windowRevision, translations: request.items.map {
@@ -40,8 +40,10 @@ struct GlobalTranslatorEngineTests {
             visionFallbackEnabled: false
         )
         #expect(output.translations.count == 30)
-        #expect(await backend.requests.map { $0.items.count } == Array(repeating: 1, count: 30))
+        #expect(await backend.requests.map { $0.items.count } == Array(repeating: 3, count: 10))
         #expect(!(await breaker.isOpen))
+        #expect(TranslationCoordinator.localPageTextBatchSize == 3)
+        #expect(TranslationCoordinator.localOverlayBatchSize == 3)
     }
 
     @Test

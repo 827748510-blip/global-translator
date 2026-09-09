@@ -173,10 +173,12 @@ public final class TranslationSession {
     /// or Screen Recording. The coordinator itself outlives stop/start;
     /// only `configure()` replaces it.
     ///
-    /// Local backends are translated one string at a time so a dense page
-    /// (X.com, 30+ strings) cannot pile sequential Ollama round-trips into
-    /// a single JSON-schema call that dies as `networkFailure` and opens the
-    /// circuit. Transient item failures do not 500 the whole HTTP request.
+    /// Local backends are translated in small chunks so a dense page
+    /// (X.com, 30+ strings) cannot pile one 30-item JSON-schema call that
+    /// dies as `networkFailure`. Chunk size matches
+    /// `TranslationCoordinator.localPageTextBatchSize` and the extension
+    /// `CHUNK_SIZE`. Transient chunk failures do not 500 the whole HTTP
+    /// request; those indexes go back to the extension as `retry`.
     public func translateBridgeTexts(_ texts: [String]) async throws -> ExtensionBridgeTranslation {
         guard isBridgeActive else { throw ExtensionBridgeError.translatorInactive }
         guard bridgeCoordinator != nil else { throw ExtensionBridgeError.translatorUnavailable }
@@ -185,18 +187,25 @@ public final class TranslationSession {
             var results: [String?] = []
             var retryIndexes: [Int] = []
             results.reserveCapacity(capped.count)
-            for (index, text) in capped.enumerated() {
+            let chunkSize = TranslationCoordinator.localPageTextBatchSize
+            var index = 0
+            while index < capped.count {
                 guard isBridgeActive else { throw ExtensionBridgeError.translatorInactive }
+                let end = min(index + chunkSize, capped.count)
+                let slice = Array(capped[index..<end])
                 do {
-                    let part = try await translateBridgeSlice([text])
+                    let part = try await translateBridgeSlice(slice)
                     results.append(contentsOf: part)
                 } catch let error as ExtensionBridgeError {
                     throw error
                 } catch {
                     logger.event("bridge_item_failed", fields: ["reason": String(describing: error)])
-                    results.append(nil)
-                    retryIndexes.append(index)
+                    for offset in 0..<slice.count {
+                        results.append(nil)
+                        retryIndexes.append(index + offset)
+                    }
                 }
+                index = end
             }
             return ExtensionBridgeTranslation(translations: results, retryIndexes: retryIndexes)
         }

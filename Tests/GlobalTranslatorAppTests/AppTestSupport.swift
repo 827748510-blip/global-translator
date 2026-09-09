@@ -115,16 +115,13 @@ actor CompletionProbe {
 
 actor DelayedEchoTransport: HTTPTransport {
     private(set) var calls = 0
-    private struct Payload: Decodable { let messages: [Message] }
-    private struct Message: Decodable { let content: String }
-    private struct Item: Decodable { let segmentId: UUID }
-    func send(_ request: URLRequest) async throws -> HTTPResponse {
+    func send(_: URLRequest) async throws -> HTTPResponse {
         calls += 1
-        let payload = try JSONDecoder().decode(Payload.self, from: request.httpBody ?? Data())
-        let items = try JSONDecoder().decode([Item].self, from: Data((payload.messages.last?.content ?? "[]").utf8))
         try await Task.sleep(for: .milliseconds(150))
-        let translated = try JSONSerialization.data(withJSONObject: ["translations": items.map { ["segmentId": $0.segmentId.uuidString, "text": "你好"] }])
-        let response = try JSONSerialization.data(withJSONObject: ["choices": [["message": ["content": String(decoding: translated, as: UTF8.self)]]]])
+        let content = #"{"0":"你好"}"#
+        let response = try JSONSerialization.data(withJSONObject: [
+            "choices": [["message": ["content": content]]]
+        ])
         return HTTPResponse(statusCode: 200, headers: [:], body: response)
     }
 }
@@ -133,20 +130,17 @@ actor OverlapEchoTransport: HTTPTransport {
     private(set) var calls = 0
     private var inFlight = 0
     private(set) var maxInFlight = 0
-    private struct Payload: Decodable { let messages: [Message] }
-    private struct Message: Decodable { let content: String }
-    private struct Item: Decodable { let segmentId: UUID }
 
-    func send(_ request: URLRequest) async throws -> HTTPResponse {
+    func send(_: URLRequest) async throws -> HTTPResponse {
         inFlight += 1
         maxInFlight = max(maxInFlight, inFlight)
         calls += 1
         defer { inFlight -= 1 }
-        let payload = try JSONDecoder().decode(Payload.self, from: request.httpBody ?? Data())
-        let items = try JSONDecoder().decode([Item].self, from: Data((payload.messages.last?.content ?? "[]").utf8))
         try await Task.sleep(for: .milliseconds(80))
-        let translated = try JSONSerialization.data(withJSONObject: ["translations": items.map { ["segmentId": $0.segmentId.uuidString, "text": "你好"] }])
-        let response = try JSONSerialization.data(withJSONObject: ["choices": [["message": ["content": String(decoding: translated, as: UTF8.self)]]]])
+        let content = #"{"0":"你好"}"#
+        let response = try JSONSerialization.data(withJSONObject: [
+            "choices": [["message": ["content": content]]]
+        ])
         return HTTPResponse(statusCode: 200, headers: [:], body: response)
     }
 }
@@ -380,7 +374,7 @@ actor OneItemCoordinator: TranslationCoordinating {
         visionFallbackEnabled: Bool
     ) async throws -> EngineOutput {
         itemCounts.append(snapshot.regions.count)
-        if snapshot.regions.count > 1 {
+        if snapshot.regions.count > TranslationCoordinator.localPageTextBatchSize {
             throw TranslationError.networkFailure
         }
         let translations = snapshot.regions.map { region in
