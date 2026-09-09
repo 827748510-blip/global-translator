@@ -44,7 +44,7 @@ public final class SelectionTranslatePanel: NSPanel {
             let location = NSEvent.mouseLocation
             guard let self else { return }
             assert(Thread.isMainThread)
-            nonisolated(unsafe) let panel = self
+            let panel = self
             _ = MainActor.assumeIsolated {
                 guard panel.isVisible else { return false }
                 if panel.containsOwnedUI(at: location) { return false }
@@ -64,7 +64,7 @@ public final class SelectionTranslatePanel: NSPanel {
                 let location = NSEvent.mouseLocation
                 guard let self else { return event }
                 assert(Thread.isMainThread)
-                nonisolated(unsafe) let panel = self
+                let panel = self
                 _ = MainActor.assumeIsolated {
                     guard panel.isVisible else { return false }
                     if panel.containsOwnedUI(at: location) { return false }
@@ -81,7 +81,7 @@ public final class SelectionTranslatePanel: NSPanel {
             guard isEscape else { return }
             guard let self else { return }
             assert(Thread.isMainThread)
-            nonisolated(unsafe) let panel = self
+            let panel = self
             _ = MainActor.assumeIsolated {
                 guard panel.isVisible else { return false }
                 if panel.hasOwnedMenuOpen() { return false }
@@ -96,7 +96,7 @@ public final class SelectionTranslatePanel: NSPanel {
             guard isEscape else { return event }
             guard let self else { return event }
             assert(Thread.isMainThread)
-            nonisolated(unsafe) let panel = self
+            let panel = self
             let consume = MainActor.assumeIsolated {
                 guard panel.isVisible else { return false }
                 if panel.hasOwnedMenuOpen() { return false }
