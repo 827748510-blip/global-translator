@@ -142,9 +142,9 @@ extension ApplicationController {
         Task { await previousSession?.clearCache() }
         rebuildSession()
         queueSave()
-        // Wire overlay / bridge / 滑词 immediately so the popup switch can
-        // translate without waiting on a health check. DeepSeek must not
-        // `read()` Keychain here; `makeBackend` only holds the store.
+        // Wire overlay / bridge / 滑词 immediately so translate can run
+        // without waiting on a health check. DeepSeek must not `read()`
+        // Keychain here; `makeBackend` only holds the store.
         if let backend = try? components.backendFactory.makeBackend(
             kind: kind,
             configuration: configuration,

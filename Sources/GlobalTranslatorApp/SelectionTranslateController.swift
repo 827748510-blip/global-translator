@@ -116,7 +116,6 @@ public final class SelectionTranslateController {
     private var optimizeMode: PromptOptimizeMode = .communicationPolish
     private var backend: BackendKind = .deepSeekCloud
     public var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
-    public var onBackendChange: ((BackendKind) -> Void)?
 
     public var isEnabled: Bool { enabled }
 
@@ -163,11 +162,7 @@ public final class SelectionTranslateController {
         wired.onOptimizeModeChange = { [weak self] mode in
             self?.handleOptimizeModeChange(mode)
         }
-        wired.onBackendChange = { [weak self] kind in
-            self?.handleBackendChange(kind)
-        }
         wired.optimizeMode = optimizeMode
-        wired.backend = backend
     }
 
     public func setOptimizeMode(_ mode: PromptOptimizeMode) {
@@ -177,7 +172,6 @@ public final class SelectionTranslateController {
 
     public func setBackend(_ kind: BackendKind) {
         backend = kind
-        popover.backend = kind
     }
 
     public func setEnabled(_ enabled: Bool) {
@@ -336,32 +330,6 @@ public final class SelectionTranslateController {
         optimizeMode = mode
         popover.optimizeMode = mode
         onOptimizeModeChange?(mode)
-    }
-
-    private func handleBackendChange(_ kind: BackendKind) {
-        guard backend != kind else { return }
-        let previousStatus = popover.currentContent?.status
-        backend = kind
-        popover.backend = kind
-        onBackendChange?(kind)
-        if kind == .deepSeekCloud && !isCloudKeyConfigured() {
-            cancelPresentation()
-            presentMissingDeepSeekKey()
-            return
-        }
-        switch previousStatus {
-        case .loading, .failed:
-            performTranslate()
-        case .optimizing:
-            performOptimize()
-        default:
-            break
-        }
-    }
-
-    private func presentMissingDeepSeekKey() {
-        guard let content = popover.currentContent else { return }
-        presentMissingDeepSeekKeyIfOriginal(content.original, screenFrame: content.screenFrame)
     }
 
     private func presentMissingDeepSeekKeyIfOriginal(_ original: String, screenFrame: CGRect) {

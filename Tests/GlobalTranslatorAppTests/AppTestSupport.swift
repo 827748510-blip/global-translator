@@ -607,9 +607,7 @@ final class FakeSelectionPopover: SelectionPopoverControlling {
     var onTranslate: (() -> Void)?
     var onOptimize: (() -> Void)?
     var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
-    var onBackendChange: ((BackendKind) -> Void)?
     var optimizeMode: PromptOptimizeMode = .communicationPolish
-    var backend: BackendKind = .deepSeekCloud
     var extraInteractionFrames: [CGRect] = []
     var copyFeedback: SelectionCopyFeedback = .idle
     func show(_ content: SelectionPopoverContent) {
@@ -636,10 +634,6 @@ final class FakeSelectionPopover: SelectionPopoverControlling {
     func simulateOptimizeMode(_ mode: PromptOptimizeMode) {
         optimizeMode = mode
         onOptimizeModeChange?(mode)
-    }
-    func simulateBackend(_ kind: BackendKind) {
-        backend = kind
-        onBackendChange?(kind)
     }
     func containsInteraction(at location: CGPoint) -> Bool {
         if panelFrame?.contains(location) == true { return true }

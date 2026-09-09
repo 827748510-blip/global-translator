@@ -9,16 +9,13 @@ import GlobalTranslatorCore
 @MainActor
 public final class SelectionPopoverChrome: ObservableObject {
     @Published public var optimizeMode: PromptOptimizeMode = .communicationPolish
-    @Published public var backend: BackendKind = .deepSeekCloud
     @Published public var copyFeedback: SelectionCopyFeedback = .idle
 
     public init(
         optimizeMode: PromptOptimizeMode = .communicationPolish,
-        backend: BackendKind = .deepSeekCloud,
         copyFeedback: SelectionCopyFeedback = .idle
     ) {
         self.optimizeMode = optimizeMode
-        self.backend = backend
         self.copyFeedback = copyFeedback
     }
 }
@@ -31,7 +28,6 @@ public struct SelectionTranslatePopoverView: View {
     var onTranslate: () -> Void = {}
     var onOptimize: () -> Void = {}
     var onOptimizeModeChange: (PromptOptimizeMode) -> Void = { _ in }
-    var onBackendChange: (BackendKind) -> Void = { _ in }
 
     public init(
         content: SelectionPopoverContent,
@@ -39,8 +35,7 @@ public struct SelectionTranslatePopoverView: View {
         onCopy: @escaping () -> Void = {},
         onTranslate: @escaping () -> Void = {},
         onOptimize: @escaping () -> Void = {},
-        onOptimizeModeChange: @escaping (PromptOptimizeMode) -> Void = { _ in },
-        onBackendChange: @escaping (BackendKind) -> Void = { _ in }
+        onOptimizeModeChange: @escaping (PromptOptimizeMode) -> Void = { _ in }
     ) {
         self.content = content
         self.chrome = chrome
@@ -48,7 +43,6 @@ public struct SelectionTranslatePopoverView: View {
         self.onTranslate = onTranslate
         self.onOptimize = onOptimize
         self.onOptimizeModeChange = onOptimizeModeChange
-        self.onBackendChange = onBackendChange
     }
 
     public var body: some View {
@@ -95,7 +89,6 @@ public struct SelectionTranslatePopoverView: View {
 
     private var actionsGroup: some View {
         VStack(alignment: .leading, spacing: GTSelectionMetrics.actionsSpacing) {
-            GTSelectionBackendPicker(selection: backendBinding)
             if content.showsOptimizeAction {
                 GTOptimizeModePicker(
                     selection: modeBinding,
@@ -142,13 +135,6 @@ public struct SelectionTranslatePopoverView: View {
         Binding(
             get: { chrome.optimizeMode },
             set: { onOptimizeModeChange($0) }
-        )
-    }
-
-    private var backendBinding: Binding<BackendKind> {
-        Binding(
-            get: { chrome.backend },
-            set: { onBackendChange($0) }
         )
     }
 

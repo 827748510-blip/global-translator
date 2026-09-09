@@ -248,7 +248,7 @@ struct SelectionPopoverContentTests {
     }
 
     @Test
-    func selectionBackendPickerTitlesAndMissingKeyCopy() {
+    func settingsBackendTitlesAndMissingKeyCopy() {
         #expect(BackendKind.local.displayTitle == "本地模型")
         #expect(BackendKind.deepSeekCloud.displayTitle == "DeepSeek 云端")
         #expect(SelectionTranslateSupport.missingDeepSeekKeyCopy.contains("设置"))
