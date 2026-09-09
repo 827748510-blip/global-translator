@@ -170,6 +170,9 @@ struct GlobalTranslatorCoreTests {
         #expect(!serialized.contains("screenFrame"))
         #expect(!serialized.contains("confidence"))
         #expect(!serialized.contains("windowRevision"))
+        #expect(!serialized.contains("reasoning_effort"))
+        let reasoning = try #require(object["reasoning"] as? [String: Any])
+        #expect(reasoning["effort"] as? String == "none")
 
         let unauthorized = FakeTransport(responses: [HTTPResponse(statusCode: 401, headers: [:], body: Data())])
         let unauthorizedBackend = DeepSeekBackend(transport: unauthorized, credentialStore: credentials)
