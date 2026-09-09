@@ -10,7 +10,10 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
     public init(
         baseURL: URL,
         model: String,
-        transport: any HTTPTransport = URLSessionHTTPTransport()
+        transport: any HTTPTransport = URLSessionHTTPTransport(
+            requestTimeout: 90,
+            resourceTimeout: 180
+        )
     ) throws {
         self.baseURL = try EndpointValidator.validateLocalBaseURL(baseURL)
         self.model = model

@@ -50,11 +50,46 @@ public protocol TranslationBackendFactory: Sendable {
     ) async -> BackendHealth
 }
 
+/// Caches one serial local backend per factory so overlay coalescing and
+/// the extension bridge share a single Ollama flight. A value-type factory
+/// still shares this box when copied.
+private final class LocalSerialBackendCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cachedURL: URL?
+    private var cachedModel: String?
+    private var cached: SerializingTranslationBackend?
+
+    func backend(
+        baseURL: URL,
+        model: String,
+        transport: any HTTPTransport
+    ) throws -> SerializingTranslationBackend {
+        lock.lock()
+        defer { lock.unlock() }
+        if let cached, cachedURL == baseURL, cachedModel == model {
+            return cached
+        }
+        let local = try LocalOpenAIBackend(baseURL: baseURL, model: model, transport: transport)
+        let serial = SerializingTranslationBackend(base: local)
+        cachedURL = baseURL
+        cachedModel = model
+        cached = serial
+        return serial
+    }
+}
+
 public struct LiveTranslationBackendFactory: TranslationBackendFactory, Sendable {
     private let transport: any HTTPTransport
+    private let localTransport: any HTTPTransport
+    private let localSerial: LocalSerialBackendCache
 
-    public init(transport: any HTTPTransport = URLSessionHTTPTransport()) {
+    public init(
+        transport: any HTTPTransport = URLSessionHTTPTransport(),
+        localTransport: (any HTTPTransport)? = nil
+    ) {
         self.transport = transport
+        self.localTransport = localTransport ?? transport
+        self.localSerial = LocalSerialBackendCache()
     }
 
     public func makeBackend(
@@ -66,10 +101,12 @@ public struct LiveTranslationBackendFactory: TranslationBackendFactory, Sendable
         case .deepSeekCloud:
             return DeepSeekBackend(transport: transport, credentialStore: credentials)
         case .local:
-            return CoalescingTranslationBackend(base: try LocalOpenAIBackend(
+            // Separate coalescers so overlay cancel-all cannot abort the
+            // bridge waiter; both wrap the same serial Ollama slot.
+            return CoalescingTranslationBackend(base: try localSerial.backend(
                 baseURL: configuration.localBaseURL,
                 model: configuration.localModel,
-                transport: transport
+                transport: localTransport
             ))
         }
     }

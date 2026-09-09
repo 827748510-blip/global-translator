@@ -40,6 +40,7 @@ extension ApplicationController {
         guard viewModel.canEnableAutomaticTranslation else {
             automaticEnablePending = false
             viewModel.isAutomaticTranslationEnabled = false
+            session?.setBridgeActive(false)
             viewModel.healthMessage = viewModel.automaticEnableBlockedReason
             applyStatus(.off)
             return
@@ -78,6 +79,7 @@ extension ApplicationController {
                 } else {
                     self.configuration.autoTranslateEnabled = false
                 }
+                self.session?.setBridgeActive(false)
                 self.session?.stop()
                 self.viewModel.healthMessage = health.status.uiSafeFailureMessage
                 self.applyStatus(.error)
@@ -90,6 +92,7 @@ extension ApplicationController {
                 self.automaticEnableTask = nil
                 self.viewModel.isAutomaticTranslationEnabled = false
                 self.configuration.autoTranslateEnabled = false
+                self.session?.setBridgeActive(false)
                 self.session?.stop()
                 self.applyStatus(.off)
                 return
@@ -98,7 +101,8 @@ extension ApplicationController {
             self.automaticEnablePending = false
             self.automaticEnableTask = nil
             self.configuration.autoTranslateEnabled = true
-            self.session?.start()
+            self.session?.setBridgeActive(true)
+            self.startWindowSessionIfPermitted()
             self.queueSave()
         }
     }
@@ -150,11 +154,17 @@ extension ApplicationController {
             configuration: configuration,
             credentials: components.credentialStore
         ) {
+            let bridgeBackend = (try? components.backendFactory.makeBackend(
+                kind: configuration.backend,
+                configuration: configuration,
+                credentials: components.credentialStore
+            )) ?? backend
             session?.configure(
                 backends: [backend],
                 backend: configuration.backend,
                 model: modelIdentifier,
-                visionFallbackEnabled: configuration.visionFallbackEnabled
+                visionFallbackEnabled: configuration.visionFallbackEnabled,
+                bridgeBackends: [bridgeBackend]
             )
         }
         queueSave()
@@ -167,6 +177,7 @@ extension ApplicationController {
         viewModel.availableModels = []
         viewModel.isAutomaticTranslationEnabled = false
         configuration.autoTranslateEnabled = false
+        session?.setBridgeActive(false)
         session?.stop()
         await session?.clearCache()
         queueSave()
@@ -226,15 +237,24 @@ extension ApplicationController {
         let grantsChanged = previous.accessibilityTrusted != snapshot.accessibilityTrusted
             || previous.screenCaptureAuthorized != snapshot.screenCaptureAuthorized
         guard !configurationLoadFailed else { return }
-        guard snapshot.accessibilityTrusted || snapshot.screenCaptureAuthorized else {
-            if viewModel.isAutomaticTranslationEnabled || automaticEnablePending {
-                automaticRequestToken &+= 1
-                automaticEnableTask?.cancel()
-                automaticEnableTask = nil
-                automaticEnablePending = false
-                viewModel.isAutomaticTranslationEnabled = false
+        guard snapshot.hasCaptureAccess else {
+            // Overlay capture cannot run. The extension bridge may keep
+            // serving page text only while the master switch is on *and*
+            // the backend is still ready — do not revive the switch after a
+            // failed health check or while enable is in flight.
+            if configuration.autoTranslateEnabled || viewModel.isAutomaticTranslationEnabled || automaticEnablePending {
                 session?.stop()
+            }
+            if configuration.autoTranslateEnabled, viewModel.canEnableAutomaticTranslation {
+                session?.setBridgeActive(true)
+                viewModel.isAutomaticTranslationEnabled = true
                 applyStatus(.missingPermission)
+            } else if !automaticEnablePending {
+                viewModel.isAutomaticTranslationEnabled = false
+                session?.setBridgeActive(false)
+                if !configuration.autoTranslateEnabled {
+                    applyStatus(.off)
+                }
             }
             return
         }
@@ -381,8 +401,12 @@ extension ApplicationController {
         if viewModel.backendReady, let backend = try? components.backendFactory.makeBackend(
             kind: configuration.backend, configuration: configuration, credentials: components.credentialStore
         ) {
+            let bridgeBackend = (try? components.backendFactory.makeBackend(
+                kind: configuration.backend, configuration: configuration, credentials: components.credentialStore
+            )) ?? backend
             session?.configure(backends: [backend], backend: configuration.backend,
-                               model: modelIdentifier, visionFallbackEnabled: configuration.visionFallbackEnabled)
+                               model: modelIdentifier, visionFallbackEnabled: configuration.visionFallbackEnabled,
+                               bridgeBackends: [bridgeBackend])
             if shouldResume { maybeStartPersistedSession() }
         } else {
             scheduleBackendRefresh(startPersistedSession: shouldResume)
@@ -414,6 +438,7 @@ extension ApplicationController {
         automaticEnablePending = false
         viewModel.isAutomaticTranslationEnabled = false
         configuration.autoTranslateEnabled = false
+        session?.setBridgeActive(false)
         session?.stop()
         applyStatus(.off)
         queueSave()

@@ -5,6 +5,12 @@ import GlobalTranslatorCapture
 import GlobalTranslatorCore
 
 public actor TranslationCoordinator {
+    /// Overlay labels: a few short strings per Ollama call.
+    public static let localOverlayBatchSize = 3
+    /// Extension/page text: one string per call. qwen3 thinking + JSON
+    /// schema over several items often stalls past the HTTP TTFB timeout.
+    public static let localPageTextBatchSize = 1
+
     public let cache: TranslationCache
     public let circuitBreaker: CircuitBreaker
     public let batcher: TranslationBatcher
@@ -142,9 +148,18 @@ public actor TranslationCoordinator {
             }
         }
 
-        let requestBatcher = kind == .local
-            ? TranslationBatcher(maximumItems: min(3, batcher.maximumItems), maximumSourceCharacters: batcher.maximumSourceCharacters)
-            : batcher
+        let requestBatcher: TranslationBatcher
+        if kind == .local {
+            let localMaximum = snapshot.source == .pageText
+                ? Self.localPageTextBatchSize
+                : Self.localOverlayBatchSize
+            requestBatcher = TranslationBatcher(
+                maximumItems: min(localMaximum, batcher.maximumItems),
+                maximumSourceCharacters: batcher.maximumSourceCharacters
+            )
+        } else {
+            requestBatcher = batcher
+        }
         let batches = requestBatcher.makeBatches(from: pendingEntries, windowRevision: revision)
         let vision = makeVisionImages(
             snapshot: snapshot,
@@ -157,15 +172,17 @@ public actor TranslationCoordinator {
 
         for batch in batches {
             try ensureCurrent(revision: revision, generation: generation)
-            do {
-                try await circuitBreaker.check()
-                try ensureCurrent(revision: revision, generation: generation)
-            } catch let error as TranslationCoordinatorError {
-                if case .circuitOpen = error {
-                    setState(.circuitOpen)
-                    emit(.failed(status: .circuitOpen))
+            if snapshot.source != .pageText {
+                do {
+                    try await circuitBreaker.check()
+                    try ensureCurrent(revision: revision, generation: generation)
+                } catch let error as TranslationCoordinatorError {
+                    if case .circuitOpen = error {
+                        setState(.circuitOpen)
+                        emit(.failed(status: .circuitOpen))
+                    }
+                    throw error
                 }
-                throw error
             }
 
             let batchImages = batch.request.items.compactMap { vision.imagesByID[$0.id] }
@@ -185,10 +202,17 @@ public actor TranslationCoordinator {
                 throw error
             } catch let error as TranslationCoordinatorError {
                 throw error
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 try ensureCurrent(revision: revision, generation: generation)
                 let translationError = error as? TranslationError ?? .networkFailure
-                await circuitBreaker.recordFailure(translationError)
+                // Page text from the extension is paced by the content script.
+                // Recording those timeouts as circuit failures stalled every
+                // tab for 30s after three dense-page batches.
+                if snapshot.source != .pageText {
+                    await circuitBreaker.recordFailure(translationError)
+                }
                 try ensureCurrent(revision: revision, generation: generation)
                 setState(.backendError)
                 emit(.failed(status: engineFailureStatus(for: translationError)))

@@ -7,6 +7,9 @@ import GlobalTranslatorUI
 @MainActor
 public final class TranslationSession {
     public private(set) var isRunning = false
+    /// Menu-bar master switch for the extension bridge. Independent of
+    /// `isRunning`, which only tracks window overlay capture.
+    public private(set) var isBridgeActive = false
     public private(set) var activeRevision: UInt64 = 0
 
     private let monitor: any ActiveWindowMonitoring
@@ -73,7 +76,8 @@ public final class TranslationSession {
         backends: [any TranslationBackend],
         backend: BackendKind,
         model: String,
-        visionFallbackEnabled: Bool
+        visionFallbackEnabled: Bool,
+        bridgeBackends: [any TranslationBackend]? = nil
     ) {
         stop()
         self.backend = backend
@@ -81,7 +85,9 @@ public final class TranslationSession {
         self.visionFallbackEnabled = visionFallbackEnabled
         let coordinator = coordinatorFactory(backends, makeEventSink())
         self.coordinator = coordinator
-        self.bridgeCoordinator = coordinatorFactory(backends, makeEventSink())
+        // A dedicated backend instance (when provided) so overlay coalescing
+        // cannot cancel in-flight extension translations.
+        self.bridgeCoordinator = coordinatorFactory(bridgeBackends ?? backends, makeEventSink())
         let outputHandler: @MainActor @Sendable (EngineOutput) -> Void = { [weak self] output in
             self?.receive(output)
         }
@@ -109,10 +115,10 @@ public final class TranslationSession {
         activeWindow = nil
         lastRendered = []
         if let coordinator { Task { await coordinator.cancelPendingRequests() } }
-        if let bridgeCoordinator { Task { await bridgeCoordinator.cancelPendingRequests() } }
         // Keep both coordinators. stop/start only pauses window tracking; the
-        // extension bridge must still be able to translate after a permission
-        // refresh bounce that calls stop() then start() without configure().
+        // extension bridge stays available while `isBridgeActive` is true,
+        // including after a permission-refresh bounce that calls stop() then
+        // start() without configure(). Do not cancel in-flight bridge work.
         activeRevision &+= 1
         captureTask?.cancel()
         captureTask = nil
@@ -128,6 +134,29 @@ public final class TranslationSession {
         visionFallbackEnabled = enabled
     }
 
+    /// The extension bridge follows the menu-bar master switch, not window
+    /// capture. `stop()` / `start()` only pause overlay tracking.
+    public func setBridgeActive(_ active: Bool) {
+        isBridgeActive = active
+        guard active, let activeWindow, shouldSkipOverlayForExtensionBridge(activeWindow.bundleIdentifier) else {
+            return
+        }
+        overlay.hideAll()
+        cancelTranslation()
+        captureTask?.cancel()
+        captureTask = nil
+        logger.event("window_skipped_for_bridge", fields: [
+            "bundle": activeWindow.bundleIdentifier,
+            "revision": String(activeWindow.revision)
+        ])
+    }
+
+    /// Chromium windows are translated by the extension. Overlay AX/OCR of
+    /// Chrome while a bridge batch is in flight starves local Ollama.
+    private func shouldSkipOverlayForExtensionBridge(_ bundleIdentifier: String) -> Bool {
+        isBridgeActive && ChromiumBrowserBundles.contains(bundleIdentifier)
+    }
+
     public func clearCache() async {
         await coordinator?.clearCache()
     }
@@ -135,21 +164,53 @@ public final class TranslationSession {
     /// Translates texts arriving from the browser-extension bridge. Bypasses
     /// window tracking entirely — no overlays, no revisions — and uses a
     /// dedicated coordinator so the window pipeline's revision gate cannot
-    /// reject these unversioned requests. The returned array is aligned with
-    /// the input order; nil marks entries filtered out or left untranslated.
-    /// Gated on `isRunning` so the menu-bar master switch also governs the
-    /// extension. The coordinator itself outlives stop/start; only
-    /// `configure()` replaces it.
-    public func translateBridgeTexts(_ texts: [String]) async throws -> [String?] {
-        guard isRunning else { throw ExtensionBridgeError.translatorInactive }
-        guard let coordinator = bridgeCoordinator else { throw ExtensionBridgeError.translatorUnavailable }
+    /// reject these unversioned requests. The returned batch is aligned with
+    /// the input order. `nil` marks entries filtered out (already Chinese).
+    /// Transient local-backend failures are also `nil` and listed in
+    /// `retryIndexes` so the extension does not treat them as already asked.
+    /// Gated on `isBridgeActive` (the menu-bar master switch) rather than
+    /// `isRunning`, so Chrome in-page translation works without Accessibility
+    /// or Screen Recording. The coordinator itself outlives stop/start;
+    /// only `configure()` replaces it.
+    ///
+    /// Local backends are translated one string at a time so a dense page
+    /// (X.com, 30+ strings) cannot pile sequential Ollama round-trips into
+    /// a single JSON-schema call that dies as `networkFailure` and opens the
+    /// circuit. Transient item failures do not 500 the whole HTTP request.
+    public func translateBridgeTexts(_ texts: [String]) async throws -> ExtensionBridgeTranslation {
+        guard isBridgeActive else { throw ExtensionBridgeError.translatorInactive }
+        guard bridgeCoordinator != nil else { throw ExtensionBridgeError.translatorUnavailable }
         let capped = Array(texts.prefix(400))
-        let regions = capped.map { text in
+        if backend == .local {
+            var results: [String?] = []
+            var retryIndexes: [Int] = []
+            results.reserveCapacity(capped.count)
+            for (index, text) in capped.enumerated() {
+                guard isBridgeActive else { throw ExtensionBridgeError.translatorInactive }
+                do {
+                    let part = try await translateBridgeSlice([text])
+                    results.append(contentsOf: part)
+                } catch let error as ExtensionBridgeError {
+                    throw error
+                } catch {
+                    logger.event("bridge_item_failed", fields: ["reason": String(describing: error)])
+                    results.append(nil)
+                    retryIndexes.append(index)
+                }
+            }
+            return ExtensionBridgeTranslation(translations: results, retryIndexes: retryIndexes)
+        }
+        return ExtensionBridgeTranslation(translations: try await translateBridgeSlice(capped))
+    }
+
+    private func translateBridgeSlice(_ texts: [String]) async throws -> [String?] {
+        guard let coordinator = bridgeCoordinator else { throw ExtensionBridgeError.translatorUnavailable }
+        let regions = texts.map { text in
             TextRegion(id: UUID(), sourceText: text, screenFrame: .zero,
                        confidence: 1, source: .accessibility, windowRevision: 0)
         }
         let eligible = regions.filter { TextFilter.shouldTranslate($0.sourceText) && $0.sourceText.count <= 4_000 }
-        guard !eligible.isEmpty else { return capped.map { _ in nil } }
+        guard !eligible.isEmpty else { return texts.map { _ in nil } }
         let descriptor = ActiveWindowDescriptor(
             pid: 0, bundleIdentifier: "extension.bridge", windowID: nil,
             frame: .zero, revision: 0, invalidatesOverlay: false)
@@ -209,13 +270,10 @@ public final class TranslationSession {
             // page (like native browser translation) — but only when the
             // focused window belongs to the debug-enabled browser instance:
             // isApplicable matches the window PID against the CDP browser
-            // process, so windows of another browser process with the same
-            // bundle identifier (main Chrome without a debug port) fall
-            // through to bubbles instead of being silently swallowed. Once
-            // the channel answers for this window it OWNS it: bubbles never
-            // appear, even while the channel cools down or the page currently
-            // has nothing translatable. Only a genuine channel failure drops
-            // to the bubble pipeline.
+            // process. Main Chrome without a debug port is owned by the
+            // extension bridge: overlay AX/OCR is skipped so it cannot race
+            // local Ollama. A genuine CDP failure also skips overlay while
+            // the bridge is on. Other apps still use bubbles.
             if let inPage,
                translatedBundleIdentifiers.contains(descriptor.bundleIdentifier),
                await inPage.isApplicable(bundleIdentifier: descriptor.bundleIdentifier, windowPID: descriptor.pid) {
@@ -234,6 +292,18 @@ public final class TranslationSession {
                 case .channelFailed:
                     self.inPageCooldownUntil = Date().addingTimeInterval(5)
                 }
+            }
+            // Normal Chrome (no debug port) used to fall through to overlay
+            // bubbles. With the extension bridge on, that AX scrape races
+            // `bridge_translate` on the same local Ollama process.
+            if self.shouldSkipOverlayForExtensionBridge(descriptor.bundleIdentifier) {
+                self.overlay.hideAll()
+                self.cancelTranslation()
+                self.logger.event("window_skipped_for_bridge", fields: [
+                    "bundle": descriptor.bundleIdentifier,
+                    "revision": String(descriptor.revision)
+                ])
+                return
             }
             await self.runCapturePipeline(descriptor: descriptor, expectedRevision: expectedRevision, capture: capture)
         }
@@ -443,7 +513,7 @@ public final class TranslationSession {
                 let permission = self.permissions.snapshot
                 guard !permission.secureInputEnabled, !permission.sessionLocked else { continue }
                 self.protectionTask = nil
-                guard permission.accessibilityTrusted || permission.screenCaptureAuthorized else {
+                guard permission.hasCaptureAccess else {
                     self.statusHandler(.missingPermission)
                     return
                 }

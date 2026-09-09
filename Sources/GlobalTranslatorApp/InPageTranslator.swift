@@ -52,13 +52,7 @@ public actor CDPInPageTranslator: InPageTranslating {
 
     public init(port: UInt16 = 9_222) {
         self.port = port
-        self.browserBundleIdentifiers = [
-            "com.google.Chrome",
-            "com.google.Chrome.canary",
-            "org.chromium.Chromium",
-            "com.microsoft.edgemac",
-            "com.brave.Browser"
-        ]
+        self.browserBundleIdentifiers = ChromiumBrowserBundles.identifiers
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 5
         configuration.timeoutIntervalForResource = 10

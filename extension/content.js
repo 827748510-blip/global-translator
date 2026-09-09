@@ -4,7 +4,11 @@
 // Mirrors the extraction/apply rules of the CDP in-page pipeline.
 (() => {
   const SKIPPED_TAGS = ["SCRIPT", "STYLE", "NOSCRIPT", "CODE", "PRE", "TEXTAREA"];
-  const CHUNK_SIZE = 30;
+  // Keep this aligned with local Ollama: qwen3 thinking + JSON schema is
+  // reliable one (or a few) string(s) at a time. A 30-item POST made the
+  // desktop app run many sequential round-trips under one fetch and die as
+  // networkFailure, then open the circuit for ~30s.
+  const CHUNK_SIZE = 3;
   const MAX_PER_ROUND = 200;
   const MAX_ROUNDS = 5;
   const OBSERVER_DEBOUNCE_MS = 800;
@@ -21,6 +25,10 @@
   let debounceTimer = null;
   let retryTimer = null;
   let retryDelay = RETRY_INITIAL_MS;
+  // Arm a retry after this pass finishes. Calling scheduleRetry() while
+  // `running` is true lets the timer fire into a no-op run() that clears
+  // retryTimer, so unmarked strings on a quiet page never get asked again.
+  let retryPending = false;
 
   function textOf(node) {
     return (node.nodeValue || "").trim();
@@ -82,12 +90,16 @@
           resolve(null);
           return;
         }
-        resolve(response.translations || []);
+        resolve({
+          translations: response.translations || [],
+          retry: Array.isArray(response.retry) ? response.retry : []
+        });
       });
     });
   }
 
-  function apply(items, translations) {
+  function apply(items, translations, retryIndexes) {
+    const retry = new Set(retryIndexes || []);
     let applied = 0;
     for (let i = 0; i < items.length; i++) {
       const entry = store.entries.get(items[i].id);
@@ -96,8 +108,10 @@
       const original = node.nodeValue;
       const trimmed = original.trim();
       if (!trimmed || trimmed !== items[i].text) continue;
-      // Mark as asked even when the app filtered the text out (nil
-      // translation), otherwise every DOM mutation would re-request it.
+      // Transient backend failures stay unmarked so the next round
+      // asks again. Deliberate skips (already Chinese) are marked so a
+      // DOM mutation does not re-request them forever.
+      if (retry.has(i)) continue;
       entry.source = items[i].text;
       const translated = translations[i];
       if (!translated || typeof translated !== "string") continue;
@@ -119,19 +133,24 @@
         if (items.length === 0) break;
         for (let offset = 0; offset < items.length; offset += CHUNK_SIZE) {
           const chunk = items.slice(offset, offset + CHUNK_SIZE);
-          const translations = await translateChunk(chunk.map((item) => item.text));
-          if (!translations) {
-            // App unreachable or master switch bouncing; retry without
-            // waiting for another DOM mutation.
-            scheduleRetry();
+          const result = await translateChunk(chunk.map((item) => item.text));
+          if (!result) {
+            retryPending = true;
             return;
           }
-          apply(chunk, translations);
+          apply(chunk, result.translations, result.retry);
+          if (result.retry.length > 0) {
+            retryPending = true;
+          }
         }
       }
-      retryDelay = RETRY_INITIAL_MS;
+      if (!retryPending) retryDelay = RETRY_INITIAL_MS;
     } finally {
       running = false;
+      if (retryPending && enabled && document.visibilityState === "visible") {
+        retryPending = false;
+        scheduleRetry();
+      }
     }
   }
 
@@ -146,6 +165,10 @@
     retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
     retryTimer = setTimeout(() => {
       retryTimer = null;
+      if (running) {
+        retryPending = true;
+        return;
+      }
       run();
     }, delay);
   }
@@ -167,6 +190,7 @@
     debounceTimer = null;
     if (retryTimer) clearTimeout(retryTimer);
     retryTimer = null;
+    retryPending = false;
   }
 
   chrome.storage.local.get({ enabled: true }, (prefs) => {

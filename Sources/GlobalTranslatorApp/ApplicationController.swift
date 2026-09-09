@@ -228,11 +228,17 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             session?.stop()
             return
         }
+        let bridgeBackend = (try? components.backendFactory.makeBackend(
+            kind: expectedConfiguration.backend,
+            configuration: expectedConfiguration,
+            credentials: components.credentialStore
+        )) ?? backend
         session?.configure(
             backends: [backend],
             backend: expectedConfiguration.backend,
             model: modelIdentifier,
-            visionFallbackEnabled: expectedConfiguration.visionFallbackEnabled
+            visionFallbackEnabled: expectedConfiguration.visionFallbackEnabled,
+            bridgeBackends: [bridgeBackend]
         )
     }
 
@@ -298,18 +304,32 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
 
     func maybeStartPersistedSession() {
         guard configuration.autoTranslateEnabled else {
+            session?.setBridgeActive(false)
             applyStatus(.off)
             return
         }
         viewModel.permissionSnapshot = components.permissionController.snapshot
         guard viewModel.canEnableAutomaticTranslation else {
             viewModel.isAutomaticTranslationEnabled = false
+            session?.setBridgeActive(false)
             viewModel.healthMessage = viewModel.automaticEnableBlockedReason
             applyStatus(.off)
             return
         }
         viewModel.isAutomaticTranslationEnabled = true
-        session?.start()
+        session?.setBridgeActive(true)
+        startWindowSessionIfPermitted()
+    }
+
+    /// Overlay capture still needs AX or Screen Recording. The extension
+    /// bridge is already active via `setBridgeActive` and must not wait.
+    func startWindowSessionIfPermitted() {
+        viewModel.permissionSnapshot = components.permissionController.snapshot
+        if viewModel.permissionSnapshot.hasCaptureAccess {
+            session?.start()
+        } else {
+            applyStatus(.missingPermission)
+        }
     }
 
     var modelIdentifier: String {

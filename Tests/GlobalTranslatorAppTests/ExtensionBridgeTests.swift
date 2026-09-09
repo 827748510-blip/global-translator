@@ -37,6 +37,55 @@ struct ExtensionBridgeRevisionGateTests {
 }
 
 struct ExtensionBridgeServerTests {
+    @Test
+    func contentScriptUsesSmallChunksForLocalOllama() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("extension/content.js")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        #expect(source.contains("const CHUNK_SIZE = 3;"))
+        #expect(!source.contains("const CHUNK_SIZE = 30;"))
+        #expect(source.contains("if (retry.has(i)) continue;"))
+        #expect(source.contains("let retryPending = false;"))
+        #expect(source.contains("retryPending = true;"))
+        #expect(source.contains("scheduleRetry();"))
+    }
+
+    @Test
+    func backgroundScriptSerializesLoopbackFetches() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("extension/background.js")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        #expect(source.contains("function enqueueBridgeFetch("))
+        #expect(source.contains("let bridgeChain = Promise.resolve();"))
+        #expect(source.contains("enqueueBridgeFetch(() =>"))
+        #expect(source.contains("retry: Array.isArray(payload.retry) ? payload.retry : []"))
+    }
+
+    @Test
+    func extensionManifestBumpsWhenBackgroundQueueChanges() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("extension/manifest.json")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        #expect(source.contains("\"version\": \"1.0.4\""))
+        #expect(!source.contains("\"version\": \"1.0.3\""))
+    }
+
+    @Test
+    func allowedOriginStaysPinnedToTheShippedExtensionId() {
+        #expect(ExtensionBridgeServer.allowedOrigin == "chrome-extension://fjggaipmhcfmgikhkjppkdliaoopaefc")
+        #expect(ExtensionBridgeServer.sideloadOrigin == "chrome-extension://fignfifoniblkonapihmkfakmlgkbkcf")
+        #expect(ExtensionBridgeServer.allowedOrigins.contains(ExtensionBridgeServer.allowedOrigin))
+        #expect(ExtensionBridgeServer.allowedOrigins.contains(ExtensionBridgeServer.sideloadOrigin))
+    }
     private func waitForPort(_ server: ExtensionBridgeServer) async -> UInt16? {
         for _ in 0..<200 {
             if let port = server.boundPort { return port }
@@ -59,7 +108,7 @@ struct ExtensionBridgeServerTests {
     @Test
     func translateRoundTripsAndKeepsNullsAligned() async throws {
         let server = ExtensionBridgeServer(port: 0) { texts in
-            texts.map { $0 == "skip" ? nil : "译:" + $0 }
+            ExtensionBridgeTranslation(translations: texts.map { $0 == "skip" ? nil : "译:" + $0 })
         }
         server.start()
         defer { server.stop() }
@@ -76,12 +125,39 @@ struct ExtensionBridgeServerTests {
         #expect(translations[0] as? String == "译:hello")
         #expect(translations[1] is NSNull)
         #expect(translations[2] as? String == "译:world")
+        let retry = object["retry"] as? [Any]
+        #expect(retry?.isEmpty == true)
         #expect((response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Access-Control-Allow-Origin") == ExtensionBridgeServer.allowedOrigin)
     }
 
     @Test
+    func translateResponseListsTransientFailureIndexesForRetry() async throws {
+        let server = ExtensionBridgeServer(port: 0) { texts in
+            ExtensionBridgeTranslation(
+                translations: texts.map { $0 == "fail" ? nil : "译:" + $0 },
+                retryIndexes: texts.enumerated().compactMap { $0.element == "fail" ? $0.offset : nil }
+            )
+        }
+        server.start()
+        defer { server.stop() }
+        let port = try await #require(waitForPort(server))
+        let body = try JSONSerialization.data(withJSONObject: ["texts": ["hello", "fail", "world"]])
+        let urlRequest = request(port, method: "POST", path: "/translate",
+                                 origin: ExtensionBridgeServer.allowedOrigin, body: body)
+        let (data, response) = try await URLSession(configuration: .ephemeral).data(for: urlRequest)
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let translations = try #require(object["translations"] as? [Any])
+        #expect(translations[0] as? String == "译:hello")
+        #expect(translations[1] is NSNull)
+        #expect(translations[2] as? String == "译:world")
+        let retryNumbers = try #require(object["retry"] as? [NSNumber])
+        #expect(retryNumbers.map(\.intValue) == [1])
+    }
+
+    @Test
     func missingOrForeignOriginIsRejected() async throws {
-        let server = ExtensionBridgeServer(port: 0) { texts in texts.map { $0 } }
+        let server = ExtensionBridgeServer(port: 0) { texts in ExtensionBridgeTranslation(translations: texts.map { $0 }) }
         server.start()
         defer { server.stop() }
         let port = try await #require(waitForPort(server))
@@ -103,8 +179,29 @@ struct ExtensionBridgeServerTests {
     }
 
     @Test
+    func sideloadOriginIsAcceptedAndEchoed() async throws {
+        let server = ExtensionBridgeServer(port: 0) { texts in ExtensionBridgeTranslation(translations: texts.map { "译:" + $0 }) }
+        server.start()
+        defer { server.stop() }
+        let port = try await #require(waitForPort(server))
+        let body = try JSONSerialization.data(withJSONObject: ["texts": ["hello"]])
+        let urlRequest = request(port, method: "POST", path: "/translate",
+                                 origin: ExtensionBridgeServer.sideloadOrigin, body: body)
+        let (data, response) = try await URLSession(configuration: .ephemeral).data(for: urlRequest)
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        #expect((response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Access-Control-Allow-Origin") == ExtensionBridgeServer.sideloadOrigin)
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect((object["translations"] as? [String]) == ["译:hello"])
+
+        let preflight = request(port, method: "OPTIONS", path: "/translate", origin: ExtensionBridgeServer.sideloadOrigin)
+        let (_, preflightResponse) = try await URLSession(configuration: .ephemeral).data(for: preflight)
+        #expect((preflightResponse as? HTTPURLResponse)?.statusCode == 204)
+        #expect((preflightResponse as? HTTPURLResponse)?.value(forHTTPHeaderField: "Access-Control-Allow-Origin") == ExtensionBridgeServer.sideloadOrigin)
+    }
+
+    @Test
     func healthEndpointAnswersForExtensionOnly() async throws {
-        let server = ExtensionBridgeServer(port: 0) { texts in texts.map { $0 } }
+        let server = ExtensionBridgeServer(port: 0) { texts in ExtensionBridgeTranslation(translations: texts.map { $0 }) }
         server.start()
         defer { server.stop() }
         let port = try await #require(waitForPort(server))
@@ -141,7 +238,7 @@ struct ExtensionBridgeServerTests {
 
     @Test
     func oversizedPayloadIsRejected() async throws {
-        let server = ExtensionBridgeServer(port: 0) { texts in texts.map { $0 } }
+        let server = ExtensionBridgeServer(port: 0) { texts in ExtensionBridgeTranslation(translations: texts.map { $0 }) }
         server.start()
         defer { server.stop() }
         let port = try await #require(waitForPort(server))
@@ -167,8 +264,10 @@ extension ApplicationControllerTests {
         await waitForStartupHealthCheck(controller)
         controller.session?.start()
         let session = try #require(controller.session)
+        #expect(session.isBridgeActive)
         let result = try await session.translateBridgeTexts(["Hello there", "已经是中文", "General Kenobi"])
-        #expect(result == ["你好 Hello there", nil, "你好 General Kenobi"])
+        #expect(result.translations == ["你好 Hello there", nil, "你好 General Kenobi"])
+        #expect(result.retryIndexes.isEmpty)
         await controller.stop()
     }
 
@@ -184,6 +283,7 @@ extension ApplicationControllerTests {
         try await controller.start()
         await waitForStartupHealthCheck(controller)
         let session = try #require(controller.session)
+        #expect(!session.isBridgeActive)
         await #expect(throws: ExtensionBridgeError.translatorInactive) {
             _ = try await session.translateBridgeTexts(["Hello"])
         }
@@ -202,14 +302,15 @@ extension ApplicationControllerTests {
         try await controller.start()
         await waitForStartupHealthCheck(controller)
         let session = try #require(controller.session)
+        #expect(session.isBridgeActive)
         session.start()
-        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        #expect(try await session.translateBridgeTexts(["Hello there"]).translations == ["你好 Hello there"])
         session.stop()
-        await #expect(throws: ExtensionBridgeError.translatorInactive) {
-            _ = try await session.translateBridgeTexts(["Hello there"])
-        }
+        #expect(!session.isRunning)
+        #expect(session.isBridgeActive)
+        #expect(try await session.translateBridgeTexts(["Hello there"]).translations == ["你好 Hello there"])
         session.start()
-        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        #expect(try await session.translateBridgeTexts(["Hello there"]).translations == ["你好 Hello there"])
         await controller.stop()
     }
 
@@ -231,7 +332,7 @@ extension ApplicationControllerTests {
         await waitForStartupHealthCheck(controller)
         let session = try #require(controller.session)
         #expect(session.isRunning)
-        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        #expect(try await session.translateBridgeTexts(["Hello there"]).translations == ["你好 Hello there"])
 
         permission.update(PermissionSnapshot(
             accessibilityTrusted: true,
@@ -241,7 +342,326 @@ extension ApplicationControllerTests {
         ))
         controller.refreshPermissions()
         #expect(session.isRunning)
-        #expect(try await session.translateBridgeTexts(["Hello there"]) == ["你好 Hello there"])
+        #expect(try await session.translateBridgeTexts(["Hello there"]).translations == ["你好 Hello there"])
+        await controller.stop()
+    }
+
+    @Test
+    func bridgeTranslatesWithoutCapturePermissionsWhileSessionNotRunning() async throws {
+        let denied = PermissionSnapshot(
+            accessibilityTrusted: false,
+            screenCaptureAuthorized: false,
+            secureInputEnabled: false,
+            sessionLocked: false
+        )
+        let permission = FakePermissionController(snapshot: denied)
+        let monitor = FakeWindowMonitor()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test",
+            translatedBundleIDs: ["com.google.Chrome"]))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                permission: permission,
+                monitor: monitor,
+                coordinator: TranslatingCoordinator()
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        #expect(controller.viewModel.backendReady)
+        #expect(controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(session.isBridgeActive)
+        #expect(!session.isRunning)
+        #expect(monitor.startCount == 0)
+        #expect(try await session.translateBridgeTexts(["Hello there"]).translations == ["你好 Hello there"])
+        await controller.stop()
+    }
+
+    @Test
+    func enablingAutoTranslateWithoutCapturePermissionsServesBridge() async throws {
+        let denied = PermissionSnapshot(
+            accessibilityTrusted: false,
+            screenCaptureAuthorized: false,
+            secureInputEnabled: false,
+            sessionLocked: false
+        )
+        let permission = FakePermissionController(snapshot: denied)
+        let monitor = FakeWindowMonitor()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: false, backend: .local, localModel: "test",
+            translatedBundleIDs: ["com.google.Chrome"]))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                permission: permission,
+                monitor: monitor,
+                coordinator: TranslatingCoordinator()
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        #expect(controller.viewModel.canEnableAutomaticTranslation)
+        #expect(!controller.viewModel.isAutomaticTranslationEnabled)
+        controller.viewModel.setAutomaticTranslation(true)
+        try await waitForCapture(timeout: 2) { controller.viewModel.isAutomaticTranslationEnabled }
+        let session = try #require(controller.session)
+        #expect(session.isBridgeActive)
+        #expect(!session.isRunning)
+        #expect(monitor.startCount == 0)
+        #expect(try await session.translateBridgeTexts(["Hello there"]).translations == ["你好 Hello there"])
+        await controller.stop()
+    }
+
+    @Test
+    func windowOverlayRefusesWithoutCapturePermissionsWhileBridgeWorks() async throws {
+        let denied = PermissionSnapshot(
+            accessibilityTrusted: false,
+            screenCaptureAuthorized: false,
+            secureInputEnabled: false,
+            sessionLocked: false
+        )
+        let permission = FakePermissionController(snapshot: denied)
+        let monitor = FakeWindowMonitor()
+        let overlay = FakeOverlay()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test",
+            translatedBundleIDs: ["qa.editor"]))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                permission: permission,
+                monitor: monitor,
+                overlay: overlay,
+                coordinator: TranslatingCoordinator(),
+                capture: SingleRegionCapturePipeline()
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        #expect(monitor.startCount == 0)
+        #expect(!session.isRunning)
+        #expect(try await session.translateBridgeTexts(["Hello there"]).translations == ["你好 Hello there"])
+
+        session.start()
+        monitor.emit(ActiveWindowDescriptor(
+            pid: 42, bundleIdentifier: "qa.editor",
+            frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 1
+        ))
+        try await waitForCapture { controller.viewModel.status == .missingPermission }
+        #expect(overlay.lastTranslations.isEmpty)
+        #expect(try await session.translateBridgeTexts(["Hello there"]).translations == ["你好 Hello there"])
+        await controller.stop()
+    }
+
+    @Test
+    func localBridgeTranslatesThirtyStringsWithoutABulkCoordinatorCall() async throws {
+        let denied = PermissionSnapshot(
+            accessibilityTrusted: false,
+            screenCaptureAuthorized: false,
+            secureInputEnabled: false,
+            sessionLocked: false
+        )
+        let coordinator = OneItemCoordinator()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                permission: FakePermissionController(snapshot: denied),
+                coordinator: coordinator
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        let texts = (0..<30).map { "Hello from page \($0) now" }
+        let result = try await session.translateBridgeTexts(texts)
+        #expect(result.translations == texts.map { "你好 " + $0 })
+        #expect(result.retryIndexes.isEmpty)
+        #expect(await coordinator.itemCounts == Array(repeating: 1, count: 30))
+        #expect(!session.isRunning)
+        await controller.stop()
+    }
+
+    @Test
+    func localBridgeKeepsGoingAfterATransientItemFailure() async throws {
+        let coordinator = FlakySecondItemCoordinator()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                permission: FakePermissionController(snapshot: PermissionSnapshot(
+                    accessibilityTrusted: false, screenCaptureAuthorized: false,
+                    secureInputEnabled: false, sessionLocked: false)),
+                coordinator: coordinator
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        let result = try await session.translateBridgeTexts([
+            "Hello from page one now",
+            "Hello from page two now",
+            "Hello from page three now"
+        ])
+        #expect(result.translations == ["你好 Hello from page one now", nil, "你好 Hello from page three now"])
+        #expect(result.retryIndexes == [1])
+        await controller.stop()
+    }
+
+    @Test
+    func chromeWindowSkipsOverlayCaptureWhenBridgeIsActive() async throws {
+        let monitor = FakeWindowMonitor()
+        let capture = CountingCapturePipeline()
+        let overlay = FakeOverlay()
+        let schedulerBox = SchedulerBox()
+        let logger = RecordingLogger()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test",
+            translatedBundleIDs: ["com.google.Chrome"]))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                monitor: monitor,
+                overlay: overlay,
+                coordinator: TranslatingCoordinator(),
+                capture: capture,
+                schedulerBox: schedulerBox,
+                logger: logger
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        #expect(session.isBridgeActive)
+        session.start()
+        monitor.emit(ActiveWindowDescriptor(
+            pid: 42, bundleIdentifier: "com.google.Chrome",
+            windowID: 17, frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+            revision: 1, invalidatesOverlay: true
+        ))
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(await capture.count == 0)
+        #expect(schedulerBox.value?.submitCount == 0)
+        #expect(overlay.lastTranslations.isEmpty)
+        #expect(logger.records.contains { $0.0 == "window_skipped_for_bridge" })
+        #expect(try await session.translateBridgeTexts(["Hello there"]).translations == ["你好 Hello there"])
+        await controller.stop()
+    }
+
+    @Test
+    func editorWindowStillCapturesWhenBridgeIsActive() async throws {
+        let monitor = FakeWindowMonitor()
+        let capture = CountingCapturePipeline()
+        let schedulerBox = SchedulerBox()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test",
+            translatedBundleIDs: ["qa.editor"]))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                monitor: monitor,
+                coordinator: TranslatingCoordinator(),
+                capture: capture,
+                schedulerBox: schedulerBox
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        session.start()
+        monitor.emit(ActiveWindowDescriptor(
+            pid: 42, bundleIdentifier: "qa.editor",
+            windowID: 17, frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+            revision: 1, invalidatesOverlay: true
+        ))
+        try await waitForCapture { await capture.count == 1 }
+        #expect(await capture.count == 1)
+        #expect(schedulerBox.value?.submitCount == 1)
+        await controller.stop()
+    }
+
+    @Test
+    func chromeWindowCapturesWhenBridgeIsInactive() async throws {
+        let monitor = FakeWindowMonitor()
+        let capture = CountingCapturePipeline()
+        let schedulerBox = SchedulerBox()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test",
+            translatedBundleIDs: ["com.google.Chrome"]))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                monitor: monitor,
+                coordinator: TranslatingCoordinator(),
+                capture: capture,
+                schedulerBox: schedulerBox
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        session.start()
+        session.setBridgeActive(false)
+        monitor.emit(ActiveWindowDescriptor(
+            pid: 42, bundleIdentifier: "com.google.Chrome",
+            windowID: 17, frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+            revision: 1, invalidatesOverlay: true
+        ))
+        try await waitForCapture { await capture.count == 1 }
+        #expect(await capture.count == 1)
+        #expect(schedulerBox.value?.submitCount == 1)
+        await controller.stop()
+    }
+
+    @Test
+    func bridgeKeepsTranslatingWhileChromeWindowRevisionsKeepRising() async throws {
+        let monitor = FakeWindowMonitor()
+        let capture = CountingCapturePipeline()
+        let schedulerBox = SchedulerBox()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .local, localModel: "test",
+            translatedBundleIDs: ["com.google.Chrome"]))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                monitor: monitor,
+                coordinator: TranslatingCoordinator(),
+                capture: capture,
+                schedulerBox: schedulerBox
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        session.start()
+        for revision in 1...8 {
+            monitor.emit(ActiveWindowDescriptor(
+                pid: 42, bundleIdentifier: "com.google.Chrome",
+                windowID: 17, frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+                revision: UInt64(revision), invalidatesOverlay: true
+            ))
+            let result = try await session.translateBridgeTexts([
+                "Hello from explore \(revision) now"
+            ])
+            #expect(result.translations == ["你好 Hello from explore \(revision) now"])
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(await capture.count == 0)
+        #expect(schedulerBox.value?.submitCount == 0)
         await controller.stop()
     }
 }

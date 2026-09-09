@@ -93,6 +93,31 @@ struct ApplicationControllerTests {
         #expect(result.translations.first?.segmentId == second.items.first?.id)
     }
 
+    @Test
+    func overlayAndBridgeLocalBackendsShareOneOllamaFlight() async throws {
+        let transport = OverlapEchoTransport()
+        let factory = LiveTranslationBackendFactory(transport: transport)
+        let configuration = AppConfiguration(backend: .local, localModel: "test")
+        let credentials = RecordingCredentialStore(value: nil)
+        let overlay = try factory.makeBackend(kind: .local, configuration: configuration, credentials: credentials)
+        let bridge = try factory.makeBackend(kind: .local, configuration: configuration, credentials: credentials)
+        let overlayRequest = TranslationRequest(
+            windowRevision: 1,
+            items: [TranslationItem(id: UUID(), sourceText: "overlay window text")]
+        )
+        let bridgeRequest = TranslationRequest(
+            windowRevision: 0,
+            items: [TranslationItem(id: UUID(), sourceText: "bridge page text")]
+        )
+        async let overlayResult = overlay.translate(overlayRequest)
+        async let bridgeResult = bridge.translate(bridgeRequest)
+        let results = try await (overlayResult, bridgeResult)
+        #expect(results.0.translations.first?.simplifiedChineseText == "你好")
+        #expect(results.1.translations.first?.simplifiedChineseText == "你好")
+        #expect(await transport.calls == 2)
+        #expect(await transport.maxInFlight == 1)
+    }
+
     @Test(arguments: [CaptureError.unsupported, CaptureError.permissionRequired(.screenCapture)])
     func transientWindowCaptureFailureRequestsRefreshButPermissionsDoNot(error: CaptureError) async throws {
         let monitor = FakeWindowMonitor()
@@ -309,8 +334,8 @@ struct ApplicationControllerTests {
     }
 
     @Test
-    func persistedAutomaticTranslationRemainsOffWhenPermissionMissing() async throws {
-        let persisted = AppConfiguration(autoTranslateEnabled: true)
+    func persistedAutomaticTranslationKeepsWindowOffWhenPermissionMissing() async throws {
+        let persisted = AppConfiguration(autoTranslateEnabled: true, backend: .local, localModel: "test")
         let store = RecordingConfigurationStore(configuration: persisted)
         let permission = FakePermissionController(snapshot: PermissionSnapshot(
             accessibilityTrusted: false,
@@ -328,8 +353,11 @@ struct ApplicationControllerTests {
         await waitForStartupHealthCheck(controller)
 
         #expect(monitor.startCount == 0)
-        #expect(!controller.viewModel.isAutomaticTranslationEnabled)
-        #expect(controller.viewModel.healthMessage == "需要辅助功能或屏幕录制权限才能开启自动翻译")
+        #expect(!controller.session!.isRunning)
+        #expect(controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(controller.configuration.autoTranslateEnabled)
+        #expect(controller.viewModel.healthMessage == "需要辅助功能或屏幕录制权限")
+        await controller.stop()
     }
 
     @Test
@@ -374,7 +402,9 @@ struct ApplicationControllerTests {
         )
         try await controller.start()
         await waitForStartupHealthCheck(controller)
-        #expect(!controller.viewModel.canEnableAutomaticTranslation)
+        #expect(controller.viewModel.canEnableAutomaticTranslation)
+        #expect(controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(monitor.startCount == 0)
         // No permission request/poll is active: the user changed Settings later.
         permission.update(.allGranted)
         let delegate = DesktopApplicationDelegate(controller: controller, onQuit: {})
@@ -387,9 +417,43 @@ struct ApplicationControllerTests {
 
         permission.update(denied)
         controller.refreshPermissions()
-        #expect(!controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(controller.viewModel.isAutomaticTranslationEnabled)
         #expect(monitor.stopCount >= 1)
         #expect(controller.configuration.autoTranslateEnabled)
+        await controller.stop()
+    }
+
+    @Test
+    func permissionRefreshDoesNotEnableBridgeWhenBackendIsUnhealthy() async throws {
+        let denied = PermissionSnapshot(
+            accessibilityTrusted: false,
+            screenCaptureAuthorized: false,
+            secureInputEnabled: false,
+            sessionLocked: false
+        )
+        let factory = StubBackendFactory(health: BackendHealth(status: .unavailable, message: "cold"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: RecordingConfigurationStore(configuration: AppConfiguration(
+                    autoTranslateEnabled: true, backend: .local, localModel: "test")),
+                permission: FakePermissionController(snapshot: denied),
+                backendFactory: factory
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        #expect(!controller.viewModel.backendReady)
+        #expect(!controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(controller.session?.isBridgeActive != true)
+        let healthBefore = controller.viewModel.healthMessage
+
+        controller.refreshPermissions()
+        #expect(!controller.viewModel.isAutomaticTranslationEnabled)
+        #expect(controller.session?.isBridgeActive != true)
+        #expect(controller.configuration.autoTranslateEnabled)
+        #expect(controller.viewModel.healthMessage == healthBefore)
+        #expect(controller.viewModel.status != .missingPermission)
         await controller.stop()
     }
 

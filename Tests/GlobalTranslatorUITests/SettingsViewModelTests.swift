@@ -254,13 +254,15 @@ struct SettingsViewModelTests {
     func invalidEnableAttemptDoesNotFlipStateOrCallActions() {
         let (viewModel, actions) = makeViewModel(keyConfigured: true)
         viewModel.backendReady = true
-        // No capture permission: enabling must be refused.
-        #expect(!viewModel.canEnableAutomaticTranslation)
+        // Missing capture permission must not block the master switch:
+        // the extension bridge does not need AX or Screen Recording.
+        #expect(viewModel.canEnableAutomaticTranslation)
         viewModel.setAutomaticTranslation(true)
+        #expect(viewModel.isAutomaticTranslationEnabled)
+        #expect(actions.automaticValues == [true])
+        viewModel.setAutomaticTranslation(false)
         #expect(!viewModel.isAutomaticTranslationEnabled)
-        #expect(actions.automaticValues.isEmpty)
-        #expect(viewModel.healthMessage == "需要辅助功能或屏幕录制权限才能开启自动翻译")
-        // Permission granted but backend not ready: still refused.
+        // Backend not ready: still refused, even with capture permission.
         viewModel.permissionSnapshot = PermissionSnapshot(
             accessibilityTrusted: true,
             screenCaptureAuthorized: false,
@@ -271,7 +273,7 @@ struct SettingsViewModelTests {
         #expect(!viewModel.canEnableAutomaticTranslation)
         viewModel.setAutomaticTranslation(true)
         #expect(!viewModel.isAutomaticTranslationEnabled)
-        #expect(actions.automaticValues.isEmpty)
+        #expect(actions.automaticValues == [true, false])
         #expect(viewModel.healthMessage == "云端后端未就绪，请保存密钥或测试连接")
     }
 

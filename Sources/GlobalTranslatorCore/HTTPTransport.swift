@@ -89,13 +89,18 @@ public final class URLSessionHTTPTransport: NSObject, HTTPTransport, URLSessionD
 
     public init(
         configuration: URLSessionConfiguration = .ephemeral,
-        maximumResponseBytes: Int = 2 * 1024 * 1024
+        maximumResponseBytes: Int = 2 * 1024 * 1024,
+        requestTimeout: TimeInterval = 30,
+        resourceTimeout: TimeInterval = 60
     ) {
         let configured = configuration
         configured.httpShouldSetCookies = false
         configured.httpCookieStorage = nil
-        configured.timeoutIntervalForRequest = min(configured.timeoutIntervalForRequest, 30)
-        configured.timeoutIntervalForResource = min(configured.timeoutIntervalForResource, 60)
+        // Cloud stays snappy (30/60). Local Ollama, especially qwen3 thinking
+        // models, often spend >30s before the first response byte because
+        // `stream` is false; pass higher values for that TTFB.
+        configured.timeoutIntervalForRequest = min(max(requestTimeout, 1), 180)
+        configured.timeoutIntervalForResource = min(max(resourceTimeout, 1), 300)
         self.configuration = configured
         self.maximumResponseBytes = max(0, maximumResponseBytes)
         super.init()

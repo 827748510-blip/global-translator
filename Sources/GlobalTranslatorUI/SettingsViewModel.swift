@@ -83,9 +83,10 @@ public final class SettingsViewModel: ObservableObject {
         }
     }
 
-    /// Automatic translation may only be enabled when at least one capture
-    /// permission is granted and the selected backend is validated. Turning
-    /// OFF is never gated.
+    /// Automatic translation may be enabled when the selected backend is
+    /// validated. Capture permissions are not required: the Chrome
+    /// extension sends DOM text to the local bridge. Window overlay capture
+    /// stays permission-gated separately. Turning OFF is never gated.
     public var canEnableAutomaticTranslation: Bool {
         automaticEnableBlockedReason == nil
     }
@@ -98,9 +99,6 @@ public final class SettingsViewModel: ObservableObject {
     /// Human-readable Chinese reason why enabling is currently blocked, or nil
     /// when enabling is allowed. Also shown after a refused enable attempt.
     public var automaticEnableBlockedReason: String? {
-        guard permissionSnapshot.accessibilityTrusted || permissionSnapshot.screenCaptureAuthorized else {
-            return "需要辅助功能或屏幕录制权限才能开启自动翻译"
-        }
         switch selectedBackend {
         case .deepSeekCloud:
             guard keyConfigured else { return "请先配置 API Key" }
