@@ -119,7 +119,7 @@ const shadowDoc = {
 assertEqual(yt.collectDomCaptionText(shadowDoc), "Hello from shadow", "shadow captions");
 
 const parentDoc = { documentElement: { id: "html" }, body: { id: "body" } };
-assertEqual(yt.overlayParentNode(parentDoc).id, "html", "overlay mounts on documentElement");
+assertEqual(yt.overlayParentNode(parentDoc).id, "body", "overlay mounts on body");
 const fullDoc = { fullscreenElement: { id: "full" }, documentElement: { id: "html" } };
 assertEqual(yt.overlayParentNode(fullDoc).id, "full", "overlay follows fullscreen");
 
@@ -176,6 +176,73 @@ const bits = yt.overlayDebugBits({
 });
 assert(bits.indexOf("on") !== -1 && bits.indexOf("zh") !== -1, "debug bits show active translated cue");
 assert(bits.indexOf("standing") === -1, "debug bits omit caption text");
+
+// English CC visible + leftover Chinese timedtext at the same clock used to
+// pick timedtext, skip /translate, and leave the overlay blank.
+const visibleCc = "So my main collaborator Dana Carney, who's at Berkeley,";
+const tedDoc = {
+  querySelectorAll(sel) {
+    if (String(sel).indexOf("ytp-caption-segment") !== -1) {
+      return [
+        { textContent: "So my main collaborator" },
+        { textContent: "Dana Carney, who's at Berkeley," }
+      ];
+    }
+    if (sel === "*") return [];
+    return [];
+  },
+  querySelector(sel) {
+    if (sel === "video.html5-main-video") return mainVideo;
+    return null;
+  },
+  documentElement: {
+    getAttribute(name) { return name === "data-gt-ytcap" ? "1" : null; }
+  },
+  body: { id: "body" }
+};
+assertEqual(yt.collectDomCaptionText(tedDoc), visibleCc, "captures on-screen english CC");
+assertEqual(yt.pageWorldAlive(tedDoc), true, "page world marker");
+const liveVisible = yt.liveCueFromNow(yt.collectDomCaptionText(tedDoc), 412.4);
+const timedChinese = [{ start: 400, end: 430, text: "所以我的主要合作者" }];
+const chinesePick = yt.selectCues(timedChinese, [], 412.4);
+const hiddenWhileEnglishCc = cues.overlayState({
+  enabled: true,
+  cues: chinesePick,
+  time: 412.4,
+  translations: {},
+  probed: true
+});
+assertEqual(hiddenWhileEnglishCc.show, false, "english CC visible, overlay missing when timedtext is chinese");
+const chosen = yt.selectCues(timedChinese, liveVisible, 412.4);
+assertEqual(chosen[0].text, visibleCc, "visible english CC wins over leftover timedtext");
+const waitingForCueTranslate = cues.overlayState({
+  enabled: true,
+  cues: chosen,
+  time: 412.4,
+  translations: {}
+});
+assertEqual(waitingForCueTranslate.show, false, "english CC without cue /translate stays blank");
+const tedZh = "所以我的主要合作者是伯克利的达娜·卡尼，";
+const tedPainted = cues.overlayState({
+  enabled: true,
+  cues: chosen,
+  time: 412.4,
+  translations: { [visibleCc]: tedZh }
+});
+assertEqual(tedPainted.show, true, "cue /translate paints chinese overlay");
+assertEqual(tedPainted.cueText, tedZh, "overlay text is the translated visible CC");
+const keptLive = yt.adoptLiveCaption(liveVisible, "", 412.4);
+assertEqual(keptLive[0].text, visibleCc, "empty DOM mutation does not drop visible CC");
+const tedBits = yt.overlayDebugBits({
+  cues: chosen,
+  time: 412.4,
+  translations: { [visibleCc]: tedZh },
+  pageWorld: true,
+  dom: true
+});
+assert(tedBits.indexOf("on") !== -1 && tedBits.indexOf("zh") !== -1, "retest bits include on zh");
+assert(tedBits.indexOf("pw1") !== -1 && tedBits.indexOf("dom1") !== -1, "retest bits include pw1 dom1");
+assert(tedBits.indexOf("Dana") === -1 && tedBits.indexOf("collaborator") === -1, "bits omit cue text");
 
 assertEqual(yt.parseTimedText(")]}'\n" + json3)[0].text, "Hello from YouTube", "json3 xssi prefix");
 
@@ -240,8 +307,10 @@ assert(pageJs.toLowerCase().indexOf("whisper") === -1, "no whisper in page");
 assert(isolatedJs.indexOf("/api/timedtext") === -1, "isolated does not name timedtext path for fetching");
 assert(pageJs.indexOf("https://www.youtube.com/api/timedtext?") === -1, "page does not build timedtext urls");
 assert(pageJs.indexOf("post(\"live\"") !== -1 || pageJs.indexOf("post('live'") !== -1 || pageJs.indexOf('kind: "live"') !== -1, "page relays live captions");
+assert(pageJs.indexOf("data-gt-ytcap") !== -1, "page world sets injection marker");
 assert(isolatedJs.indexOf("data.kind === \"live\"") !== -1, "isolated consumes live captions");
 assert(isolatedJs.indexOf("overlayParentNode") !== -1, "overlay parent helper");
+assert(isolatedJs.indexOf("adoptLiveCaption") !== -1, "empty DOM does not wipe live cues");
 assert(isolatedJs.indexOf("html5-main-video, video") === -1, "isolated does not use comma video selector");
 assert(pageJs.indexOf("html5-main-video, video") === -1, "page does not use comma video selector");
 assert(isolatedJs.indexOf("liveCueFromNow") !== -1, "stamps live cues on player time");

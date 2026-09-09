@@ -123,7 +123,7 @@
     }
     const full = document.fullscreenElement;
     if (full) return full;
-    return document.documentElement || document.body;
+    return document.body || document.documentElement;
   }
 
   function translationObject() {
@@ -146,12 +146,22 @@
     const host = document.createElement("div");
     host.setAttribute(HOST_ATTR, "");
     host.style.cssText = [
-      "all:initial",
       "display:block",
       "position:fixed",
+      "left:0",
+      "top:0",
+      "overflow:visible",
+      "opacity:1",
+      "visibility:visible",
       "pointer-events:none",
-      "z-index:2147483646"
+      "z-index:2147483646",
+      "transform:none",
+      "contain:none"
     ].join(";");
+    host.style.setProperty("display", "block", "important");
+    host.style.setProperty("position", "fixed", "important");
+    host.style.setProperty("opacity", "1", "important");
+    host.style.setProperty("visibility", "visible", "important");
     host.style.setProperty("z-index", "2147483646", "important");
     host.style.setProperty("pointer-events", "none", "important");
     const shadow = host.attachShadow({ mode: "closed" });
@@ -178,7 +188,7 @@
     ].join(";");
     box.appendChild(pill);
     shadow.appendChild(box);
-    (parent || document.documentElement || document.body).appendChild(host);
+    (parent || document.body || document.documentElement).appendChild(host);
     record = { host, box, pill };
     overlays.set(video, record);
     return record;
@@ -192,8 +202,11 @@
     const offscreen = rect.width < 24 || rect.height < 24 ||
       rect.bottom < 8 || rect.top > window.innerHeight - 8;
     host.style.display = offscreen ? "none" : "block";
+    host.style.setProperty("display", offscreen ? "none" : "block", "important");
     host.style.pointerEvents = "none";
     host.style.setProperty("z-index", "2147483646", "important");
+    host.style.setProperty("opacity", offscreen ? "0" : "1", "important");
+    host.style.setProperty("visibility", offscreen ? "hidden" : "visible", "important");
     const useAbsolute = parent && parent !== document.documentElement && parent !== document.body;
     if (useAbsolute) {
       const parentRect = parent.getBoundingClientRect();
@@ -226,11 +239,19 @@
       noForeignMessage: youtubeNoForeignMessage()
     });
     if (Youtube && typeof Youtube.overlayDebugBits === "function") {
-      record.host.setAttribute("data-gt-vt", Youtube.overlayDebugBits({
+      const bits = Youtube.overlayDebugBits({
         cues,
         time,
-        translations: translationsNow
-      }));
+        translations: translationsNow,
+        pageWorld: !!(Youtube.pageWorldAlive && Youtube.pageWorldAlive(document)),
+        dom: !!(Youtube.collectDomCaptionText && Youtube.collectDomCaptionText(document))
+      });
+      record.host.setAttribute("data-gt-vt", bits);
+      try {
+        if (typeof localStorage !== "undefined" && localStorage.getItem("gtVtDebug") === "1") {
+          console.debug("[gt-vt]", bits);
+        }
+      } catch (_error) {}
     }
     if (!state.show || (!state.cueText && !state.message)) {
       record.box.style.display = "none";
@@ -248,7 +269,7 @@
   function translateTexts(texts) {
     return new Promise((resolve) => {
       try {
-        chrome.runtime.sendMessage({ type: "translate", texts }, (response) => {
+        chrome.runtime.sendMessage({ type: "translate", texts, lane: "video" }, (response) => {
           if (chrome.runtime.lastError || !response || response.error) {
             resolve(null);
             return;
@@ -445,11 +466,7 @@
   }
 
   function start() {
-    if (enabled) {
-      scan();
-      markProbedSoon();
-      return;
-    }
+    const already = enabled;
     enabled = true;
     serviceError = false;
     if (Youtube && typeof Youtube.start === "function") {
@@ -460,6 +477,11 @@
         listVideos().forEach((video) => prefetch(video));
         renderAll();
       });
+    }
+    if (already) {
+      scan();
+      markProbedSoon();
+      return;
     }
     startObserver();
     startPaintLoop();

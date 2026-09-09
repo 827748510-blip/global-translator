@@ -2,22 +2,24 @@
 // loopback bridge. Runs in the extension origin, so page CSP never applies;
 // the app authenticates us by this extension's stable chrome-extension://
 // origin (pinned via the manifest key).
+importScripts("bridge-queue.js");
+
 const ENDPOINT = "http://127.0.0.1:9233";
 
 // One in-flight loopback call at a time. Multiple tabs (or ping overlapping
 // a translate) used to POST concurrently; the Mac app then raced window
-// overlay + bridge on the same local Ollama process.
-let bridgeChain = Promise.resolve();
+// overlay + bridge on the same local Ollama process. Video-cue translates
+// use lane "video" so they jump ahead of queued whole-page batches.
+const bridgeQueue = GlobalTranslatorBridgeQueue.createBridgeQueue();
 
-function enqueueBridgeFetch(work) {
-  const run = bridgeChain.then(work, work);
-  bridgeChain = run.then(() => undefined, () => {});
-  return run;
+function enqueueBridgeFetch(work, lane) {
+  return bridgeQueue.enqueue(work, lane);
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== "object") return false;
   if (message.type === "translate" && Array.isArray(message.texts)) {
+    const lane = message.lane === "video" ? "video" : "page";
     enqueueBridgeFetch(() =>
       fetch(ENDPOINT + "/translate", {
         method: "POST",
@@ -35,8 +37,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             retry: Array.isArray(payload.retry) ? payload.retry : []
           });
         })
-        .catch((error) => sendResponse({ error: String(error) }))
-    );
+        .catch((error) => sendResponse({ error: String(error) })),
+    lane);
     return true; // async sendResponse
   }
   if (message.type === "ping") {

@@ -59,6 +59,9 @@ assert(videoJs.indexOf("html5-main-video") !== -1, "prefers youtube main video")
 assert(videoJs.indexOf("overlayParentNode") !== -1, "uses document/fullscreen overlay parent");
 assert(videoJs.indexOf("syncFromDom") !== -1, "overlay path refreshes youtube live cues");
 assert(videoJs.indexOf("data-gt-vt") !== -1, "inspectable overlay debug bits");
+assert(videoJs.indexOf("lane: \"video\"") !== -1, "video cues use video bridge lane");
+assert(videoJs.indexOf("all:initial") === -1, "overlay does not reset position via all:initial");
+assert(videoJs.indexOf("gtVtDebug") !== -1, "gated console debug flag");
 assert(videoJs.indexOf("html5-main-video, video") === -1, "video translate no comma selector");
 assert(youtubePage.indexOf("post(\"live\"") !== -1, "page world live caption feed");
 assert(youtubeJs.indexOf("getUserMedia") === -1, "youtube helper no getUserMedia");
@@ -68,7 +71,10 @@ assert(youtubePage.indexOf("setOption") === -1, "never enable captions via playe
 assert(youtubePage.indexOf("loadModule") === -1, "never load caption module");
 assert(background.indexOf("ENDPOINT + \"/translate\"") !== -1, "backend translate path unchanged");
 
-assert(manifest.indexOf("\"version\": \"1.0.7\"") !== -1, "manifest version");
+assert(manifest.indexOf("\"version\": \"1.0.8\"") !== -1, "manifest version");
+assert(background.indexOf("importScripts(\"bridge-queue.js\")") !== -1, "background loads bridge queue");
+assert(background.indexOf("message.lane === \"video\"") !== -1, "background honors video lane");
+assert(youtubePage.indexOf("data-gt-ytcap") !== -1, "page script marks injection");
 assert(manifest.indexOf("subtitle-cues.js") !== -1, "manifest loads cue helper");
 assert(manifest.indexOf("youtube-captions.js") !== -1, "manifest loads youtube helper");
 assert(manifest.indexOf("youtube-captions-page.js") !== -1, "manifest loads youtube page observer");

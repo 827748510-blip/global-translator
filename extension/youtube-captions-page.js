@@ -3,6 +3,11 @@
 // player already requested it. Never constructs caption URLs, never
 // copies PoToken, never clicks CC, never turns captions on via the player.
 (() => {
+  try {
+    if (document.documentElement) {
+      document.documentElement.setAttribute("data-gt-ytcap", "1");
+    }
+  } catch (_error) {}
   if (window.__gtYoutubeCaptionsPage) return;
   window.__gtYoutubeCaptionsPage = true;
 
@@ -68,23 +73,30 @@
   }
 
   function collectCaptionText(root) {
-    const parts = [];
-    function walk(node) {
-      if (!node || !node.querySelectorAll) return;
-      const nodes = node.querySelectorAll(".ytp-caption-segment, .caption-visual-line");
-      for (let i = 0; i < nodes.length; i++) {
-        const text = String(nodes[i].textContent || "").replace(/\s+/g, " ").trim();
-        if (text) parts.push(text);
+    function collect(node, selector) {
+      const parts = [];
+      function walk(target) {
+        if (!target || !target.querySelectorAll) return;
+        const nodes = target.querySelectorAll(selector);
+        for (let i = 0; i < nodes.length; i++) {
+          const text = String(nodes[i].textContent || "").replace(/\s+/g, " ").trim();
+          if (text && parts[parts.length - 1] !== text) parts.push(text);
+        }
+        const all = target.querySelectorAll("*");
+        for (let i = 0; i < all.length; i++) {
+          if (all[i] && all[i].shadowRoot) walk(all[i].shadowRoot);
+        }
       }
-      const all = node.querySelectorAll("*");
-      for (let i = 0; i < all.length; i++) {
-        if (all[i] && all[i].shadowRoot) walk(all[i].shadowRoot);
-      }
+      walk(node);
+      return parts;
     }
-    walk(root || document);
-    if (parts.length > 0) return parts.join(" ");
-    const container = (root || document).querySelector &&
-      (root || document).querySelector(".ytp-caption-window-container, .caption-window");
+    const scope = root || document;
+    const segments = collect(scope, ".ytp-caption-segment");
+    if (segments.length > 0) return segments.join(" ");
+    const lines = collect(scope, ".caption-visual-line");
+    if (lines.length > 0) return lines.join(" ");
+    const container = scope.querySelector &&
+      scope.querySelector(".ytp-caption-window-container, .caption-window");
     return container ? String(container.textContent || "").replace(/\s+/g, " ").trim() : "";
   }
 

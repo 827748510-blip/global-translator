@@ -30,7 +30,7 @@
 1. 用户在本机 Chrome 打开 `youtube.com` / `m.youtube.com` 观看页（含 `/watch`、`/embed`、用户已开 CC 的 Shorts）。
 2. 用户自己打开播放器字幕（CC 按钮为按下，画面上已有外文字幕）。
 3. 菜单栏「视频翻译」显式打开，桌面端翻译会话可用。
-4. 扩展读取：(a) 播放器已拉取的本会话 `/api/timedtext` 响应（json3 / srv1 / srv3 / vtt）；(b) 已显示的 `.ytp-caption-segment` 作为兜底。经 `POST /translate` 叠简体中文。全屏时叠层跟到全屏元素内。
+4. 扩展读取：(a) 播放器已拉取的本会话 `/api/timedtext` 响应（json3 / srv1 / srv3 / vtt）；(b) 已显示的 `.ytp-caption-segment` 作为画面上的外语 cue 来源（与 timedtext 冲突时以画面为准）。经 `POST /translate` 叠简体中文（视频 cue 走 bridge 的 `lane: "video"`，不会被整页翻译队列饿死）。全屏时叠层跟到全屏元素内。
 5. 整页翻译会跳过 YouTube 字幕 DOM，避免改掉用户已开的原文幕。
 
 **不会做的：**
@@ -69,8 +69,8 @@
 
 推荐片源：`https://www.youtube.com/watch?v=Ks-_Mh1QhMc`（英文 CC）。不要用只有烧录字幕、没有 CC 按钮的片子。页面简介被整页翻译成中文 **不算** 通过。
 
-1. 保持桌面端运行、视频翻译 **开**、扩展已加载（若刚更新，在 `chrome://extensions` 点「重新加载」）。
-2. 打开上述 watch 页，先 **不要** 开 CC：播放数秒后，**视频画面底部**可出现「未检测到外语字幕（请先打开 YouTube 字幕）」；视频必须继续。DevTools 应能看到 `<html>` 下的 `[data-gt-video-translate]`（不要找 `#movie_player` 内部）。
+1. 保持桌面端运行、视频翻译 **开**、扩展已加载（若刚更新，在 `chrome://extensions` 点「重新加载」，然后 **刷新 YouTube 标签页**；已打开的标签不会自动注入新脚本）。
+2. 打开上述 watch 页，先 **不要** 开 CC：播放数秒后，**视频画面底部**可出现「未检测到外语字幕（请先打开 YouTube 字幕）」；视频必须继续。DevTools 应能看到 `<body>` 下的 `[data-gt-video-translate]`（不要找 `#movie_player` 内部，也不要找 `<html>` 直接子节点以外的旧挂载点）。
 3. 点播放器 **CC**，选英文字幕（不要选简体中文）。数秒内应在 **视频画面上** 出现简体中文叠层，盖在英文 CC 附近。简介区中文不算。
 4. 拖动进度条：中文叠层应跟上新 cue，播放不停。
 5. 关掉 CC：中文叠层在无外语 cue 后收起或回到提示，视频不停。
@@ -80,7 +80,26 @@
 9. 关掉菜单栏「视频翻译」：叠层消失，YouTube 字幕与播放不受影响。
 10. **反例（应失败/提示，不算回归）**：CC 始终关闭；只有简体中文字幕；无字幕的 Shorts；YouTube Music；第三方博客里的 youtube-nocookie iframe。
 
-诊断（不打印原文）：控制台执行 `document.querySelector('[data-gt-video-translate]')`。应存在。看属性 `data-gt-vt`：开着 CC 时应含 `on`，译文回来后含 `zh`；`t` 应接近主播放器 `video.html5-main-video.currentTime`（几百秒），而不是 `t0`。属性里不应出现英文字幕句子。
+诊断（不打印原文、不含 cue 文本）：
+
+```js
+document.documentElement.getAttribute("data-gt-ytcap")  // MAIN 页脚本已跑应为 "1"
+document.querySelector("[data-gt-video-translate]")
+document.querySelector("[data-gt-video-translate]")?.getAttribute("data-gt-vt")
+```
+
+`data-gt-vt` 形如 `c1 t412 on zh pw1 dom1`：
+
+| 段 | 含义 |
+| --- | --- |
+| `cN` | 当前选用的 cue 条数 |
+| `t412` | 主播放器 `currentTime` 取整；TED 中段应是几百，不应是 `t0` |
+| `on` / `off` | 该时刻有没有命中外语 cue |
+| `wait` / `zh` | cue 已抓住但译文未回 / 已有简体译文 |
+| `pw1` / `pw0` | MAIN 世界 `youtube-captions-page.js` 是否打了 `data-gt-ytcap` |
+| `dom1` / `dom0` | 隔离世界能否读到 `.ytp-caption-segment` |
+
+英文 CC 可见但没有中文叠层时：有 host 且 `on wait` = 正在等这条 cue 的 `/translate`；`on zh` 但看不见 = CSS/挂载问题；`off` 且 `dom0` = 没抓到画面字幕；`pw0` = 页脚本没注入（仍应靠 `dom1` 走 live DOM）。需要控制台轨迹时：`localStorage.setItem("gtVtDebug","1")` 后刷新，过滤 `[gt-vt]`（仍不含字幕原文）。
 
 ### 自动化（任意机器）
 
@@ -89,6 +108,7 @@ node extension/text-filter.test.js
 node extension/subtitle-cues.test.js
 node extension/youtube-captions.test.js
 node extension/video-translate.test.js
+node extension/bridge-queue.test.js
 ```
 
 macOS 上另跑 `swift test -Xswiftc -warnings-as-errors`。

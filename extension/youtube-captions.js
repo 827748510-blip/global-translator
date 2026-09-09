@@ -212,27 +212,39 @@
     return copy;
   }
 
-  function captionSelectors() {
-    return ".ytp-caption-segment, .caption-visual-line";
+  function joinCaptionParts(parts) {
+    const unique = [];
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i] && unique[unique.length - 1] !== parts[i]) unique.push(parts[i]);
+    }
+    return unique.join(" ");
   }
 
-  function collectDomCaptionText(doc) {
+  function collectSelectorText(root, selector) {
     const parts = [];
-    function walk(root) {
-      if (!root || !root.querySelectorAll) return;
-      const nodes = root.querySelectorAll(captionSelectors());
+    function walk(node) {
+      if (!node || !node.querySelectorAll) return;
+      const nodes = node.querySelectorAll(selector);
       for (let i = 0; i < nodes.length; i++) {
         const text = Cues ? Cues.normalizeCueText(nodes[i].textContent) : String(nodes[i].textContent || "").trim();
         if (text) parts.push(text);
       }
-      const all = root.querySelectorAll("*");
+      const all = node.querySelectorAll("*");
       for (let i = 0; i < all.length; i++) {
         if (all[i] && all[i].shadowRoot) walk(all[i].shadowRoot);
       }
     }
-    walk(doc);
-    if (parts.length > 0) return parts.join(" ");
-    if (!doc || !doc.querySelector) return "";
+    walk(root);
+    return parts;
+  }
+
+  function collectDomCaptionText(doc) {
+    if (!doc) return "";
+    const segments = collectSelectorText(doc, ".ytp-caption-segment");
+    if (segments.length > 0) return joinCaptionParts(segments);
+    const lines = collectSelectorText(doc, ".caption-visual-line");
+    if (lines.length > 0) return joinCaptionParts(lines);
+    if (!doc.querySelector) return "";
     const container = doc.querySelector(".ytp-caption-window-container, .caption-window, .ytp-caption-window-bottom");
     if (!container) return "";
     return Cues ? Cues.normalizeCueText(container.textContent) : String(container.textContent || "").trim();
@@ -241,7 +253,13 @@
   function overlayParentNode(doc) {
     if (!doc) return null;
     if (doc.fullscreenElement) return doc.fullscreenElement;
-    return doc.documentElement || doc.body || null;
+    return doc.body || doc.documentElement || null;
+  }
+
+  function pageWorldAlive(doc) {
+    const root = doc || (typeof document !== "undefined" ? document : null);
+    if (!root || !root.documentElement || !root.documentElement.getAttribute) return false;
+    return root.documentElement.getAttribute("data-gt-ytcap") === "1";
   }
 
   function primaryVideo(doc) {
@@ -271,6 +289,15 @@
     return [{ start: Math.max(0, now - 0.35), end: now + 2.5, text: normalized }];
   }
 
+  function adoptLiveCaption(previous, text, time) {
+    const next = liveCueFromNow(text, time);
+    if (next.length > 0) return next;
+    const list = Array.isArray(previous) ? previous : [];
+    const t = Number(time);
+    if (Cues && Number.isFinite(t) && Cues.activeCue(list, t)) return list;
+    return [];
+  }
+
   function overlayDebugBits(input) {
     const cues = (input && input.cues) || [];
     const time = Number(input && input.time);
@@ -282,7 +309,9 @@
       "c" + cues.length,
       Number.isFinite(time) ? "t" + Math.floor(time) : "t-",
       cue ? "on" : "off",
-      hasZh ? "zh" : "wait"
+      hasZh ? "zh" : "wait",
+      input && input.pageWorld === true ? "pw1" : "pw0",
+      input && input.dom === true ? "dom1" : "dom0"
     ].join(" ");
   }
 
@@ -292,17 +321,21 @@
     const player = video || primaryVideo(document);
     const text = collectDomCaptionText(document);
     const time = player && Number.isFinite(Number(player.currentTime)) ? Number(player.currentTime) : 0;
-    liveCues = liveCueFromNow(text, time);
+    liveCues = adoptLiveCaption(liveCues, text, time);
   }
 
   function selectCues(timed, live, time) {
     const timedList = Array.isArray(timed) ? timed : [];
     const liveList = Array.isArray(live) ? live : [];
-    if (timedList.length === 0) return liveList;
     const t = Number(time);
+    // On-screen CC is the source of truth. A leftover / other-language
+    // timedtext cue at the same clock must not hide the English overlay path.
+    if (liveList.length > 0 && Cues && Number.isFinite(t) && Cues.activeCue(liveList, t)) {
+      return liveList;
+    }
+    if (timedList.length === 0) return liveList;
     if (!Number.isFinite(t)) return timedList;
     if (Cues && Cues.activeCue(timedList, t)) return timedList;
-    if (liveList.length > 0 && Cues && Cues.activeCue(liveList, t)) return liveList;
     return timedList;
   }
 
@@ -361,7 +394,7 @@
     const player = primaryVideo(document);
     const text = collectDomCaptionText(document);
     const time = player && Number.isFinite(Number(player.currentTime)) ? Number(player.currentTime) : 0;
-    liveCues = liveCueFromNow(text, time);
+    liveCues = adoptLiveCaption(liveCues, text, time);
     if (liveCues.length > 0 || text) notify();
   }
 
@@ -421,7 +454,7 @@
           const player = primaryVideo(document);
           const time = Number(data.time);
           const t = Number.isFinite(time) ? time : (player ? Number(player.currentTime) || 0 : 0);
-          liveCues = liveCueFromNow(data.body, t);
+          liveCues = adoptLiveCaption(liveCues, data.body, t);
           if (liveCues.length > 0 || data.body) notify();
         } else if (data.kind === "navigate") {
           const nextId = data.videoId || currentVideoId(location.href);
@@ -488,8 +521,10 @@
     collectDomCaptionText,
     userCaptionsEnabledFromDom,
     overlayParentNode,
+    pageWorldAlive,
     primaryVideo,
     liveCueFromNow,
+    adoptLiveCaption,
     overlayDebugBits,
     syncFromDom,
     selectCues,
