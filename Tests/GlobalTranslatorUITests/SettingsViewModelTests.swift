@@ -13,6 +13,7 @@ private final class SpyActions: SettingsActions {
     }
 
     var automaticValues: [Bool] = []
+    var selectionTranslateValues: [Bool] = []
     var selectedBackends: [BackendKind] = []
     var savedKeyDrafts: [String] = []
     var deleteKeyCallCount = 0
@@ -35,6 +36,10 @@ private final class SpyActions: SettingsActions {
 
     func setAutomaticTranslation(_ enabled: Bool) {
         automaticValues.append(enabled)
+    }
+
+    func setSelectionTranslate(_ enabled: Bool) {
+        selectionTranslateValues.append(enabled)
     }
 
     func selectBackend(_ kind: BackendKind) {
@@ -248,6 +253,20 @@ struct SettingsViewModelTests {
         viewModel.setAutomaticTranslation(false)
         #expect(!viewModel.isAutomaticTranslationEnabled)
         #expect(actions.automaticValues == [true, false])
+    }
+
+    @Test
+    func selectionTranslateToggleForwardsAndDefaultsOn() {
+        let (viewModel, actions) = makeViewModel()
+        #expect(viewModel.isSelectionTranslateEnabled)
+        viewModel.setSelectionTranslate(false)
+        #expect(!viewModel.isSelectionTranslateEnabled)
+        #expect(actions.selectionTranslateValues == [false])
+        viewModel.setSelectionTranslate(true)
+        #expect(viewModel.isSelectionTranslateEnabled)
+        #expect(actions.selectionTranslateValues == [false, true])
+        viewModel.setSelectionTranslate(true)
+        #expect(actions.selectionTranslateValues == [false, true])
     }
 
     @Test

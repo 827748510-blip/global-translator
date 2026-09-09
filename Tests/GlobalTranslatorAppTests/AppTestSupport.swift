@@ -358,6 +358,11 @@ actor TranslatingCoordinator: TranslationCoordinating {
                 durationMilliseconds: 1, status: .success)
         )
     }
+
+    func completePlain(system _: String, user: String, backend _: BackendKind) async throws -> String {
+        let source = user.split(separator: "\n").last.map(String.init) ?? user
+        return "优化 " + source
+    }
 }
 
 /// Fails if the bridge still dumps a dense page into one coordinator call.
@@ -461,6 +466,89 @@ final class FakeOverlay: OverlayControlling {
         lastRevision = revision
     }
     func hideAll() { hideCount += 1 }
+}
+
+@MainActor
+final class FakeSelectionPopover: SelectionPopoverControlling {
+    private(set) var shown: [SelectionPopoverContent] = []
+    private(set) var dismissCount = 0
+    var currentContent: SelectionPopoverContent?
+    var panelFrame: CGRect?
+    var onUserDismiss: (() -> Void)?
+    var onTranslate: (() -> Void)?
+    var onOptimize: (() -> Void)?
+    func show(_ content: SelectionPopoverContent) {
+        currentContent = content
+        shown.append(content)
+        panelFrame = CGRect(
+            x: content.screenFrame.minX,
+            y: content.screenFrame.maxY + 6,
+            width: 280,
+            height: 80
+        )
+    }
+    func dismiss() {
+        dismissCount += 1
+        currentContent = nil
+        panelFrame = nil
+    }
+    func simulateUserDismiss() {
+        onUserDismiss?()
+        dismiss()
+    }
+    func simulateTranslate() { onTranslate?() }
+    func simulateOptimize() { onOptimize?() }
+}
+
+final class FakeSelectedTextReader: SelectedTextReading, @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: SelectedTextReadResult
+    private(set) var readCount = 0
+
+    init(result: SelectedTextReadResult = .empty) {
+        self.result = result
+    }
+
+    func setResult(_ result: SelectedTextReadResult) {
+        lock.lock()
+        self.result = result
+        lock.unlock()
+    }
+
+    func readSelection(mouseLocation: CGPoint) -> SelectedTextReadResult {
+        lock.lock()
+        defer { lock.unlock() }
+        readCount += 1
+        return result
+    }
+}
+
+@MainActor
+final class StubSelectionTranslator: SelectionTranslating {
+    var result = "你好世界"
+    var optimizeResult = "优化后的提示词"
+    var error: Error?
+    var delay: Duration?
+    private(set) var texts: [String] = []
+    private(set) var optimizedTexts: [String] = []
+
+    func translateSelection(_ text: String) async throws -> String {
+        texts.append(text)
+        if let delay {
+            try await Task.sleep(for: delay)
+        }
+        if let error { throw error }
+        return result
+    }
+
+    func optimizePrompt(_ text: String) async throws -> String {
+        optimizedTexts.append(text)
+        if let delay {
+            try await Task.sleep(for: delay)
+        }
+        if let error { throw error }
+        return optimizeResult
+    }
 }
 
 actor FakeCoordinator: TranslationCoordinating {

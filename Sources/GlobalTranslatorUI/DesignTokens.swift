@@ -60,3 +60,10 @@ public enum GTPopoverMetrics {
     /// Minimum practical vertical hit area for interactive rows.
     public static let minRowHitHeight: CGFloat = 44
 }
+
+/// Floating selection-translate popover (not the click-through overlay).
+public enum GTSelectionMetrics {
+    public static let width: CGFloat = 280
+    public static let maxOriginalLines = 2
+    public static let maxTranslationLines = 8
+}

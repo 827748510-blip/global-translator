@@ -67,6 +67,13 @@ public actor CoalescingTranslationBackend: TranslationBackend {
         return try remap(values, to: request)
     }
 
+    /// Does not cancel in-flight translates. Overlay/bridge coalescers must
+    /// not drop a live translation when 滑词 优化提示词 uses the same serial slot.
+    public func completePlain(system: String, user: String) async throws -> String {
+        try Task.checkCancellation()
+        return try await base.completePlain(system: system, user: user)
+    }
+
     private func remap(_ values: [String: String], to request: TranslationRequest) throws -> TranslationResult {
         let translations = try request.items.map { item in
             guard let text = values[item.sourceText] else { throw TranslationError.invalidResponse("translation is missing") }

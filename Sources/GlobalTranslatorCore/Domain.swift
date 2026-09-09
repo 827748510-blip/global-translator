@@ -177,11 +177,15 @@ public protocol TranslationBackend: Sendable {
     var kind: BackendKind { get }
     func healthCheck() async -> BackendHealth
     func translate(_ request: TranslationRequest) async throws -> TranslationResult
+    func completePlain(system: String, user: String) async throws -> String
     func cancelOutstandingRequests() async
 }
 
 public extension TranslationBackend {
     func cancelOutstandingRequests() async {}
+    func completePlain(system: String, user: String) async throws -> String {
+        throw TranslationError.invalidConfiguration("plain completion is not supported")
+    }
 }
 
 public struct VisionTranslationImage: Equatable, Sendable {

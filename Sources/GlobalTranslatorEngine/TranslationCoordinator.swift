@@ -81,6 +81,26 @@ public actor TranslationCoordinator {
         for backend in backends.values { await backend.cancelOutstandingRequests() }
     }
 
+    /// Plain completion for 优化提示词. Does not touch overlay revision gates,
+    /// cache, or engine state, so it cannot stale or cancel window/bridge work
+    /// on a different coordinator.
+    public func completePlain(
+        system: String,
+        user: String,
+        backend kind: BackendKind
+    ) async throws -> String {
+        try Task.checkCancellation()
+        let trimmedSystem = system.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedUser = user.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSystem.isEmpty, !trimmedUser.isEmpty else {
+            throw TranslationError.invalidRequest("plain completion is empty")
+        }
+        guard let backend = backends[kind] else {
+            throw TranslationCoordinatorError.backendNotConfigured(kind)
+        }
+        return try await backend.completePlain(system: trimmedSystem, user: trimmedUser)
+    }
+
     nonisolated func invalidate(revision: UInt64) {
         revisionGate.mark(revision)
     }

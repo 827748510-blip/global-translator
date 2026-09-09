@@ -26,14 +26,25 @@ public final class AXElement: @unchecked Sendable, Hashable {
 }
 public protocol AXAttributeReading: Sendable {
     func focusedWindow(for pid: Int32) -> AXElement?
+    func focusedElement(for pid: Int32) -> AXElement?
     func role(of element: AXElement) -> String?
     func subrole(of element: AXElement) -> String?
     func value(of element: AXElement) -> String?
     func title(of element: AXElement) -> String?
     func description(of element: AXElement) -> String?
+    func selectedText(of element: AXElement) -> String?
+    func selectedTextRange(of element: AXElement) -> (location: Int, length: Int)?
+    func boundsForRange(of element: AXElement, location: Int, length: Int) -> CGRect?
     func frame(of element: AXElement) -> CGRect?
     func isHidden(_ element: AXElement) -> Bool
     func children(of element: AXElement) -> [AXElement]
+}
+
+public extension AXAttributeReading {
+    func focusedElement(for pid: Int32) -> AXElement? { nil }
+    func selectedText(of element: AXElement) -> String? { nil }
+    func selectedTextRange(of element: AXElement) -> (location: Int, length: Int)? { nil }
+    func boundsForRange(of element: AXElement, location: Int, length: Int) -> CGRect? { nil }
 }
 
 public final class SystemAXAttributeReader: AXAttributeReading, @unchecked Sendable {
@@ -47,6 +58,14 @@ public final class SystemAXAttributeReader: AXAttributeReading, @unchecked Senda
         let application = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(application, messagingTimeout)
         guard let element = copyElement(application, kAXFocusedWindowAttribute as CFString) else { return nil }
+        AXUIElementSetMessagingTimeout(element, messagingTimeout)
+        return AXElement(rawValue: element)
+    }
+
+    public func focusedElement(for pid: Int32) -> AXElement? {
+        let application = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(application, messagingTimeout)
+        guard let element = copyElement(application, kAXFocusedUIElementAttribute as CFString) else { return nil }
         AXUIElementSetMessagingTimeout(element, messagingTimeout)
         return AXElement(rawValue: element)
     }
@@ -69,6 +88,36 @@ public final class SystemAXAttributeReader: AXAttributeReading, @unchecked Senda
 
     public func description(of element: AXElement) -> String? {
         stringValue(of: element, attribute: kAXDescriptionAttribute as CFString)
+    }
+
+    public func selectedText(of element: AXElement) -> String? {
+        stringValue(of: element, attribute: kAXSelectedTextAttribute as CFString)
+    }
+
+    public func selectedTextRange(of element: AXElement) -> (location: Int, length: Int)? {
+        guard let raw = element.rawValue,
+              let value = copyAXValue(raw, kAXSelectedTextRangeAttribute as CFString) else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(value, .cfRange, &range) else { return nil }
+        return (range.location, range.length)
+    }
+
+    public func boundsForRange(of element: AXElement, location: Int, length: Int) -> CGRect? {
+        guard let raw = element.rawValue else { return nil }
+        var range = CFRange(location: location, length: length)
+        guard let rangeValue = AXValueCreate(.cfRange, &range) else { return nil }
+        var value: CFTypeRef?
+        let status = AXUIElementCopyParameterizedAttributeValue(
+            raw,
+            kAXBoundsForRangeParameterizedAttribute as CFString,
+            rangeValue,
+            &value
+        )
+        guard status == .success, let value, CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        let axValue = unsafeDowncast(value, to: AXValue.self)
+        var rect = CGRect.zero
+        guard AXValueGetValue(axValue, .cgRect, &rect) else { return nil }
+        return rect
     }
 
     public func frame(of element: AXElement) -> CGRect? {

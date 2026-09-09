@@ -13,15 +13,54 @@ public enum TextFilter {
     ]
 
     public static func shouldTranslate(_ text: String) -> Bool {
-        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return false }
-        guard !isURL(value), !isEmail(value), !isFilePath(value), !isShortcutOnly(value), !isIdentifierOrUnit(value) else {
+        switch selectionDecision(text) {
+        case .translate:
+            return true
+        case .skip, .alreadyTargetLanguage:
             return false
+        }
+    }
+
+    /// Overlay/bridge keep using `shouldTranslate`. Selection UX distinguishes
+    /// “already Simplified Chinese” (skip auto-translate, still offer 优化提示词)
+    /// from identifiers/URLs that must not spawn a popover.
+    public static func shouldOfferSelectionPopover(
+        _ text: String,
+        targetLanguage: String = SelectionTranslateSupport.defaultTargetLanguage
+    ) -> Bool {
+        selectionDecision(text, targetLanguage: targetLanguage) != .skip
+    }
+
+    public static func shouldAutoTranslateSelection(
+        _ text: String,
+        targetLanguage: String = SelectionTranslateSupport.defaultTargetLanguage
+    ) -> Bool {
+        selectionDecision(text, targetLanguage: targetLanguage) == .translate
+    }
+
+    public static func shouldOfferPromptOptimization(
+        _ text: String,
+        targetLanguage: String = SelectionTranslateSupport.defaultTargetLanguage
+    ) -> Bool {
+        selectionDecision(text, targetLanguage: targetLanguage) != .skip
+    }
+
+    public static func selectionDecision(
+        _ text: String,
+        targetLanguage: String = SelectionTranslateSupport.defaultTargetLanguage
+    ) -> SelectionTranslationDecision {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return .skip }
+        guard !isURL(value), !isEmail(value), !isFilePath(value), !isShortcutOnly(value), !isIdentifierOrUnit(value) else {
+            return .skip
         }
         guard value.unicodeScalars.contains(where: { CharacterSet.letters.contains($0) }) else {
-            return false
+            return .skip
         }
-        return !isAlreadySimplifiedChinese(value)
+        if SelectionTranslateSupport.isChineseTarget(targetLanguage), isAlreadySimplifiedChinese(value) {
+            return .alreadyTargetLanguage
+        }
+        return .translate
     }
 
     private static func isAlreadySimplifiedChinese(_ value: String) -> Bool {

@@ -24,6 +24,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
     var statusItem: (any StatusItemControlling)?
     var overlay: (any OverlayControlling)?
     var session: TranslationSession?
+    var selectionTranslate: SelectionTranslateController?
     var callbackBox: WindowCallbackBox?
     var automaticRequestToken: UInt64 = 0
     var automaticEnablePending = false
@@ -82,6 +83,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         pushConfigurationState()
         if settingsRequested { statusItem?.showSettings() }
         makeSession()
+        makeSelectionTranslate()
         startExtensionBridge()
         if configurationLoadFailed {
             viewModel.backendReady = false
@@ -122,6 +124,8 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         callbackBox = nil
         session?.stop()
         session = nil
+        selectionTranslate?.setEnabled(false)
+        selectionTranslate = nil
         bridgeServer?.stop()
         bridgeServer = nil
         statusItem?.stop()
@@ -145,6 +149,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             return TranslatedApplication(bundleIdentifier: id,
                 displayName: url.map { FileManager.default.displayName(atPath: $0.path) } ?? id)
         }
+        viewModel.isSelectionTranslateEnabled = configuration.selectionTranslateEnabled
         viewModel.permissionSnapshot = components.permissionController.snapshot
         if configuration.backend == .deepSeekCloud {
             let storedKey = try? components.credentialStore.read()
@@ -178,6 +183,24 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         }
         callbackBox = box
         self.session = session
+    }
+
+    func makeSelectionTranslate() {
+        guard selectionTranslate == nil else { return }
+        var own = Set<String>()
+        if let id = Bundle.main.bundleIdentifier { own.insert(id) }
+        own.insert("com.maodashu.global-translator")
+        let controller = SelectionTranslateController(
+            reader: components.selectedTextReaderFactory(),
+            popover: components.selectionPopoverFactory(),
+            monitor: components.selectionPointerMonitorFactory(),
+            permissions: components.permissionController,
+            logger: components.logger,
+            translator: { [weak self] in self?.session },
+            ownBundleIdentifiers: own
+        )
+        selectionTranslate = controller
+        controller.setEnabled(configuration.selectionTranslateEnabled)
     }
 
     func rebuildSession() {
@@ -228,17 +251,30 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             session?.stop()
             return
         }
-        let bridgeBackend = (try? components.backendFactory.makeBackend(
-            kind: expectedConfiguration.backend,
-            configuration: expectedConfiguration,
+        applySessionBackends(overlay: backend, configuration: expectedConfiguration)
+    }
+
+    /// Overlay, extension bridge, and 滑词翻译 each get their own coalescer
+    /// wrapping the shared serial local backend. Sharing a coalescer would
+    /// cancel in-flight work across those paths.
+    func applySessionBackends(overlay: any TranslationBackend, configuration expected: AppConfiguration) {
+        let bridge = (try? components.backendFactory.makeBackend(
+            kind: expected.backend,
+            configuration: expected,
             credentials: components.credentialStore
-        )) ?? backend
+        )) ?? overlay
+        let selection = (try? components.backendFactory.makeBackend(
+            kind: expected.backend,
+            configuration: expected,
+            credentials: components.credentialStore
+        )) ?? overlay
         session?.configure(
-            backends: [backend],
-            backend: expectedConfiguration.backend,
+            backends: [overlay],
+            backend: expected.backend,
             model: modelIdentifier,
-            visionFallbackEnabled: expectedConfiguration.visionFallbackEnabled,
-            bridgeBackends: [bridgeBackend]
+            visionFallbackEnabled: expected.visionFallbackEnabled,
+            bridgeBackends: [bridge],
+            selectionBackends: [selection]
         )
     }
 

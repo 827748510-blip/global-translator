@@ -172,6 +172,7 @@ public struct TranslatedApplication: Identifiable, Equatable, Sendable {
 @MainActor
 public protocol SettingsActions: AnyObject {
     func setAutomaticTranslation(_ enabled: Bool)
+    func setSelectionTranslate(_ enabled: Bool)
     func selectBackend(_ kind: BackendKind)
     /// Persists the draft API key. The UI never logs or stores it; the draft is
     /// cleared by the view model only after this call succeeds.

@@ -80,6 +80,42 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         )
     }
 
+    public func completePlain(system: String, user: String) async throws -> String {
+        let trimmedSystem = system.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedUser = user.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSystem.isEmpty, !trimmedUser.isEmpty else {
+            throw TranslationError.invalidRequest("plain completion is empty")
+        }
+        let apiKey: String?
+        do {
+            apiKey = try credentialStore.read()
+        } catch {
+            throw TranslationError.networkFailure
+        }
+        guard let apiKey, !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw TranslationError.missingCredential
+        }
+        let body = try makePlainPayload(system: trimmedSystem, user: trimmedUser)
+        var urlRequest = URLRequest(url: Self.endpointURL.appendingPathComponent("responses"))
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue("Bearer " + apiKey, forHTTPHeaderField: "Authorization")
+        urlRequest.httpBody = body
+        let response: HTTPResponse
+        do {
+            response = try await transport.send(urlRequest)
+        } catch {
+            throw AdapterHTTPMapping.error(for: error)
+        }
+        if let error = AdapterHTTPMapping.error(for: response) {
+            throw error
+        }
+        guard (200..<300).contains(response.statusCode) else {
+            throw TranslationError.invalidResponse("unexpected DeepSeek HTTP status")
+        }
+        return try TranslationResponseParser.parsePlainResponses(response.body)
+    }
+
     public func translate(
         _ request: TranslationRequest,
         images: [VisionTranslationImage]
@@ -160,6 +196,23 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
             return try encoder.encode(payload)
         } catch {
             throw TranslationError.invalidRequest("unable to encode translation request")
+        }
+    }
+
+    private func makePlainPayload(system: String, user: String) throws -> Data {
+        let payload = PlainResponsesPayload(
+            model: Self.requiredModel,
+            input: [
+                ResponseInputMessage(role: "system", content: system),
+                ResponseInputMessage(role: "user", content: user)
+            ]
+        )
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            return try encoder.encode(payload)
+        } catch {
+            throw TranslationError.invalidRequest("unable to encode plain completion")
         }
     }
 
@@ -255,6 +308,24 @@ private struct ResponsesPayload: Encodable {
 
 private struct ResponsesText: Encodable {
     let format: JSONSchemaFormat
+}
+
+private struct PlainResponsesPayload: Encodable {
+    let model: String
+    let input: [ResponseInputMessage]
+    let stream = false
+    let reasoningEffort = "none"
+    let temperature = 0.3
+    let maxOutputTokens = 1_024
+
+    private enum CodingKeys: String, CodingKey {
+        case model
+        case input
+        case stream
+        case reasoningEffort = "reasoning_effort"
+        case temperature
+        case maxOutputTokens = "max_output_tokens"
+    }
 }
 
 private struct VisionResponsesPayload: Encodable {

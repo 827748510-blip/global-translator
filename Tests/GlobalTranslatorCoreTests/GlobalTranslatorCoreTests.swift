@@ -12,6 +12,7 @@ struct GlobalTranslatorCoreTests {
         #expect(configuration.localBaseURL.absoluteString == "http://127.0.0.1:11434/v1")
         #expect(configuration.localModel.isEmpty)
         #expect(configuration.translatedBundleIDs.isEmpty)
+        #expect(configuration.selectionTranslateEnabled)
 
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = ConfigStore(url: path)
@@ -28,11 +29,13 @@ struct GlobalTranslatorCoreTests {
         let decoded = try JSONDecoder().decode(AppConfiguration.self, from: legacyJSON)
         #expect(decoded.translatedBundleIDs.isEmpty)
         #expect(decoded.autoTranslateEnabled)
+        #expect(decoded.selectionTranslateEnabled)
 
         let allowJSON = Data(#"{"translatedBundleIDs":["com.google.Chrome"]}"#.utf8)
         let allow = try JSONDecoder().decode(AppConfiguration.self, from: allowJSON)
         #expect(allow.translatedBundleIDs == ["com.google.Chrome"])
         #expect(!allow.autoTranslateEnabled)
+        #expect(allow.selectionTranslateEnabled)
     }
 
     @Test
@@ -217,6 +220,36 @@ struct GlobalTranslatorCoreTests {
         let unavailableBackend = try LocalOpenAIBackend(baseURL: URL(string: "http://127.0.0.1:11434/v1")!, model: "missing", transport: unavailableTransport)
         let health = await unavailableBackend.healthCheck()
         #expect(health.status == .modelUnavailable)
+    }
+
+    @Test
+    func localPlainCompletionOmitsJsonObjectAndUsesGenericPrompt() async throws {
+        let transport = FakeTransport(responses: [
+            HTTPResponse(statusCode: 200, headers: [:], body: try chatEnvelope("主体：雨中女孩，电影感布光。"))
+        ])
+        let backend = try LocalOpenAIBackend(
+            baseURL: URL(string: "http://[::1]:11434/v1")!,
+            model: "qwen-local",
+            transport: transport
+        )
+        let text = try await backend.completePlain(
+            system: PromptOptimizationInstructions.system,
+            user: PromptOptimizationInstructions.userContent(for: "一个女孩站在雨里")
+        )
+        #expect(text == "主体：雨中女孩，电影感布光。")
+        let body = try #require(await transport.requests.first?.httpBody)
+        let object = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(object["response_format"] == nil)
+        #expect(intValue(object["max_tokens"]) == LocalOpenAIBackend.plainCompletionMaxTokens)
+        if let temperature = object["temperature"] as? Double {
+            #expect(abs(temperature - 0.3) < 0.001)
+        } else {
+            Issue.record("missing temperature")
+        }
+        let messages = try #require(object["messages"] as? [[String: Any]])
+        #expect(messages[0]["content"] as? String == PromptOptimizationInstructions.system)
+        #expect((messages[0]["content"] as? String)?.contains("Jimeng") == false)
+        #expect((messages[1]["content"] as? String)?.contains("一个女孩站在雨里") == true)
     }
 
     @Test
@@ -494,6 +527,23 @@ struct SerializingTranslationBackendTests {
     }
 
     @Test
+    func completePlainSharesTheSerialSlotWithTranslate() async throws {
+        let base = SlowRecordingBackend()
+        let serial = SerializingTranslationBackend(base: base)
+        let request = TranslationRequest(
+            windowRevision: 1,
+            items: [TranslationItem(id: UUID(), sourceText: "overlay scrape")]
+        )
+        async let translated = serial.translate(request)
+        async let optimized = serial.completePlain(system: "sys", user: "draft")
+        _ = try await (translated, optimized)
+        #expect(await base.maxInFlight == 1)
+        let started = await base.started
+        #expect(started.contains("overlay scrape"))
+        #expect(started.contains("plain:draft"))
+    }
+
+    @Test
     func overlayCancelDoesNotAbortAQueuedBridgeTranslate() async throws {
         let base = SlowRecordingBackend()
         let serial = SerializingTranslationBackend(base: base)
@@ -546,6 +596,19 @@ private actor SlowRecordingBackend: TranslationBackend {
                 Translation(segmentId: $0.id, simplifiedChineseText: "译:" + $0.sourceText)
             }
         )
+    }
+
+    func completePlain(system _: String, user: String) async throws -> String {
+        inFlight += 1
+        maxInFlight = max(maxInFlight, inFlight)
+        started.append("plain:" + user)
+        defer {
+            inFlight -= 1
+            finished.append("plain:" + user)
+        }
+        try await Task.sleep(for: .milliseconds(80))
+        try Task.checkCancellation()
+        return "opt:" + user
     }
 }
 

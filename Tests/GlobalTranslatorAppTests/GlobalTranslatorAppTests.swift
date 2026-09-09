@@ -1003,7 +1003,9 @@ struct ApplicationControllerTests {
         engineEventBox: EngineEventBox? = nil,
         statusItem: FakeStatusItem = FakeStatusItem(),
         logger: RecordingLogger = RecordingLogger(),
-        inPage: (any InPageTranslating)? = nil
+        inPage: (any InPageTranslating)? = nil,
+        selectedTextReader: (any SelectedTextReading)? = nil,
+        selectionPopover: (any SelectionPopoverControlling)? = nil
     ) -> ApplicationControllerComponents {
         ApplicationControllerComponents(
             configurationStore: store,
@@ -1014,6 +1016,9 @@ struct ApplicationControllerTests {
             capturePipelineFactory: { _ in capture },
             statusItemFactory: { _ in statusItem },
             overlayFactory: overlayFactory ?? { overlay },
+            selectedTextReaderFactory: { selectedTextReader ?? NullSelectedTextReader() },
+            selectionPopoverFactory: { selectionPopover ?? NullSelectionPopover() },
+            selectionPointerMonitorFactory: { NullSelectionPointerMonitor() },
             coordinatorFactory: { _, eventSink in
                 engineEventBox?.set(eventSink)
                 return coordinator

@@ -7,6 +7,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     public var localBaseURL: URL
     public var localModel: String
     public var translatedBundleIDs: [String]
+    /// 划选文字后弹出译文。默认开启，与窗口覆盖层、扩展桥独立。
+    public var selectionTranslateEnabled: Bool
 
     public init(
         autoTranslateEnabled: Bool = false,
@@ -14,7 +16,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         visionFallbackEnabled: Bool = false,
         localBaseURL: URL = Self.defaultLocalBaseURL,
         localModel: String = "",
-        translatedBundleIDs: [String] = []
+        translatedBundleIDs: [String] = [],
+        selectionTranslateEnabled: Bool = true
     ) {
         self.autoTranslateEnabled = autoTranslateEnabled
         self.backend = backend
@@ -22,6 +25,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         self.localBaseURL = localBaseURL
         self.localModel = localModel
         self.translatedBundleIDs = translatedBundleIDs
+        self.selectionTranslateEnabled = selectionTranslateEnabled
     }
 
     public static let defaultLocalBaseURL = URL(string: "http://127.0.0.1:11434/v1")!
@@ -33,6 +37,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         case localBaseURL
         case localModel
         case translatedBundleIDs
+        case selectionTranslateEnabled
     }
 
     public init(from decoder: Decoder) throws {
@@ -46,5 +51,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         // reinterpreted as the translation allow list: missing field means
         // "translate nothing" until the user picks applications.
         translatedBundleIDs = try container.decodeIfPresent([String].self, forKey: .translatedBundleIDs) ?? []
+        selectionTranslateEnabled = try container.decodeIfPresent(Bool.self, forKey: .selectionTranslateEnabled) ?? true
     }
 }

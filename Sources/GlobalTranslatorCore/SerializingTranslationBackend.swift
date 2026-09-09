@@ -41,6 +41,14 @@ public actor SerializingTranslationBackend: TranslationBackend {
         return try await base.translate(request)
     }
 
+    public func completePlain(system: String, user: String) async throws -> String {
+        try Task.checkCancellation()
+        await acquire()
+        defer { release() }
+        try Task.checkCancellation()
+        return try await base.completePlain(system: system, user: user)
+    }
+
     private func acquire() async {
         if !busy {
             busy = true

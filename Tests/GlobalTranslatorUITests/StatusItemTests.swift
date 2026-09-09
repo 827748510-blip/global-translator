@@ -9,6 +9,7 @@ import GlobalTranslatorCapture
 @MainActor
 private final class StatusItemTestActions: SettingsActions {
     func setAutomaticTranslation(_ enabled: Bool) {}
+    func setSelectionTranslate(_ enabled: Bool) {}
     func selectBackend(_ kind: BackendKind) {}
     func saveAPIKey(_ draft: String) async throws {}
     func deleteAPIKey() async throws {}

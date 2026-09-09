@@ -34,6 +34,9 @@ public final class TranslationSession {
     /// monotonically increasing revision gate would reject as stale — so the
     /// bridge must never share that coordinator.
     private var bridgeCoordinator: (any TranslationCoordinating)?
+    /// Dedicated coordinator for 滑词翻译 so overlay/bridge revision gates
+    /// and coalescers cannot cancel or stale a selection request.
+    private var selectionCoordinator: (any TranslationCoordinating)?
     private var scheduler: (any TranslationScheduling)?
     private var captureTask: Task<Void, Never>?
     private var protectionTask: Task<Void, Never>?
@@ -77,7 +80,8 @@ public final class TranslationSession {
         backend: BackendKind,
         model: String,
         visionFallbackEnabled: Bool,
-        bridgeBackends: [any TranslationBackend]? = nil
+        bridgeBackends: [any TranslationBackend]? = nil,
+        selectionBackends: [any TranslationBackend]? = nil
     ) {
         stop()
         self.backend = backend
@@ -88,6 +92,10 @@ public final class TranslationSession {
         // A dedicated backend instance (when provided) so overlay coalescing
         // cannot cancel in-flight extension translations.
         self.bridgeCoordinator = coordinatorFactory(bridgeBackends ?? backends, makeEventSink())
+        self.selectionCoordinator = coordinatorFactory(
+            selectionBackends ?? bridgeBackends ?? backends,
+            makeEventSink()
+        )
         let outputHandler: @MainActor @Sendable (EngineOutput) -> Void = { [weak self] output in
             self?.receive(output)
         }
@@ -236,6 +244,67 @@ public final class TranslationSession {
             translated[translation.region.id] = translation.text
         }
         return regions.map { translated[$0.id] }
+    }
+
+    /// Single-string 滑词翻译. Not gated on overlay `isRunning` or the
+    /// extension-bridge master switch; uses a dedicated coordinator so Chrome
+    /// overlay-skip and bridge batches cannot stale this request.
+    public func translateSelection(_ text: String) async throws -> String {
+        guard let coordinator = selectionCoordinator else { throw SelectionTranslateError.translatorUnavailable }
+        let capped = SelectionTranslateSupport.cappedSource(text)
+        guard TextFilter.selectionDecision(capped) == .translate else {
+            throw SelectionTranslateError.emptyResult
+        }
+        let region = TextRegion(
+            id: UUID(),
+            sourceText: capped,
+            screenFrame: .zero,
+            confidence: 1,
+            source: .accessibility,
+            windowRevision: 0
+        )
+        let descriptor = ActiveWindowDescriptor(
+            pid: 0,
+            bundleIdentifier: "selection.translate",
+            windowID: nil,
+            frame: .zero,
+            revision: 0,
+            invalidatesOverlay: false
+        )
+        let snapshot = CaptureSnapshot(
+            window: CapturedWindow(descriptor: descriptor, regions: [region], source: .pageText)
+        )
+        await coordinator.selectBackend(kind: backend, modelIdentifier: model)
+        let output = try await coordinator.translate(
+            snapshot: snapshot,
+            backend: backend,
+            modelIdentifier: model,
+            visionFallbackEnabled: false
+        )
+        let translated = output.translations.first(where: { !$0.text.isEmpty })?.text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let translated, !translated.isEmpty else { throw SelectionTranslateError.emptyResult }
+        return translated
+    }
+
+    /// Generic prompt rewrite. Allows Simplified Chinese drafts (the
+    /// already-Chinese skip is translate-only). Uses the selection coordinator's
+    /// `completePlain` so overlay/bridge JSON translation is not involved.
+    public func optimizePrompt(_ text: String) async throws -> String {
+        guard let coordinator = selectionCoordinator else { throw SelectionTranslateError.translatorUnavailable }
+        let capped = SelectionTranslateSupport.cappedSource(text)
+        guard TextFilter.shouldOfferPromptOptimization(capped) else {
+            throw SelectionTranslateError.emptyResult
+        }
+        await coordinator.selectBackend(kind: backend, modelIdentifier: model)
+        let optimized = try await coordinator.completePlain(
+            system: PromptOptimizationInstructions.system,
+            user: PromptOptimizationInstructions.userContent(for: capped),
+            backend: backend
+        )
+        let trimmed = optimized.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw SelectionTranslateError.emptyResult }
+        return trimmed
     }
 
     public func handleWindow(_ descriptor: ActiveWindowDescriptor?) {

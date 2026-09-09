@@ -39,8 +39,11 @@ public final class OverlayPanel: NSPanel {
 public enum OverlayLayout {
     /// Height of one line of overlay text, used for size capping.
     public static var estimatedLineHeight: CGFloat {
-        let font = NSFont.preferredFont(forTextStyle: .callout)
-        return ceil(font.ascender - font.descender + font.leading)
+        estimatedLineHeight(for: NSFont.preferredFont(forTextStyle: .callout))
+    }
+
+    public static func estimatedLineHeight(for font: NSFont) -> CGFloat {
+        ceil(font.ascender - font.descender + font.leading)
     }
 
     /// Conservative text measurement for panel sizing. Long CJK text wraps at
@@ -49,19 +52,20 @@ public enum OverlayLayout {
     public static func estimatedTextSize(
         for text: String,
         maxWidth: CGFloat,
-        maxLines: Int
+        maxLines: Int,
+        font: NSFont = NSFont.preferredFont(forTextStyle: .callout)
     ) -> CGSize {
-        let font = NSFont.preferredFont(forTextStyle: .callout)
+        let lineHeight = estimatedLineHeight(for: font)
         let constrained = CGSize(width: maxWidth, height: .greatestFiniteMagnitude)
         let measured = (text as NSString).boundingRect(
             with: constrained,
             options: [.usesLineFragmentOrigin, .usesFontLeading],
             attributes: [.font: font]
         )
-        let cappedHeight = min(ceil(measured.height), estimatedLineHeight * CGFloat(maxLines))
+        let cappedHeight = min(ceil(measured.height), lineHeight * CGFloat(maxLines))
         return CGSize(
             width: min(ceil(measured.width), maxWidth),
-            height: max(cappedHeight, estimatedLineHeight)
+            height: max(cappedHeight, lineHeight)
         )
     }
 
