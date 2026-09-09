@@ -186,12 +186,16 @@ public struct SelectionTranslatePopoverView: View {
 }
 
 enum SelectionPopoverLayout {
+    /// Short status copy (已是中文 / 无需翻译 / 失败). `.headline` is smaller than
+    /// `.body` for short CJK on macOS, so use title3 semibold instead.
+    static let statusResultFont: Font = .title3.weight(.semibold)
+
     static func resultFont(for status: SelectionPopoverStatus) -> Font {
         switch status {
         case .translated, .optimized:
             return GTType.body
         default:
-            return GTType.stateLine
+            return statusResultFont
         }
     }
 
@@ -200,7 +204,12 @@ enum SelectionPopoverLayout {
         case .translated, .optimized:
             return NSFont.preferredFont(forTextStyle: .body)
         default:
-            return NSFont.preferredFont(forTextStyle: .headline)
+            return statusResultMeasuringFont
         }
+    }
+
+    static var statusResultMeasuringFont: NSFont {
+        let size = NSFont.preferredFont(forTextStyle: .title3).pointSize
+        return NSFont.systemFont(ofSize: size, weight: .semibold)
     }
 }

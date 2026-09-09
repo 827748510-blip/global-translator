@@ -161,13 +161,13 @@ struct SelectionTranslatePopoverTests {
     }
 
     @Test
-    func statusCopyUsesHeadlineMeasurement() {
+    func statusCopyUsesLargerStatusFontThanBody() {
         let content = SelectionPopoverContent.alreadyChinese(
             original: "抖测已完成",
             screenFrame: .zero
         )
         let textWidth = GTSelectionMetrics.width - GTSelectionMetrics.horizontalPadding * 2
-        let headline = OverlayLayout.estimatedTextSize(
+        let status = OverlayLayout.estimatedTextSize(
             for: content.displayTranslation,
             maxWidth: textWidth,
             maxLines: GTSelectionMetrics.maxTranslationLines,
@@ -179,9 +179,9 @@ struct SelectionTranslatePopoverTests {
             maxLines: GTSelectionMetrics.maxTranslationLines,
             font: NSFont.preferredFont(forTextStyle: .body)
         )
-        #expect(headline.height >= body.height)
+        #expect(status.height > body.height)
         let size = SelectionTranslatePanelController.contentSize(for: content)
-        #expect(size.height >= GTSelectionMetrics.verticalPadding * 2 + headline.height + GTSelectionMetrics.sectionSpacing)
+        #expect(size.height >= GTSelectionMetrics.verticalPadding * 2 + status.height + GTSelectionMetrics.sectionSpacing)
     }
 
     @Test
