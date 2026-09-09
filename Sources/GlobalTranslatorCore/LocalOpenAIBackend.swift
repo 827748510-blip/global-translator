@@ -98,8 +98,16 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
         return try TranslationResponseParser.parseChatCompletions(
             response.body,
             expectedIDs: request.items.map { $0.id },
-            windowRevision: request.windowRevision
+            windowRevision: request.windowRevision,
+            mode: .localRelaxed
         )
+    }
+
+    /// Caps generation so a short UI string does not walk toward the
+    /// Modelfile `num_predict` default. One translation JSON object fits in
+    /// 128 tokens; three items still fit in 256.
+    static func maxTokens(itemCount: Int) -> Int {
+        min(256, 64 + 64 * max(itemCount, 1))
     }
 
     private func listModels() async throws -> [String] {
@@ -133,7 +141,8 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
                 ChatPrompt(role: "system", content: TranslationInstructions.system),
                 ChatPrompt(role: "user", content: content)
             ],
-            responseFormat: ChatResponseFormat(jsonSchema: ChatJSONSchema(schema: TranslationSchema.object(segmentIDs: request.items.map(\.id))))
+            maxTokens: Self.maxTokens(itemCount: request.items.count),
+            responseFormat: ChatResponseFormat()
         )
         do {
             let encoder = JSONEncoder()
@@ -163,6 +172,7 @@ private struct ChatPayload: Encodable {
     let messages: [ChatPrompt]
     let stream = false
     let temperature = 0.0
+    let maxTokens: Int
     let responseFormat: ChatResponseFormat
 
     private enum CodingKeys: String, CodingKey {
@@ -170,6 +180,7 @@ private struct ChatPayload: Encodable {
         case messages
         case stream
         case temperature
+        case maxTokens = "max_tokens"
         case responseFormat = "response_format"
     }
 }
@@ -179,18 +190,9 @@ private struct ChatPrompt: Codable {
     let content: String
 }
 
+/// Local-only: `json_object` is several times faster than strict
+/// `json_schema` on qwen3-4b (measured ~0.7s vs ~0.15s for one short
+/// string). Shape, count, and IDs are enforced by the client parser.
 private struct ChatResponseFormat: Encodable {
-    let type = "json_schema"
-    let jsonSchema: ChatJSONSchema
-
-    private enum CodingKeys: String, CodingKey {
-        case type
-        case jsonSchema = "json_schema"
-    }
-}
-
-private struct ChatJSONSchema: Encodable {
-    let name = "translation_result"
-    let strict = true
-    let schema: JSONSchemaObject
+    let type = "json_object"
 }

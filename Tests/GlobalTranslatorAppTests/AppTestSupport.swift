@@ -380,7 +380,7 @@ actor OneItemCoordinator: TranslationCoordinating {
         visionFallbackEnabled: Bool
     ) async throws -> EngineOutput {
         itemCounts.append(snapshot.regions.count)
-        if snapshot.regions.count > 1 {
+        if snapshot.regions.count > TranslationCoordinator.localPageTextBatchSize {
             throw TranslationError.networkFailure
         }
         let translations = snapshot.regions.map { region in

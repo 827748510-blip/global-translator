@@ -121,6 +121,14 @@ enum TranslationSchema {
     }
 }
 
+enum TranslationParseMode {
+    /// Cloud: require the canonical object, exact IDs, no extra fields.
+    case strict
+    /// Local `json_object`: accept a translations object or a bare array,
+    /// ignore extra fields, and fall back to input order when IDs were rewritten.
+    case localRelaxed
+}
+
 enum TranslationResponseParser {
     private struct ResponsesEnvelope: Decodable {
         let output: [ResponsesOutput]
@@ -209,14 +217,23 @@ enum TranslationResponseParser {
     static func parseChatCompletions(
         _ data: Data,
         expectedIDs: [UUID],
-        windowRevision: UInt64 = 0
+        windowRevision: UInt64 = 0,
+        mode: TranslationParseMode = .strict
     ) throws -> TranslationResult {
         do {
             let envelope = try JSONDecoder().decode(ChatEnvelope.self, from: data)
             guard envelope.choices.count == 1 else {
                 throw TranslationError.invalidResponse("chat response choices are missing or ambiguous")
             }
-            return try parseTranslationJSON(Data(envelope.choices[0].message.content.utf8), expectedIDs: expectedIDs, windowRevision: windowRevision)
+            let payload = mode == .localRelaxed
+                ? unwrapJSONPayload(envelope.choices[0].message.content)
+                : Data(envelope.choices[0].message.content.utf8)
+            return try parseTranslationJSON(
+                payload,
+                expectedIDs: expectedIDs,
+                windowRevision: windowRevision,
+                mode: mode
+            )
         } catch let error as TranslationError {
             throw error
         } catch {
@@ -224,11 +241,41 @@ enum TranslationResponseParser {
         }
     }
 
+    private static func unwrapJSONPayload(_ raw: String) -> Data {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("```") {
+            if let newline = text.firstIndex(of: "\n") {
+                text = String(text[text.index(after: newline)...])
+            }
+            if let fence = text.range(of: "```", options: .backwards) {
+                text = String(text[..<fence.lowerBound])
+            }
+            text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let objectStart = text.firstIndex(of: "{"),
+           let arrayStart = text.firstIndex(of: "["),
+           arrayStart < objectStart,
+           let end = text.lastIndex(of: "]") {
+            text = String(text[arrayStart...end])
+        } else if let objectStart = text.firstIndex(of: "{"),
+                  let end = text.lastIndex(of: "}") {
+            text = String(text[objectStart...end])
+        } else if let arrayStart = text.firstIndex(of: "["),
+                  let end = text.lastIndex(of: "]") {
+            text = String(text[arrayStart...end])
+        }
+        return Data(text.utf8)
+    }
+
     private static func parseTranslationJSON(
         _ data: Data,
         expectedIDs: [UUID],
-        windowRevision: UInt64
+        windowRevision: UInt64,
+        mode: TranslationParseMode = .strict
     ) throws -> TranslationResult {
+        if mode == .localRelaxed {
+            return try parseLocalTranslationJSON(data, expectedIDs: expectedIDs, windowRevision: windowRevision)
+        }
         do {
             let envelope = try JSONDecoder().decode(TranslationEnvelope.self, from: data)
             guard envelope.translations.count == expectedIDs.count else {
@@ -257,6 +304,78 @@ enum TranslationResponseParser {
         } catch {
             throw TranslationError.invalidResponse("translation JSON is invalid")
         }
+    }
+
+    private struct LocalTranslationItem {
+        let segmentId: UUID?
+        let text: String
+    }
+
+    private static func parseLocalTranslationJSON(
+        _ data: Data,
+        expectedIDs: [UUID],
+        windowRevision: UInt64
+    ) throws -> TranslationResult {
+        let json: Any
+        do {
+            json = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            throw TranslationError.invalidResponse("translation JSON is invalid")
+        }
+        let items = try localItems(from: json)
+        guard items.count == expectedIDs.count else {
+            throw TranslationError.invalidResponse("translation count does not match request")
+        }
+        guard items.allSatisfy({
+            let text = $0.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !text.isEmpty && text.count <= TranslationRequestValidator.maximumOutputCharacters
+        }) else {
+            throw TranslationError.invalidResponse("translation text is empty or too long")
+        }
+        let parsedIDs = items.compactMap(\.segmentId)
+        if parsedIDs.count == items.count,
+           Set(parsedIDs).count == parsedIDs.count,
+           Set(parsedIDs) == Set(expectedIDs) {
+            let translations = zip(items, parsedIDs).map {
+                Translation(segmentId: $0.1, simplifiedChineseText: $0.0.text)
+            }
+            return TranslationResult(windowRevision: windowRevision, translations: translations)
+        }
+        let translations = zip(expectedIDs, items).map {
+            Translation(segmentId: $0.0, simplifiedChineseText: $0.1.text)
+        }
+        return TranslationResult(windowRevision: windowRevision, translations: translations)
+    }
+
+    private static func localItems(from json: Any) throws -> [LocalTranslationItem] {
+        if let object = json as? [String: Any] {
+            guard let translations = object["translations"] else {
+                throw TranslationError.invalidResponse("translation JSON is invalid")
+            }
+            return try decodeLocalItems(translations)
+        }
+        return try decodeLocalItems(json)
+    }
+
+    private static func decodeLocalItems(_ json: Any) throws -> [LocalTranslationItem] {
+        if let objects = json as? [[String: Any]] {
+            return try objects.map { object in
+                guard let text = object["text"] as? String else {
+                    throw TranslationError.invalidResponse("translation JSON is invalid")
+                }
+                let segmentId: UUID?
+                if let raw = object["segmentId"] as? String {
+                    segmentId = UUID(uuidString: raw)
+                } else {
+                    segmentId = nil
+                }
+                return LocalTranslationItem(segmentId: segmentId, text: text)
+            }
+        }
+        if let strings = json as? [String] {
+            return strings.map { LocalTranslationItem(segmentId: nil, text: $0) }
+        }
+        throw TranslationError.invalidResponse("translation JSON is invalid")
     }
 }
 

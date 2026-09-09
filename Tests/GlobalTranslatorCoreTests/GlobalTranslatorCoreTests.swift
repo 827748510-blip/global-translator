@@ -113,6 +113,9 @@ struct GlobalTranslatorCoreTests {
         #expect(requests[0].url?.absoluteString == "https://api.deepseek.com/responses")
         let body = try #require(requests[0].httpBody)
         let object = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let text = try #require(object["text"] as? [String: Any])
+        let format = try #require(text["format"] as? [String: Any])
+        #expect(format["type"] as? String == "json_schema")
         let serialized = String(data: try JSONSerialization.data(withJSONObject: object), encoding: .utf8)!
         #expect(!serialized.contains("screenFrame"))
         #expect(!serialized.contains("confidence"))
@@ -175,7 +178,7 @@ struct GlobalTranslatorCoreTests {
     }
 
     @Test
-    func localChecksModelAndEnforcesTranslationObjectSchema() async throws {
+    func localSendsJsonObjectAndScaledMaxTokens() async throws {
         let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         let output = #"{"choices":[{"message":{"role":"assistant","content":"{\"translations\":[{\"segmentId\":\"00000000-0000-0000-0000-000000000001\",\"text\":\"你好\"}]}"}}]}"#
         let transport = FakeTransport(responses: [
@@ -191,27 +194,89 @@ struct GlobalTranslatorCoreTests {
         let object = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
         #expect(object["stream"] as? Bool == false)
         #expect(object["temperature"] as? Double == 0)
+        #expect(intValue(object["max_tokens"]) == 128)
+        #expect(LocalOpenAIBackend.maxTokens(itemCount: 1) == 128)
+        #expect(LocalOpenAIBackend.maxTokens(itemCount: 3) == 256)
         let format = try #require(object["response_format"] as? [String: Any])
-        #expect(format["type"] as? String == "json_schema")
-        let jsonSchema = try #require(format["json_schema"] as? [String: Any])
-        #expect(jsonSchema["strict"] as? Bool == true)
-        let schema = try #require(jsonSchema["schema"] as? [String: Any])
-        #expect(schema["type"] as? String == "object")
-        #expect(schema["required"] as? [String] == ["translations"])
-        #expect(schema["additionalProperties"] as? Bool == false)
-        let properties = try #require(schema["properties"] as? [String: Any])
-        let translations = try #require(properties["translations"] as? [String: Any])
-        #expect(translations["minItems"] as? Int == 1)
-        #expect(translations["maxItems"] as? Int == 1)
-        let item = try #require(translations["items"] as? [String: Any])
-        let itemProperties = try #require(item["properties"] as? [String: Any])
-        let segment = try #require(itemProperties["segmentId"] as? [String: Any])
-        #expect(segment["enum"] as? [String] == [id.uuidString])
+        #expect(format["type"] as? String == "json_object")
+        #expect(!format.keys.contains("json_schema"))
 
         let unavailableTransport = FakeTransport(responses: [HTTPResponse(statusCode: 200, headers: [:], body: Data(#"{"data":[]}"#.utf8))])
         let unavailableBackend = try LocalOpenAIBackend(baseURL: URL(string: "http://127.0.0.1:11434/v1")!, model: "missing", transport: unavailableTransport)
         let health = await unavailableBackend.healthCheck()
         #expect(health.status == .modelUnavailable)
+    }
+
+    @Test
+    func localBatchPayloadUsesHigherMaxTokens() async throws {
+        let first = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let second = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        let third = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
+        let output = #"{"choices":[{"message":{"role":"assistant","content":"{\"translations\":[{\"segmentId\":\"00000000-0000-0000-0000-000000000001\",\"text\":\"一\"},{\"segmentId\":\"00000000-0000-0000-0000-000000000002\",\"text\":\"二\"},{\"segmentId\":\"00000000-0000-0000-0000-000000000003\",\"text\":\"三\"}]}"}}]}"#
+        let transport = FakeTransport(responses: [
+            HTTPResponse(statusCode: 200, headers: [:], body: Data(output.utf8))
+        ])
+        let backend = try LocalOpenAIBackend(baseURL: URL(string: "http://127.0.0.1:11434/v1")!, model: "qwen-local", transport: transport)
+        let result = try await backend.translate(TranslationRequest(windowRevision: 3, items: [
+            TranslationItem(id: first, sourceText: "one"),
+            TranslationItem(id: second, sourceText: "two"),
+            TranslationItem(id: third, sourceText: "three")
+        ]))
+        #expect(result.translations.map(\.simplifiedChineseText) == ["一", "二", "三"])
+        let body = try #require(await transport.requests.first?.httpBody)
+        let object = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(intValue(object["max_tokens"]) == 256)
+        let format = try #require(object["response_format"] as? [String: Any])
+        #expect(format["type"] as? String == "json_object")
+    }
+
+    @Test
+    func localParserAcceptsBareArrayAndRewrittenIdsInOrder() async throws {
+        let first = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let second = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        let bare = #"{"choices":[{"message":{"role":"assistant","content":"[{\"segmentId\":\"deadbeef-0000-0000-0000-000000000099\",\"text\":\"你好\"},{\"segmentId\":\"deadbeef-0000-0000-0000-000000000098\",\"text\":\"世界\"}]"}}]}"#
+        let transport = FakeTransport(responses: [
+            HTTPResponse(statusCode: 200, headers: [:], body: Data(bare.utf8))
+        ])
+        let backend = try LocalOpenAIBackend(baseURL: URL(string: "http://127.0.0.1:11434/v1")!, model: "qwen-local", transport: transport)
+        let result = try await backend.translate(TranslationRequest(windowRevision: 4, items: [
+            TranslationItem(id: first, sourceText: "hello"),
+            TranslationItem(id: second, sourceText: "world")
+        ]))
+        #expect(result.translations.map(\.segmentId) == [first, second])
+        #expect(result.translations.map(\.simplifiedChineseText) == ["你好", "世界"])
+
+        let strings = #"{"choices":[{"message":{"role":"assistant","content":"[\"甲\",\"乙\"]"}}]}"#
+        let stringTransport = FakeTransport(responses: [
+            HTTPResponse(statusCode: 200, headers: [:], body: Data(strings.utf8))
+        ])
+        let stringBackend = try LocalOpenAIBackend(baseURL: URL(string: "http://127.0.0.1:11434/v1")!, model: "qwen-local", transport: stringTransport)
+        let stringResult = try await stringBackend.translate(TranslationRequest(windowRevision: 4, items: [
+            TranslationItem(id: first, sourceText: "hello"),
+            TranslationItem(id: second, sourceText: "world")
+        ]))
+        #expect(stringResult.translations.map(\.segmentId) == [first, second])
+        #expect(stringResult.translations.map(\.simplifiedChineseText) == ["甲", "乙"])
+    }
+
+    @Test
+    func localParserRejectsCountMismatchWithoutCloudFallback() async throws {
+        let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let output = #"{"choices":[{"message":{"role":"assistant","content":"{\"translations\":[]}"}}]}"#
+        let transport = FakeTransport(responses: [
+            HTTPResponse(statusCode: 200, headers: [:], body: Data(output.utf8))
+        ])
+        let backend = try LocalOpenAIBackend(baseURL: URL(string: "http://127.0.0.1:11434/v1")!, model: "qwen-local", transport: transport)
+        do {
+            _ = try await backend.translate(TranslationRequest(windowRevision: 5, items: [TranslationItem(id: id, sourceText: "hello")]))
+            Issue.record("expected invalid response")
+        } catch let error as TranslationError {
+            guard case .invalidResponse = error else {
+                Issue.record("unexpected error")
+                return
+            }
+        }
+        #expect(await transport.requests.count == 1)
     }
 
     private func expectNoThrow(_ operation: () throws -> Void) {
@@ -228,6 +293,12 @@ struct GlobalTranslatorCoreTests {
             Issue.record("expected an error")
         } catch {
         }
+    }
+
+    private func intValue(_ value: Any?) -> Int? {
+        if let int = value as? Int { return int }
+        if let double = value as? Double { return Int(double) }
+        return nil
     }
 }
 
