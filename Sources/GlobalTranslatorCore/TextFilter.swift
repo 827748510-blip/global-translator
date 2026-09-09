@@ -70,9 +70,11 @@ public enum TextFilter {
         "and", "or", "with", "for", "to", "of", "in", "on", "vs", "versus", "plus"
     ]
 
-    /// Product names with *internal* CamelCase (SwiftUI, ScreenCaptureKit, NSView)
-    /// joined by spaces/`+`/`/`. Title-case UI labels like "File / Edit" still
-    /// translate. `+` or `/` alone is not a strong signal.
+    /// Product names with a *real* strong signal: internal CamelCase
+    /// (SwiftUI, ScreenCaptureKit, NSView), or an ALL-CAPS abbrev plus another
+    /// tech token (Vision + OCR). Title-case + a number (`Sentence 0`) and
+    /// UI labels (`File / Edit`, `Copy + Paste`) still translate. `+`/`/`
+    /// joiners are not a strong signal by themselves.
     private static func isTechnicalTokenPhrase(_ value: String) -> Bool {
         if value.contains(where: { $0 == "?" || $0 == "!" || $0 == "。" || $0 == "？" }) {
             return false
@@ -90,7 +92,16 @@ public enum TextFilter {
         guard tokens.allSatisfy({ isTechnicalToken($0) || glueWords.contains($0.lowercased()) }) else {
             return false
         }
-        return tokens.contains { hasInternalCamelCase($0) }
+        if tokens.contains(where: hasInternalCamelCase) {
+            return true
+        }
+        let hasAllCaps = tokens.contains { isAllCapsAbbreviation($0) }
+        let hasPeerName = tokens.contains { token in
+            !isVersionToken(token)
+                && !isAllCapsAbbreviation(token)
+                && (hasInternalCamelCase(token) || isCapitalizedProductWord(token) || isIdentifierOrUnit(token))
+        }
+        return hasAllCaps && hasPeerName
     }
 
     private static func isTechnicalToken(_ token: String) -> Bool {

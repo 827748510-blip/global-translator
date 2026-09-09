@@ -280,11 +280,11 @@ public final class TranslationSession {
         await coordinator.selectBackend(kind: backend, modelIdentifier: model)
         let output: EngineOutput
         do {
-            output = try await coordinator.translate(
+            output = try await Self.runSelectionTranslate(
+                coordinator,
                 snapshot: snapshot,
                 backend: backend,
-                modelIdentifier: model,
-                visionFallbackEnabled: false
+                model: model
             )
         } catch is CancellationError {
             throw CancellationError()
@@ -295,6 +295,29 @@ public final class TranslationSession {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let translated, !translated.isEmpty else { throw SelectionTranslateError.emptyResult }
         return translated
+    }
+
+    private static func runSelectionTranslate(
+        _ coordinator: any TranslationCoordinating,
+        snapshot: CaptureSnapshot,
+        backend: BackendKind,
+        model: String
+    ) async throws -> EngineOutput {
+        if let live = coordinator as? TranslationCoordinator {
+            return try await live.translate(
+                snapshot: snapshot,
+                backend: backend,
+                modelIdentifier: model,
+                visionFallbackEnabled: false,
+                includeIneligibleText: true
+            )
+        }
+        return try await coordinator.translate(
+            snapshot: snapshot,
+            backend: backend,
+            modelIdentifier: model,
+            visionFallbackEnabled: false
+        )
     }
 
     private static func selectionError(from error: TranslationError) -> Error {
