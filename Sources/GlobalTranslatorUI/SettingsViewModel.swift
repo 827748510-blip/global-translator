@@ -22,6 +22,7 @@ public final class SettingsViewModel: ObservableObject {
     @Published public var keyConfigured = false
     @Published public var localBaseURL = ""
     @Published public var localModel = ""
+    @Published public var deepSeekModel = AppConfiguration.defaultDeepSeekModel
     @Published public var availableModels: [String] = []
     @Published public var permissionSnapshot = PermissionSnapshot(
         accessibilityTrusted: false,
@@ -41,6 +42,9 @@ public final class SettingsViewModel: ObservableObject {
 
     /// Never prefilled; cleared on successful save only.
     @Published public var keyDraft = ""
+    /// When a key is already in Keychain, the SecureField stays hidden until
+    /// the user explicitly chooses 替换密钥. Switching backends must not open it.
+    @Published public var isReplacingKey = false
     @Published public var keyOperation: KeyOperationState = .idle
     @Published public var connectionTest: ConnectionTestState = .idle
 
@@ -73,6 +77,11 @@ public final class SettingsViewModel: ObservableObject {
 
     public var isKeyOperationInProgress: Bool {
         keyOperation == .inProgress
+    }
+
+    /// Empty key field is only for first-time setup or an explicit replace.
+    public var showsKeyEntry: Bool {
+        !keyConfigured || isReplacingKey
     }
 
     public var canTestConnection: Bool {
@@ -161,6 +170,9 @@ public final class SettingsViewModel: ObservableObject {
         selectedBackend = kind
         connectionTest = .idle
         backendReady = false
+        isReplacingKey = false
+        keyDraft = ""
+        keyOperation = .idle
         actions.selectBackend(kind)
     }
 
@@ -174,6 +186,7 @@ public final class SettingsViewModel: ObservableObject {
             try await actions.saveAPIKey(trimmed)
             keyDraft = ""
             keyConfigured = true
+            isReplacingKey = false
             // A validated save is enough to consider the cloud backend ready.
             if selectedBackend == .deepSeekCloud {
                 backendReady = true
@@ -201,6 +214,7 @@ public final class SettingsViewModel: ObservableObject {
             try await actions.deleteAPIKey()
             keyConfigured = false
             keyDraft = ""
+            isReplacingKey = false
             backendReady = false
             keyOperation = .idle
         } catch {
@@ -210,6 +224,19 @@ public final class SettingsViewModel: ObservableObject {
 
     public func cancelDeleteKey() {
         isDeleteKeyConfirmationPresented = false
+    }
+
+    public func beginReplaceKey() {
+        guard keyConfigured else { return }
+        isReplacingKey = true
+        keyDraft = ""
+        keyOperation = .idle
+    }
+
+    public func cancelReplaceKey() {
+        isReplacingKey = false
+        keyDraft = ""
+        keyOperation = .idle
     }
 
     // MARK: - Connection test
@@ -225,9 +252,35 @@ public final class SettingsViewModel: ObservableObject {
                 healthMessage = health.message
                 backendReady = true
                 availableModels = health.availableModels
-            case .unavailable, .invalidCredentials, .modelUnavailable, .invalidConfiguration:
-                // Only `.healthy` counts as success; failure statuses show
-                // fixed UI-safe Chinese text, never the raw backend message.
+                adoptCloudModelIfNeeded(from: health.availableModels)
+            case .modelUnavailable:
+                // Only the fresh `/models` payload may be adopted. An empty
+                // list must not reuse a stale `availableModels` to fake healthy.
+                if selectedBackend == .deepSeekCloud, !health.availableModels.isEmpty {
+                    availableModels = health.availableModels
+                    let picked = AppConfiguration.preferredDeepSeekModel(
+                        current: deepSeekModel,
+                        available: health.availableModels
+                    )
+                    if health.availableModels.contains(picked) {
+                        if picked != deepSeekModel {
+                            deepSeekModel = picked
+                            actions.setDeepSeekModel(picked)
+                        }
+                        connectionTest = .healthy("DeepSeek backend is ready")
+                        healthMessage = "DeepSeek backend is ready"
+                        backendReady = true
+                        break
+                    }
+                }
+                let message = health.status.uiSafeFailureMessage
+                connectionTest = .failed(message)
+                healthMessage = message
+                backendReady = false
+            case .unavailable, .invalidCredentials, .invalidConfiguration:
+                // Only `.healthy` (and an adoptable cloud model list) counts
+                // as success; failure statuses show fixed UI-safe Chinese
+                // text, never the raw backend message.
                 let message = health.status.uiSafeFailureMessage
                 connectionTest = .failed(message)
                 healthMessage = message
@@ -277,6 +330,21 @@ public final class SettingsViewModel: ObservableObject {
         // Any local config change invalidates previous validation.
         backendReady = false
         actions.setLocalConfiguration(baseURL: trimmedURL, model: localModel)
+    }
+
+    public func commitDeepSeekModel() {
+        let trimmed = deepSeekModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        actions.setDeepSeekModel(trimmed)
+    }
+
+    private func adoptCloudModelIfNeeded(from models: [String]) {
+        guard selectedBackend == .deepSeekCloud, !models.isEmpty else { return }
+        let picked = AppConfiguration.preferredDeepSeekModel(current: deepSeekModel, available: models)
+        if picked != deepSeekModel {
+            deepSeekModel = picked
+            actions.setDeepSeekModel(picked)
+        }
     }
 
     // MARK: - Permissions

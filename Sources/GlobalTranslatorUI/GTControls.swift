@@ -216,23 +216,113 @@ struct GTSelectField: View {
     }
 }
 
+/// Divides the proposed width equally across children, matching left/right
+/// edges of the row above (scene segments ↔ action buttons).
+struct GTEqualWidthHStack: Layout {
+    var spacing: CGFloat = GTSpacing.xSmall
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let count = subviews.count
+        guard count > 0 else { return .zero }
+        let proposedWidth = proposal.width ?? subviews.reduce(CGFloat.zero) { $0 + $1.sizeThatFits(.unspecified).width }
+        let itemWidth = GTEqualWidthMetrics.itemWidth(total: proposedWidth, count: count, spacing: spacing)
+        let height = subviews.map {
+            $0.sizeThatFits(ProposedViewSize(width: itemWidth, height: proposal.height)).height
+        }.max() ?? 0
+        return CGSize(width: proposedWidth, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let count = subviews.count
+        guard count > 0 else { return }
+        let itemWidth = GTEqualWidthMetrics.itemWidth(total: bounds.width, count: count, spacing: spacing)
+        var x = bounds.minX
+        for subview in subviews {
+            subview.place(
+                at: CGPoint(x: x, y: bounds.minY),
+                proposal: ProposedViewSize(width: itemWidth, height: bounds.height)
+            )
+            x += itemWidth + spacing
+        }
+    }
+}
+
+/// Bordered action that fills the width proposed by `GTEqualWidthHStack`.
+struct GTEqualFillButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(GTType.body)
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .foregroundStyle(GTColor.primaryText)
+            .background(GTColor.fieldFill)
+            .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous)
+                    .strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
+            )
+            .opacity(configuration.isPressed ? 0.82 : 1)
+    }
+}
+
+/// Equal-width segmented control; selected fill uses accent so dark mode stays readable.
+struct GTEqualWidthSegmentedPicker<Value: Hashable>: View {
+    let options: [Value]
+    @Binding var selection: Value
+    var title: (Value) -> String
+    var isEnabled: Bool = true
+    var accessibilityLabelText: String = ""
+
+    var body: some View {
+        GTEqualWidthHStack(spacing: 1) {
+            ForEach(options, id: \.self) { option in
+                let isSelected = option == selection
+                Button {
+                    selection = option
+                } label: {
+                    Text(title(option))
+                        .font(GTType.secondary.weight(.medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .foregroundStyle(isSelected ? GTColor.selectedSegmentText : GTColor.primaryText)
+                        .background(isSelected ? GTColor.accent : Color.clear)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!isEnabled)
+                .accessibilityAddTraits(isSelected ? .isSelected : AccessibilityTraits())
+                .accessibilityValue(title(option))
+            }
+        }
+        .frame(height: GTSelectionMetrics.modePickerHeight)
+        .frame(maxWidth: .infinity)
+        .background(GTColor.segmentTrack)
+        .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous)
+                .strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(accessibilityLabelText)
+    }
+}
+
 /// Three-scene control used in settings and the selection popover.
 struct GTOptimizeModePicker: View {
     @Binding var selection: PromptOptimizeMode
     var isEnabled: Bool = true
 
     var body: some View {
-        Picker("优化场景", selection: $selection) {
-            ForEach(PromptOptimizeMode.allCases) { mode in
-                Text(mode.title).tag(mode)
-            }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .disabled(!isEnabled)
-        .frame(height: GTSelectionMetrics.modePickerHeight)
-        .frame(maxWidth: .infinity)
-        .accessibilityLabel("优化场景")
+        GTEqualWidthSegmentedPicker(
+            options: PromptOptimizeMode.allCases,
+            selection: $selection,
+            title: { $0.title },
+            isEnabled: isEnabled,
+            accessibilityLabelText: "优化场景"
+        )
         .accessibilityValue(selection.title)
         .accessibilityHint(selection.optimizeAccessibilityHint)
     }

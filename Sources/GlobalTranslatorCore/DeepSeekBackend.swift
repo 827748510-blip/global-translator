@@ -2,23 +2,26 @@ import Foundation
 
 public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
     private static let endpointURL = URL(string: "https://api.deepseek.com")!
-    private static let requiredModel = "deepseek-v4-flash-vision-exp"
 
+    public static let defaultModel = AppConfiguration.defaultDeepSeekModel
     public static let maximumVisionImages = 8
     public static let maximumVisionImageBytes = 4_194_304
     public static let maximumVisionTotalImageBytes = 16_777_216
 
     public let kind: BackendKind = .deepSeekCloud
+    public let model: String
 
     private let transport: any HTTPTransport
     private let credentialStore: any CredentialStoring
 
     public init(
         transport: any HTTPTransport = URLSessionHTTPTransport(),
-        credentialStore: any CredentialStoring = MacOSKeychainStore()
+        credentialStore: any CredentialStoring = MacOSKeychainStore(),
+        model: String = AppConfiguration.defaultDeepSeekModel
     ) {
         self.transport = transport
         self.credentialStore = credentialStore
+        self.model = AppConfiguration.resolvedDeepSeekModel(model)
     }
 
     public func healthCheck() async -> BackendHealth {
@@ -33,8 +36,12 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         }
         do {
             let models = try await listModels(apiKey: apiKey)
-            guard models.contains(Self.requiredModel) else {
-                return BackendHealth(status: .modelUnavailable, message: "Required DeepSeek model is unavailable", availableModels: models)
+            guard !models.isEmpty else {
+                return BackendHealth(status: .modelUnavailable, message: "No DeepSeek models are available", availableModels: models)
+            }
+            let resolved = AppConfiguration.resolvedDeepSeekModel(model)
+            guard models.contains(resolved) else {
+                return BackendHealth(status: .modelUnavailable, message: "Selected DeepSeek model is unavailable", availableModels: models)
             }
             return BackendHealth(status: .healthy, message: "DeepSeek backend is ready", availableModels: models)
         } catch let error as TranslationError {
@@ -183,7 +190,7 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
     private func makePayload(for request: TranslationRequest) throws -> Data {
         let userContent = try TranslationInstructions.userContent(for: request.items)
         let payload = ResponsesPayload(
-            model: Self.requiredModel,
+            model: model,
             input: [
                 ResponseInputMessage(role: "system", content: TranslationInstructions.system),
                 ResponseInputMessage(role: "user", content: userContent)
@@ -201,7 +208,7 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
 
     private func makePlainPayload(system: String, user: String) throws -> Data {
         let payload = PlainResponsesPayload(
-            model: Self.requiredModel,
+            model: model,
             input: [
                 ResponseInputMessage(role: "system", content: system),
                 ResponseInputMessage(role: "user", content: user)
@@ -258,7 +265,7 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
             ))
         }
         let payload = VisionResponsesPayload(
-            model: Self.requiredModel,
+            model: model,
             input: [
                 VisionResponseInputMessage(role: "system", content: [.inputText(TranslationInstructions.system)]),
                 VisionResponseInputMessage(role: "user", content: userContent)
@@ -279,7 +286,7 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         case .unauthorized, .forbidden:
             return BackendHealth(status: .invalidCredentials, message: "DeepSeek credentials were rejected")
         case .modelUnavailable:
-            return BackendHealth(status: .modelUnavailable, message: "Required DeepSeek model is unavailable")
+            return BackendHealth(status: .modelUnavailable, message: "Selected DeepSeek model is unavailable")
         case .invalidConfiguration:
             return BackendHealth(status: .invalidConfiguration, message: "DeepSeek configuration is invalid")
         default:

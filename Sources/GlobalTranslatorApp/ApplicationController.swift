@@ -43,6 +43,9 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
     static let maxBackendRetryAttempts = 30
     var applicationPicker: NSOpenPanel?
     var bridgeServer: ExtensionBridgeServer?
+    /// Cloud Keychain is probed at DeepSeek launch or the first switch to it,
+    /// never on a local-only startup.
+    var didProbeKeychain = false
 
     public init(
         paths: RuntimePaths,
@@ -132,6 +135,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         statusItem = nil
         overlay?.hideAll()
         overlay = nil
+        didProbeKeychain = false
         do {
             try await persistence.flush()
         } catch {
@@ -151,11 +155,21 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         }
         viewModel.isSelectionTranslateEnabled = configuration.selectionTranslateEnabled
         viewModel.promptOptimizeMode = configuration.promptOptimizeMode
+        viewModel.deepSeekModel = AppConfiguration.resolvedDeepSeekModel(configuration.deepSeekModel)
         viewModel.permissionSnapshot = components.permissionController.snapshot
         if configuration.backend == .deepSeekCloud {
-            let storedKey = try? components.credentialStore.read()
-            viewModel.keyConfigured = !(storedKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            probeKeychainIfNeeded()
         }
+    }
+
+    /// Keychain is only touched for the cloud backend: once at DeepSeek
+    /// launch, or once when the user later switches to it. Local startup
+    /// must not read the item (that can pop a system prompt).
+    func probeKeychainIfNeeded() {
+        guard !didProbeKeychain else { return }
+        didProbeKeychain = true
+        let storedKey = try? components.credentialStore.read()
+        viewModel.keyConfigured = !(storedKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
     }
 
     func makeSession() {
@@ -241,22 +255,25 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
               healthToken == backendHealthToken,
               expectedConfiguration.backend == configuration.backend,
               expectedConfiguration.localBaseURL == configuration.localBaseURL,
-              expectedConfiguration.localModel == configuration.localModel else { return }
+              expectedConfiguration.localModel == configuration.localModel,
+              expectedConfiguration.deepSeekModel == configuration.deepSeekModel else { return }
         applyHealth(health)
         // Only `.unavailable` is transient (cold local model, sleeping
         // backend); credential/model problems need user action.
         if health.status == .unavailable {
             scheduleBackendRetry(healthToken: healthToken)
         }
+        // Use the live configuration so an adopted DeepSeek model is the one
+        // wired into the session, not the pre-health identifier.
         guard let backend = try? components.backendFactory.makeBackend(
-            kind: expectedConfiguration.backend,
-            configuration: expectedConfiguration,
+            kind: configuration.backend,
+            configuration: configuration,
             credentials: components.credentialStore
         ) else {
             session?.stop()
             return
         }
-        applySessionBackends(overlay: backend, configuration: expectedConfiguration)
+        applySessionBackends(overlay: backend, configuration: configuration)
     }
 
     /// Overlay, extension bridge, and 滑词翻译 each get their own coalescer
@@ -308,14 +325,36 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
     }
 
     func applyHealth(_ health: BackendHealth) {
-        viewModel.availableModels = health.availableModels
-        viewModel.backendReady = health.status == .healthy
-        viewModel.healthMessage = health.status == .healthy
-            ? health.message
-            : health.status.uiSafeFailureMessage
-        if health.status != .healthy {
+        if !health.availableModels.isEmpty {
+            viewModel.availableModels = health.availableModels
+            if configuration.backend == .deepSeekCloud {
+                adoptDeepSeekModel(from: health.availableModels)
+            }
+        }
+        let cloudModelReady = configuration.backend == .deepSeekCloud
+            && !health.availableModels.isEmpty
+            && health.availableModels.contains(AppConfiguration.resolvedDeepSeekModel(configuration.deepSeekModel))
+        switch health.status {
+        case .healthy:
+            viewModel.backendReady = true
+            viewModel.healthMessage = health.message
+        case .modelUnavailable where cloudModelReady:
+            viewModel.backendReady = true
+            viewModel.healthMessage = "DeepSeek backend is ready"
+        case .unavailable, .invalidCredentials, .modelUnavailable, .invalidConfiguration:
+            viewModel.backendReady = false
+            viewModel.healthMessage = health.status.uiSafeFailureMessage
             viewModel.status = .error
         }
+    }
+
+    private func adoptDeepSeekModel(from models: [String]) {
+        let picked = AppConfiguration.preferredDeepSeekModel(current: configuration.deepSeekModel, available: models)
+        if picked != configuration.deepSeekModel {
+            configuration.deepSeekModel = picked
+            queueSave()
+        }
+        viewModel.deepSeekModel = picked
     }
 
     /// Retries a transiently failing backend health check on a fixed cadence
@@ -376,7 +415,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
     var modelIdentifier: String {
         switch configuration.backend {
         case .deepSeekCloud:
-            return "deepseek-v4-flash-vision-exp"
+            return AppConfiguration.resolvedDeepSeekModel(configuration.deepSeekModel)
         case .local:
             return configuration.localModel
         }
@@ -408,6 +447,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
 
     private static func isUsable(_ configuration: AppConfiguration) -> Bool {
         guard configuration.localModel.utf8.count <= 256 else { return false }
+        guard configuration.deepSeekModel.utf8.count <= 256 else { return false }
         guard configuration.backend == .deepSeekCloud || configuration.backend == .local else { return false }
         if configuration.backend == .local {
             guard (try? EndpointValidator.validateLocalBaseURL(configuration.localBaseURL)) != nil else { return false }

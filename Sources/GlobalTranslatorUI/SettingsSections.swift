@@ -86,17 +86,20 @@ struct BackendPickerSection: View {
         VStack(alignment: .leading, spacing: GTSpacing.small) {
             Text("翻译后端")
                 .font(GTType.sectionTitle)
-            Picker("翻译后端", selection: Binding(
-                get: { viewModel.selectedBackend },
-                set: { viewModel.selectBackend($0) }
-            )) {
-                Text("DeepSeek 云端").tag(BackendKind.deepSeekCloud)
-                Text("本地模型").tag(BackendKind.local)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(height: GTSelectionMetrics.modePickerHeight)
-            .accessibilityLabel("翻译后端")
+            GTEqualWidthSegmentedPicker(
+                options: [BackendKind.deepSeekCloud, .local],
+                selection: Binding(
+                    get: { viewModel.selectedBackend },
+                    set: { viewModel.selectBackend($0) }
+                ),
+                title: { kind in
+                    switch kind {
+                    case .deepSeekCloud: return "DeepSeek 云端"
+                    case .local: return "本地模型"
+                    }
+                },
+                accessibilityLabelText: "翻译后端"
+            )
 
             GTLabeledControl(title: "目标语言") {
                 GTReadOnlyField(value: viewModel.targetLanguageDisplayName)
@@ -117,15 +120,17 @@ struct CloudBackendSection: View {
                 Text("API Key")
                     .font(GTType.body)
                 Spacer()
-                Text(viewModel.keyConfigured ? "已配置 · 不会显示" : "未配置")
+                Text(viewModel.keyConfigured ? "已配置 · 钥匙串保存" : "未配置")
                     .font(GTType.secondary)
                     .foregroundStyle(viewModel.keyConfigured ? GTColor.secondaryText : GTColor.destructive)
             }
 
-            SecureField("输入新的 API Key", text: $viewModel.keyDraft)
-                .textFieldStyle(GTFieldTextStyle())
-                .accessibilityLabel("DeepSeek API Key")
-                .accessibilityHint("出于安全考虑，已保存的密钥不会显示或预填")
+            if viewModel.showsKeyEntry {
+                SecureField("输入新的 API Key", text: $viewModel.keyDraft)
+                    .textFieldStyle(GTFieldTextStyle())
+                    .accessibilityLabel("DeepSeek API Key")
+                    .accessibilityHint("出于安全考虑，已保存的密钥不会显示或预填")
+            }
 
             if case .failure(let message) = viewModel.keyOperation {
                 Text(message)
@@ -135,18 +140,37 @@ struct CloudBackendSection: View {
             }
 
             HStack(spacing: GTSpacing.xSmall) {
-                Button(action: { Task { await viewModel.saveKey() } }) {
-                    if viewModel.isKeyOperationInProgress {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Text(viewModel.keyConfigured ? "替换密钥" : "保存密钥")
+                if viewModel.showsKeyEntry {
+                    Button(action: { Task { await viewModel.saveKey() } }) {
+                        if viewModel.isKeyOperationInProgress {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Text("保存密钥")
+                        }
                     }
+                    .buttonStyle(.borderedProminent)
+                    .frame(maxWidth: .infinity)
+                    .disabled(!viewModel.canSaveKey)
+                    .accessibilityHint("保存后输入框将清空，密钥只写入钥匙串")
+
+                    if viewModel.isReplacingKey {
+                        Button("取消") {
+                            viewModel.cancelReplaceKey()
+                        }
+                        .buttonStyle(.bordered)
+                        .frame(maxWidth: .infinity)
+                        .disabled(viewModel.isKeyOperationInProgress)
+                    }
+                } else {
+                    Button("替换密钥") {
+                        viewModel.beginReplaceKey()
+                    }
+                    .buttonStyle(.bordered)
+                    .frame(maxWidth: .infinity)
+                    .disabled(viewModel.isKeyOperationInProgress)
+                    .accessibilityHint("仅在替换时显示输入框，已保存的密钥不会回填")
                 }
-                .buttonStyle(.borderedProminent)
-                .frame(maxWidth: .infinity)
-                .disabled(!viewModel.canSaveKey)
-                .accessibilityHint("保存后输入框将清空")
 
                 if viewModel.keyConfigured {
                     Button("删除密钥", role: .destructive) {
@@ -158,6 +182,23 @@ struct CloudBackendSection: View {
                 }
             }
             .frame(minHeight: GTPopoverMetrics.minRowHitHeight)
+
+            GTLabeledControl(title: "模型") {
+                if viewModel.availableModels.isEmpty {
+                    GTReadOnlyField(value: viewModel.keyConfigured ? "尚未获取模型列表，请先测试连接" : "请先配置 API Key")
+                        .accessibilityLabel("模型")
+                        .accessibilityValue(viewModel.keyConfigured ? "尚未获取模型列表" : "请先配置 API Key")
+                } else {
+                    GTSelectField(
+                        options: viewModel.availableModels,
+                        selection: $viewModel.deepSeekModel,
+                        placeholder: "选择 DeepSeek 模型",
+                        onChange: { viewModel.commitDeepSeekModel() }
+                    )
+                    .accessibilityLabel("模型")
+                    .accessibilityHint("选择云端翻译使用的模型")
+                }
+            }
 
             Toggle(
                 "视觉兜底（截图识别）",

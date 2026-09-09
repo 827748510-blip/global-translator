@@ -6,6 +6,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     public var visionFallbackEnabled: Bool
     public var localBaseURL: URL
     public var localModel: String
+    /// Cloud model id persisted in config.json. The API key itself is never stored here.
+    public var deepSeekModel: String
     public var translatedBundleIDs: [String]
     /// 划选文字后弹出译文。默认开启，与窗口覆盖层、扩展桥独立。
     public var selectionTranslateEnabled: Bool
@@ -18,6 +20,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         visionFallbackEnabled: Bool = false,
         localBaseURL: URL = Self.defaultLocalBaseURL,
         localModel: String = "",
+        deepSeekModel: String = Self.defaultDeepSeekModel,
         translatedBundleIDs: [String] = [],
         selectionTranslateEnabled: Bool = true,
         promptOptimizeMode: PromptOptimizeMode = .communicationPolish
@@ -27,12 +30,26 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         self.visionFallbackEnabled = visionFallbackEnabled
         self.localBaseURL = localBaseURL
         self.localModel = localModel
+        self.deepSeekModel = Self.resolvedDeepSeekModel(deepSeekModel)
         self.translatedBundleIDs = translatedBundleIDs
         self.selectionTranslateEnabled = selectionTranslateEnabled
         self.promptOptimizeMode = promptOptimizeMode
     }
 
     public static let defaultLocalBaseURL = URL(string: "http://127.0.0.1:11434/v1")!
+    public static let defaultDeepSeekModel = "deepseek-chat"
+
+    public static func resolvedDeepSeekModel(_ model: String) -> String {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? defaultDeepSeekModel : trimmed
+    }
+
+    public static func preferredDeepSeekModel(current: String, available: [String]) -> String {
+        let resolved = resolvedDeepSeekModel(current)
+        if available.contains(resolved) { return resolved }
+        if available.contains(defaultDeepSeekModel) { return defaultDeepSeekModel }
+        return available.first ?? resolved
+    }
 
     private enum CodingKeys: String, CodingKey {
         case autoTranslateEnabled
@@ -40,6 +57,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         case visionFallbackEnabled
         case localBaseURL
         case localModel
+        case deepSeekModel
         case translatedBundleIDs
         case selectionTranslateEnabled
         case promptOptimizeMode
@@ -52,11 +70,25 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         visionFallbackEnabled = try container.decodeIfPresent(Bool.self, forKey: .visionFallbackEnabled) ?? false
         localBaseURL = try container.decodeIfPresent(URL.self, forKey: .localBaseURL) ?? Self.defaultLocalBaseURL
         localModel = try container.decodeIfPresent(String.self, forKey: .localModel) ?? ""
+        deepSeekModel = Self.resolvedDeepSeekModel(try container.decodeIfPresent(String.self, forKey: .deepSeekModel) ?? "")
         // Legacy `excludedBundleIDs` was a deny list and must never be
         // reinterpreted as the translation allow list: missing field means
         // "translate nothing" until the user picks applications.
         translatedBundleIDs = try container.decodeIfPresent([String].self, forKey: .translatedBundleIDs) ?? []
         selectionTranslateEnabled = try container.decodeIfPresent(Bool.self, forKey: .selectionTranslateEnabled) ?? true
         promptOptimizeMode = try container.decodeIfPresent(PromptOptimizeMode.self, forKey: .promptOptimizeMode) ?? .communicationPolish
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(autoTranslateEnabled, forKey: .autoTranslateEnabled)
+        try container.encode(backend, forKey: .backend)
+        try container.encode(visionFallbackEnabled, forKey: .visionFallbackEnabled)
+        try container.encode(localBaseURL, forKey: .localBaseURL)
+        try container.encode(localModel, forKey: .localModel)
+        try container.encode(deepSeekModel, forKey: .deepSeekModel)
+        try container.encode(translatedBundleIDs, forKey: .translatedBundleIDs)
+        try container.encode(selectionTranslateEnabled, forKey: .selectionTranslateEnabled)
+        try container.encode(promptOptimizeMode, forKey: .promptOptimizeMode)
     }
 }

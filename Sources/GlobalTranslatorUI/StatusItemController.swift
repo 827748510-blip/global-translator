@@ -26,8 +26,8 @@ public enum DropdownToggleLogic {
 
 /// Owns the menu bar item and presents the matching dropdown panel anchored
 /// directly below the status item icon. The panel is fullscreen-capable
-/// (`fullScreenAuxiliary`), never activates the app, stays white, and
-/// animates its expand/collapse.
+/// (`fullScreenAuxiliary`), never activates the app, uses a solid panel
+/// background that follows system light/dark, and animates its expand/collapse.
 @MainActor
 public final class StatusItemController: NSObject {
     private let statusItem: NSStatusItem
@@ -177,7 +177,7 @@ public final class StatusItemController: NSObject {
         let cornerRadius = GTRadius.card
         return SettingsPopoverView(viewModel: viewModel, maxHeight: maxHeight)
             .frame(width: GTPopoverMetrics.width)
-            .background(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).fill(Color.white))
+            .background(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).fill(GTColor.panelBackground))
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)

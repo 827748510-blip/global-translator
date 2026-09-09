@@ -37,8 +37,26 @@ public enum GTColor {
     public static let sectionFill = Color(nsColor: .controlBackgroundColor)
     public static let fieldFill = Color(nsColor: .textBackgroundColor)
     public static let hairline = Color.primary.opacity(0.12)
+    /// Solid popup fill: pure white in light mode, system window background in dark.
+    public static let panelBackground = Color(nsColor: NSColor(name: "GTPanelBackground", dynamicProvider: { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor.windowBackgroundColor
+            : NSColor.white
+    }))
+    /// Track behind equal-width segmented controls; readable on white and dark panels.
+    public static let segmentTrack = Color.primary.opacity(0.08)
+    /// Selected segment label sits on `accent`; keep it light in both appearances.
+    public static let selectedSegmentText = Color.white
     /// Solid fallback for overlay backgrounds when Reduce Transparency is enabled.
-    public static let overlaySolidFallback = Color(nsColor: .windowBackgroundColor)
+    public static let overlaySolidFallback = panelBackground
+}
+
+/// Shared math for equal-width button / segment rows.
+public enum GTEqualWidthMetrics {
+    public static func itemWidth(total: CGFloat, count: Int, spacing: CGFloat) -> CGFloat {
+        guard count > 0 else { return 0 }
+        return max(0, (total - spacing * CGFloat(count - 1)) / CGFloat(count))
+    }
 }
 
 /// Shared form controls (settings cards, text fields, custom menus).

@@ -99,7 +99,11 @@ public struct LiveTranslationBackendFactory: TranslationBackendFactory, Sendable
     ) throws -> any TranslationBackend {
         switch kind {
         case .deepSeekCloud:
-            return DeepSeekBackend(transport: transport, credentialStore: credentials)
+            return DeepSeekBackend(
+                transport: transport,
+                credentialStore: credentials,
+                model: configuration.deepSeekModel
+            )
         case .local:
             // Separate coalescers so overlay cancel-all cannot abort the
             // bridge waiter; both wrap the same serial Ollama slot.
