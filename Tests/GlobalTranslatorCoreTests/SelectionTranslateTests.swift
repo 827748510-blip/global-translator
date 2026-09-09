@@ -43,6 +43,27 @@ struct SelectionTranslateDecisionTests {
         #expect(!TextFilter.shouldOfferPromptOptimization("https://example.com/a"))
         #expect(!TextFilter.shouldOfferSelectionPopover(""))
     }
+
+    @Test(arguments: [
+        "Swift 6 + SwiftUI + ScreenCaptureKit",
+        "SwiftUI + ScreenCaptureKit",
+        "NSView / SwiftUI",
+        "Vision + OCR",
+        "Xcode 16 + Swift 6"
+    ])
+    func technicalTokenPhrasesDoNotCallTranslation(_ text: String) {
+        #expect(TextFilter.selectionDecision(text) == .noTranslationNeeded)
+        #expect(!TextFilter.shouldTranslate(text))
+        #expect(!TextFilter.shouldAutoTranslateSelection(text))
+        #expect(TextFilter.shouldOfferSelectionPopover(text))
+        #expect(TextFilter.shouldOfferPromptOptimization(text))
+    }
+
+    @Test(arguments: ["Hello world", "Open", "Apply Settings", "Translate this sentence"])
+    func ordinaryEnglishStillTranslates(_ text: String) {
+        #expect(TextFilter.selectionDecision(text) == .translate)
+        #expect(TextFilter.shouldTranslate(text))
+    }
 }
 
 struct SelectionPointerAndDebounceTests {
@@ -149,6 +170,21 @@ struct SelectionPopoverContentTests {
         )
         #expect(chinese.showsOptimizeAction)
         #expect(!TextFilter.shouldAutoTranslateSelection(chinese.original))
+    }
+
+    @Test
+    func noTranslationNeededContentKeepsOriginalAndOptimize() {
+        let content = SelectionPopoverContent.noTranslationNeeded(
+            original: "Swift 6 + SwiftUI + ScreenCaptureKit",
+            screenFrame: CGRect(x: 10, y: 20, width: 40, height: 12)
+        )
+        #expect(content.status == .noTranslationNeeded)
+        #expect(content.displayTranslation == "专有名词，无需翻译")
+        #expect(content.allowsCopy)
+        #expect(content.copyText == "Swift 6 + SwiftUI + ScreenCaptureKit")
+        #expect(content.showsOptimizeAction)
+        #expect(content.showsTranslateAction)
+        #expect(content.displayTranslation != "服务返回异常，请稍后重试")
     }
 
     @Test

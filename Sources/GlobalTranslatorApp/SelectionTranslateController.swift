@@ -4,9 +4,21 @@ import GlobalTranslatorCapture
 import GlobalTranslatorCore
 import GlobalTranslatorUI
 
-public enum SelectionTranslateError: Error, Equatable, Sendable {
+public enum SelectionTranslateError: Error, Equatable, Sendable, UISafeError {
     case translatorUnavailable
     case emptyResult
+    case noTranslationNeeded
+
+    public var uiSafeDescription: String {
+        switch self {
+        case .translatorUnavailable:
+            return "翻译服务未就绪"
+        case .emptyResult:
+            return "翻译失败"
+        case .noTranslationNeeded:
+            return SelectionTranslateSupport.noTranslationNeededCopy
+        }
+    }
 }
 
 @MainActor
@@ -258,6 +270,10 @@ public final class SelectionTranslateController {
                 guard snapshot.text != suppressedSource else { return }
                 suppressedSource = nil
                 presentAlreadyChinese(snapshot)
+            case .noTranslationNeeded:
+                guard snapshot.text != suppressedSource else { return }
+                suppressedSource = nil
+                presentNoTranslationNeeded(snapshot)
             case .translate:
                 guard snapshot.text != suppressedSource else { return }
                 suppressedSource = nil
@@ -273,6 +289,8 @@ public final class SelectionTranslateController {
             return
         case .alreadyTargetLanguage:
             presentAlreadyChinese(snapshot(from: content))
+        case .noTranslationNeeded:
+            presentNoTranslationNeeded(snapshot(from: content))
         case .translate:
             presentTranslation(snapshot(from: content))
         }
@@ -300,6 +318,15 @@ public final class SelectionTranslateController {
         }
         cancelPresentation()
         popover.show(.alreadyChinese(original: snapshot.text, screenFrame: snapshot.screenFrame))
+    }
+
+    private func presentNoTranslationNeeded(_ snapshot: SelectedTextSnapshot) {
+        if popover.currentContent?.original == snapshot.text,
+           popover.currentContent?.status == .noTranslationNeeded {
+            return
+        }
+        cancelPresentation()
+        popover.show(.noTranslationNeeded(original: snapshot.text, screenFrame: snapshot.screenFrame))
     }
 
     private func presentUnavailable(screenFrame: CGRect) {
@@ -350,6 +377,10 @@ public final class SelectionTranslateController {
                 return
             } catch {
                 guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
+                if let selection = error as? SelectionTranslateError, selection == .noTranslationNeeded {
+                    self.presentNoTranslationNeeded(snapshot)
+                    return
+                }
                 self.logger.event("selection_translate_failed", fields: ["status": "error"])
                 self.popover.show(.failed(
                     original: snapshot.text,
@@ -409,16 +440,19 @@ public final class SelectionTranslateController {
     }
 
     private static func describe(_ error: Error) -> String {
+        if let selection = error as? SelectionTranslateError {
+            return selection.uiSafeDescription
+        }
+        if let translation = error as? TranslationError {
+            switch translation {
+            case .invalidResponse, .invalidRequest:
+                return SelectionTranslateError.emptyResult.uiSafeDescription
+            default:
+                return translation.uiSafeDescription
+            }
+        }
         if let safe = error as? UISafeError {
             return safe.uiSafeDescription
-        }
-        if let selection = error as? SelectionTranslateError {
-            switch selection {
-            case .translatorUnavailable:
-                return "翻译服务未就绪"
-            case .emptyResult:
-                return "翻译失败"
-            }
         }
         return UIFeedback.genericErrorMessage
     }

@@ -252,7 +252,12 @@ public final class TranslationSession {
     public func translateSelection(_ text: String) async throws -> String {
         guard let coordinator = selectionCoordinator else { throw SelectionTranslateError.translatorUnavailable }
         let capped = SelectionTranslateSupport.cappedSource(text)
-        guard TextFilter.selectionDecision(capped) == .translate else {
+        switch TextFilter.selectionDecision(capped) {
+        case .translate:
+            break
+        case .noTranslationNeeded:
+            throw SelectionTranslateError.noTranslationNeeded
+        case .skip, .alreadyTargetLanguage:
             throw SelectionTranslateError.emptyResult
         }
         let region = TextRegion(
@@ -275,16 +280,32 @@ public final class TranslationSession {
             window: CapturedWindow(descriptor: descriptor, regions: [region], source: .pageText)
         )
         await coordinator.selectBackend(kind: backend, modelIdentifier: model)
-        let output = try await coordinator.translate(
-            snapshot: snapshot,
-            backend: backend,
-            modelIdentifier: model,
-            visionFallbackEnabled: false
-        )
+        let output: EngineOutput
+        do {
+            output = try await coordinator.translate(
+                snapshot: snapshot,
+                backend: backend,
+                modelIdentifier: model,
+                visionFallbackEnabled: false
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as TranslationError {
+            throw Self.selectionError(from: error)
+        }
         let translated = output.translations.first(where: { !$0.text.isEmpty })?.text
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let translated, !translated.isEmpty else { throw SelectionTranslateError.emptyResult }
         return translated
+    }
+
+    private static func selectionError(from error: TranslationError) -> Error {
+        switch error {
+        case .invalidResponse, .invalidRequest:
+            return SelectionTranslateError.emptyResult
+        default:
+            return error
+        }
     }
 
     /// Generic prompt rewrite. Allows Simplified Chinese drafts (the

@@ -117,6 +117,75 @@ struct SelectionTranslateControllerTests {
     }
 
     @Test
+    func technicalTokenPhraseShowsSoftCopyWithoutCallingBackend() async throws {
+        let phrase = "Swift 6 + SwiftUI + ScreenCaptureKit"
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot(phrase)))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.error = TranslationError.invalidResponse("translation copied the source")
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .noTranslationNeeded }
+        #expect(translator.texts.isEmpty)
+        #expect(popover.currentContent?.displayTranslation == "专有名词，无需翻译")
+        #expect(popover.currentContent?.displayTranslation != "服务返回异常，请稍后重试")
+        #expect(popover.currentContent?.showsOptimizeAction == true)
+        #expect(popover.currentContent?.status != .failed)
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(popover.currentContent?.status == .noTranslationNeeded)
+    }
+
+    @Test
+    func copiedSourceTranslationErrorShowsSoftFailureNotServiceException() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Hello world")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.error = TranslationError.invalidResponse("translation copied the source")
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .failed }
+        #expect(translator.texts == ["Hello world"])
+        #expect(popover.currentContent?.displayTranslation == "翻译失败")
+        #expect(popover.currentContent?.displayTranslation != "服务返回异常，请稍后重试")
+        #expect(popover.currentContent?.showsOptimizeAction == true)
+    }
+
+    @Test
+    func emptySelectionTranslateResultShowsSoftFailure() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Hello world")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.error = SelectionTranslateError.emptyResult
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .failed }
+        #expect(popover.currentContent?.displayTranslation == "翻译失败")
+        #expect(popover.currentContent?.displayTranslation != "服务返回异常，请稍后重试")
+        #expect(popover.currentContent?.showsOptimizeAction == true)
+    }
+
+    @Test
+    func clipboardFallbackTechnicalPhraseStillShowsSoftCopy() async throws {
+        let phrase = "Swift 6 + SwiftUI + ScreenCaptureKit"
+        let reader = FakeSelectedTextReader(result: .empty)
+        reader.clipboardFallbackSnapshot = snapshot(phrase, bundle: "com.electron.lark")
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        dragSelect(controller)
+        try await waitUntil { popover.currentContent?.status == .noTranslationNeeded }
+        #expect(reader.clipboardFallbackUseCount == 1)
+        #expect(translator.texts.isEmpty)
+        #expect(popover.currentContent?.displayTranslation == "专有名词，无需翻译")
+        #expect(popover.currentContent?.displayTranslation != "服务返回异常，请稍后重试")
+        #expect(popover.currentContent?.showsOptimizeAction == true)
+    }
+
+    @Test
     func toggleOffStopsMonitoringAndHidesPopover() async throws {
         let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Hello world")))
         let popover = FakeSelectionPopover()
@@ -535,7 +604,16 @@ extension ApplicationControllerTests {
         #expect(!session.isRunning)
         #expect(!session.isBridgeActive)
         #expect(try await session.translateSelection("Hello there") == "你好 Hello there")
+        do {
+            _ = try await session.translateSelection("Swift 6 + SwiftUI + ScreenCaptureKit")
+            Issue.record("expected noTranslationNeeded")
+        } catch let error as SelectionTranslateError {
+            #expect(error == .noTranslationNeeded)
+        } catch {
+            Issue.record("unexpected error type")
+        }
         #expect(try await session.optimizePrompt("一个女孩站在雨里") == "优化 一个女孩站在雨里")
+        #expect(try await session.optimizePrompt("Swift 6 + SwiftUI + ScreenCaptureKit") == "优化 Swift 6 + SwiftUI + ScreenCaptureKit")
         await controller.stop()
     }
 }

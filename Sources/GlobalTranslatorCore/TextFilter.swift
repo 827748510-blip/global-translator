@@ -16,7 +16,7 @@ public enum TextFilter {
         switch selectionDecision(text) {
         case .translate:
             return true
-        case .skip, .alreadyTargetLanguage:
+        case .skip, .alreadyTargetLanguage, .noTranslationNeeded:
             return false
         }
     }
@@ -60,7 +60,74 @@ public enum TextFilter {
         if SelectionTranslateSupport.isChineseTarget(targetLanguage), isAlreadySimplifiedChinese(value) {
             return .alreadyTargetLanguage
         }
+        if isTechnicalTokenPhrase(value) {
+            return .noTranslationNeeded
+        }
         return .translate
+    }
+
+    private static let glueWords: Set<String> = [
+        "and", "or", "with", "for", "to", "of", "in", "on", "vs", "versus", "plus"
+    ]
+
+    /// Product names / CamelCase identifiers joined by `+`, `/`, or spaces.
+    /// "Swift 6 + SwiftUI + ScreenCaptureKit" should not hit the model.
+    private static func isTechnicalTokenPhrase(_ value: String) -> Bool {
+        if value.contains(where: { $0 == "?" || $0 == "!" || $0 == "。" || $0 == "？" }) {
+            return false
+        }
+        let hasCJK = value.unicodeScalars.contains { scalar in
+            (0x3400...0x4DBF).contains(scalar.value) || (0x4E00...0x9FFF).contains(scalar.value)
+                || (0x3040...0x30FF).contains(scalar.value)
+                || (0x1100...0x11FF).contains(scalar.value) || (0xAC00...0xD7AF).contains(scalar.value)
+        }
+        guard !hasCJK else { return false }
+        let separators = CharacterSet.whitespacesAndNewlines
+            .union(CharacterSet(charactersIn: "+/|&,"))
+        let tokens = value.components(separatedBy: separators).filter { !$0.isEmpty }
+        guard (2...8).contains(tokens.count) else { return false }
+        guard tokens.allSatisfy({ isTechnicalToken($0) || glueWords.contains($0.lowercased()) }) else {
+            return false
+        }
+        let hasName = tokens.contains { token in
+            isCamelCaseIdentifier(token) || isAllCapsAbbreviation(token) || isCapitalizedProductWord(token)
+        }
+        guard hasName else { return false }
+        let hasStrongSignal = tokens.contains { isCamelCaseIdentifier($0) || isAllCapsAbbreviation($0) }
+            || value.contains("+")
+            || value.contains("/")
+        return hasStrongSignal
+    }
+
+    private static func isTechnicalToken(_ token: String) -> Bool {
+        isVersionToken(token)
+            || isCamelCaseIdentifier(token)
+            || isAllCapsAbbreviation(token)
+            || technicalAbbreviations.contains(token.uppercased())
+            || isCapitalizedProductWord(token)
+    }
+
+    private static func isVersionToken(_ token: String) -> Bool {
+        token.range(of: #"^v?\d+(?:\.\d+)*[A-Za-z]?$"#, options: .regularExpression) != nil
+    }
+
+    private static func isCapitalizedProductWord(_ token: String) -> Bool {
+        token.range(of: #"^[A-Z][a-zA-Z0-9]*$"#, options: .regularExpression) != nil
+    }
+
+    private static func isAllCapsAbbreviation(_ token: String) -> Bool {
+        let letters = token.filter(\.isLetter)
+        guard (2...8).contains(letters.count), letters.allSatisfy(\.isUppercase) else { return false }
+        return token.allSatisfy { $0.isLetter || $0.isNumber }
+    }
+
+    private static func isCamelCaseIdentifier(_ token: String) -> Bool {
+        if isIdentifierOrUnit(token) { return true }
+        let letters = token.filter(\.isLetter)
+        guard letters.count >= 2 else { return false }
+        let upperCount = letters.filter(\.isUppercase).count
+        let hasLower = letters.contains(where: \.isLowercase)
+        return hasLower && upperCount >= 2
     }
 
     private static func isAlreadySimplifiedChinese(_ value: String) -> Bool {

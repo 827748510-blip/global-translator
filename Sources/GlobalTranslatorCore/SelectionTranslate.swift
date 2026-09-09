@@ -4,6 +4,8 @@ import Foundation
 public enum SelectionTranslationDecision: Equatable, Sendable {
     case skip
     case alreadyTargetLanguage
+    /// CamelCase / product-name lists. Show a soft “无需翻译” popover; do not call the model.
+    case noTranslationNeeded
     case translate
 }
 
@@ -73,6 +75,7 @@ public enum SelectionPopoverStatus: Equatable, Sendable {
     case translated
     case optimized
     case alreadyChinese
+    case noTranslationNeeded
     case unavailable
     case failed
 }
@@ -106,6 +109,8 @@ public struct SelectionPopoverContent: Equatable, Sendable {
             return SelectionTranslateSupport.optimizingCopy
         case .alreadyChinese:
             return SelectionTranslateSupport.alreadyChineseCopy
+        case .noTranslationNeeded:
+            return translation.isEmpty ? SelectionTranslateSupport.noTranslationNeededCopy : translation
         case .unavailable:
             return translation.isEmpty ? "无法读取所选文字" : translation
         case .failed:
@@ -117,7 +122,7 @@ public struct SelectionPopoverContent: Equatable, Sendable {
 
     public var allowsCopy: Bool {
         switch status {
-        case .translated, .alreadyChinese, .optimized:
+        case .translated, .alreadyChinese, .noTranslationNeeded, .optimized:
             return !copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .loading, .optimizing, .unavailable, .failed:
             return false
@@ -137,7 +142,7 @@ public struct SelectionPopoverContent: Equatable, Sendable {
     }
 
     public var copyText: String {
-        status == .alreadyChinese ? original : translation
+        status == .alreadyChinese || status == .noTranslationNeeded ? original : translation
     }
 
     public static func loading(original: String, screenFrame: CGRect) -> SelectionPopoverContent {
@@ -190,6 +195,16 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         )
     }
 
+    public static func noTranslationNeeded(original: String, screenFrame: CGRect) -> SelectionPopoverContent {
+        SelectionPopoverContent(
+            original: original,
+            originalPreview: SelectionTranslateSupport.truncatedOriginal(original),
+            translation: SelectionTranslateSupport.noTranslationNeededCopy,
+            status: .noTranslationNeeded,
+            screenFrame: screenFrame
+        )
+    }
+
     public static func unavailable(screenFrame: CGRect, message: String = "无法读取所选文字") -> SelectionPopoverContent {
         SelectionPopoverContent(
             original: "",
@@ -218,6 +233,7 @@ public enum SelectionTranslateSupport {
     public static let maxSourceCharacters = 4_000
     public static let originalPreviewLimit = 80
     public static let alreadyChineseCopy = "已是中文"
+    public static let noTranslationNeededCopy = "专有名词，无需翻译"
     public static let defaultTargetLanguage = "zh-Hans"
     public static let optimizingCopy = "优化中…"
     public static let optimizeFailedCopy = "优化失败"
