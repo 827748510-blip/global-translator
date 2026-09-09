@@ -39,36 +39,65 @@ public struct MacOSKeychainStore: CredentialStoring, Sendable {
               let data = apiKey.data(using: .utf8) else {
             throw CredentialStoreError.invalidValue
         }
-        let attributes = itemAttributes(value: data)
-        let query = baseQuery()
-        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        let query = baseQuery(useDataProtection: true)
+        let valueAttributes = [kSecValueData as String: data] as CFDictionary
+        let updateStatus = SecItemUpdate(query as CFDictionary, valueAttributes)
         if updateStatus == errSecItemNotFound {
             var addQuery = query
-            for (key, value) in attributes {
-                addQuery[key] = value
-            }
+            addQuery[kSecValueData as String] = data
+            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
-            if addStatus == errSecSuccess { return }
-            // Some macOS versions reject combining ACL + accessibility; keep the secret.
-            var fallbackAdd = query
-            fallbackAdd[kSecValueData as String] = data
-            fallbackAdd[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            let fallbackStatus = SecItemAdd(fallbackAdd as CFDictionary, nil)
-            guard fallbackStatus == errSecSuccess else {
+            guard addStatus == errSecSuccess else {
                 throw CredentialStoreError.keychainFailure(status: addStatus)
             }
         } else if updateStatus != errSecSuccess {
-            // ACL / accessibility updates can fail on older items; still rotate the secret.
-            let valueOnly = [kSecValueData as String: data] as CFDictionary
-            let retryStatus = SecItemUpdate(query as CFDictionary, valueOnly)
-            guard retryStatus == errSecSuccess else {
-                throw CredentialStoreError.keychainFailure(status: updateStatus)
-            }
+            throw CredentialStoreError.keychainFailure(status: updateStatus)
         }
     }
 
     public func read() throws -> String? {
-        var query = baseQuery()
+        if let value = try copyMatching(useDataProtection: true) {
+            return value
+        }
+        // Older builds stored the secret in the file-based login keychain.
+        // That path can still show an ACL prompt once; migrate so later
+        // reads stay on the data-protection keychain (no SecAccess API).
+        guard let legacy = try copyMatching(useDataProtection: false) else {
+            return nil
+        }
+        migrateLegacyItemToDataProtection(legacy)
+        return legacy
+    }
+
+    public func delete() throws {
+        let dataProtectionStatus = SecItemDelete(baseQuery(useDataProtection: true) as CFDictionary)
+        let legacyStatus = SecItemDelete(baseQuery(useDataProtection: false) as CFDictionary)
+        let dataProtectionOK = dataProtectionStatus == errSecSuccess || dataProtectionStatus == errSecItemNotFound
+        let legacyOK = legacyStatus == errSecSuccess || legacyStatus == errSecItemNotFound
+        guard dataProtectionOK && legacyOK else {
+            let status = dataProtectionOK ? legacyStatus : dataProtectionStatus
+            throw CredentialStoreError.keychainFailure(status: status)
+        }
+    }
+
+    /// Data-protection keychain is the supported replacement for file-based
+    /// `SecAccess` ACLs: same app can `read()` without a login-keychain prompt.
+    /// Ad-hoc re-signing may still make the old item invisible; the user then
+    /// saves the key again.
+    private func baseQuery(useDataProtection: Bool) -> [String: Any] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        if useDataProtection {
+            query[kSecUseDataProtectionKeychain as String] = true
+        }
+        return query
+    }
+
+    private func copyMatching(useDataProtection: Bool) throws -> String? {
+        var query = baseQuery(useDataProtection: useDataProtection)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
@@ -85,45 +114,12 @@ public struct MacOSKeychainStore: CredentialStoring, Sendable {
         return value
     }
 
-    public func delete() throws {
-        let status = SecItemDelete(baseQuery() as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw CredentialStoreError.keychainFailure(status: status)
+    private func migrateLegacyItemToDataProtection(_ apiKey: String) {
+        do {
+            try save(apiKey: apiKey)
+            _ = SecItemDelete(baseQuery(useDataProtection: false) as CFDictionary)
+        } catch {
+            // Leave the legacy item in place; the caller still has the secret.
         }
-    }
-
-    private func baseQuery() -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-    }
-
-    /// Persist with this app as a trusted caller so the same signed binary
-    /// can later `read()` without a login-keychain prompt. Ad-hoc re-signing
-    /// changes the designated requirement, so macOS may ask once more.
-    private func itemAttributes(value: Data) -> [String: Any] {
-        var attributes: [String: Any] = [
-            kSecValueData as String: value,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        ]
-        if let access = makeTrustedAccess() {
-            attributes[kSecAttrAccess as String] = access
-        }
-        return attributes
-    }
-
-    private func makeTrustedAccess() -> SecAccess? {
-        var access: SecAccess?
-        // `nil` trusted list means the creating application is trusted, so the
-        // same signed binary can later read without a login-keychain prompt.
-        let status = SecAccessCreate(
-            "Global Translator DeepSeek API key" as CFString,
-            nil,
-            &access
-        )
-        guard status == errSecSuccess else { return nil }
-        return access
     }
 }
