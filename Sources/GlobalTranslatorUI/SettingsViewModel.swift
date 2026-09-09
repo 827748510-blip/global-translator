@@ -16,6 +16,7 @@ public final class SettingsViewModel: ObservableObject {
     @Published public var status: MenuBarStatus = .off
     @Published public var isAutomaticTranslationEnabled = false
     @Published public var isSelectionTranslateEnabled = true
+    @Published public var promptOptimizeMode: PromptOptimizeMode = .communicationPolish
     @Published public var selectedBackend: BackendKind = .deepSeekCloud
     @Published public var visionFallbackEnabled = false
     @Published public var keyConfigured = false
@@ -148,6 +149,12 @@ public final class SettingsViewModel: ObservableObject {
         guard isSelectionTranslateEnabled != enabled else { return }
         isSelectionTranslateEnabled = enabled
         actions.setSelectionTranslate(enabled)
+    }
+
+    public func setPromptOptimizeMode(_ mode: PromptOptimizeMode) {
+        guard promptOptimizeMode != mode else { return }
+        promptOptimizeMode = mode
+        actions.setPromptOptimizeMode(mode)
     }
 
     public func selectBackend(_ kind: BackendKind) {

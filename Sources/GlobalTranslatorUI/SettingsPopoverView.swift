@@ -18,28 +18,28 @@ public struct SettingsPopoverView: View {
 
     public var body: some View {
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: GTSpacing.medium) {
-                SettingsHeaderSection(viewModel: viewModel)
-                Divider()
-                TranslatedApplicationsSection(viewModel: viewModel)
-                Divider()
-                BackendPickerSection(viewModel: viewModel)
-
-                Group {
-                    switch viewModel.selectedBackend {
-                    case .deepSeekCloud:
-                        CloudBackendSection(viewModel: viewModel)
-                    case .local:
-                        LocalBackendSection(viewModel: viewModel)
+            VStack(alignment: .leading, spacing: GTSpacing.small) {
+                GTSettingsCard {
+                    SettingsHeaderSection(viewModel: viewModel)
+                }
+                GTSettingsCard {
+                    TranslatedApplicationsSection(viewModel: viewModel)
+                }
+                GTSettingsCard {
+                    BackendPickerSection(viewModel: viewModel)
+                    Divider()
+                    Group {
+                        switch viewModel.selectedBackend {
+                        case .deepSeekCloud:
+                            CloudBackendSection(viewModel: viewModel)
+                        case .local:
+                            LocalBackendSection(viewModel: viewModel)
+                        }
                     }
                 }
-                .padding(GTSpacing.small)
-                .background(GTColor.sectionFill)
-                .clipShape(RoundedRectangle(cornerRadius: GTRadius.card, style: .continuous))
-
-                Divider()
-                PermissionsSection(viewModel: viewModel)
-                Divider()
+                GTSettingsCard {
+                    PermissionsSection(viewModel: viewModel)
+                }
                 SettingsFooterSection(viewModel: viewModel)
             }
             .padding(GTSpacing.medium)

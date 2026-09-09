@@ -115,6 +115,7 @@ extension ApplicationController {
     }
 
     public func setPromptOptimizeMode(_ mode: PromptOptimizeMode) {
+        viewModel.promptOptimizeMode = mode
         guard configuration.promptOptimizeMode != mode else {
             selectionTranslate?.setOptimizeMode(mode)
             return

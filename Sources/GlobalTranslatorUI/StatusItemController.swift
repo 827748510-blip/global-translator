@@ -179,6 +179,10 @@ public final class StatusItemController: NSObject {
             .frame(width: GTPopoverMetrics.width)
             .background(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).fill(Color.white))
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
+            )
     }
 
     @objc
