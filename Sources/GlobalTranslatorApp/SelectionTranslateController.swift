@@ -309,7 +309,9 @@ public final class SelectionTranslateController {
                 "selection_ax_unavailable",
                 fields: ["reason": "ax", "gesture": verdict.rawValue]
             )
-            let tripped = degrade.recordFailure(at: timestamp)
+            // A click over a window-less area also reports `.unavailable`; only a
+            // real drag-selection counts toward degraded mode.
+            let tripped = isTextSelection ? degrade.recordFailure(at: timestamp) : false
             if tripped {
                 logger.event(
                     "selection_degraded",
