@@ -23,7 +23,7 @@ public enum SelectionTranslateError: Error, Equatable, Sendable, UISafeError {
 
 @MainActor
 public protocol SelectionTranslating: AnyObject {
-    func translateSelection(_ text: String) async throws -> String
+    func translateSelection(_ text: String) async throws -> SelectionTranslationOutcome
     func optimizePrompt(_ text: String, mode: PromptOptimizeMode) async throws -> String
 }
 
@@ -407,9 +407,9 @@ public final class SelectionTranslateController {
         }
         translateTask = Task { @MainActor [weak self] in
             do {
-                let translated = try await translator.translateSelection(snapshot.text)
+                let outcome = try await translator.translateSelection(snapshot.text)
                 guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
-                let text = translated.trimmingCharacters(in: .whitespacesAndNewlines)
+                let text = outcome.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if text.isEmpty {
                     self.popover.show(.failed(
                         original: snapshot.text,
@@ -421,7 +421,8 @@ public final class SelectionTranslateController {
                 self.popover.show(.translated(
                     original: snapshot.text,
                     translation: text,
-                    screenFrame: snapshot.screenFrame
+                    screenFrame: snapshot.screenFrame,
+                    sourceWasTruncated: snapshot.sourceWasCapped || outcome.sourceWasTruncated
                 ))
             } catch is CancellationError {
                 return

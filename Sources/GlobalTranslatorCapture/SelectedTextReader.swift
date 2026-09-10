@@ -22,17 +22,20 @@ public struct SelectedTextSnapshot: Equatable, Sendable {
     public let screenFrame: CGRect
     public let source: SelectedTextSource
     public let bundleIdentifier: String
+    public let sourceWasCapped: Bool
 
     public init(
         text: String,
         screenFrame: CGRect,
         source: SelectedTextSource,
-        bundleIdentifier: String
+        bundleIdentifier: String,
+        sourceWasCapped: Bool = false
     ) {
         self.text = text
         self.screenFrame = screenFrame
         self.source = source
         self.bundleIdentifier = bundleIdentifier
+        self.sourceWasCapped = sourceWasCapped
     }
 }
 
@@ -139,11 +142,13 @@ public struct AXSelectedTextReader: SelectedTextReading, @unchecked Sendable {
         let resolved = attributeReader.selectedText(of: element)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !resolved.isEmpty else { return nil }
+        let limited = SelectionTranslateSupport.limitSelectionSource(resolved)
         return SelectedTextSnapshot(
-            text: SelectionTranslateSupport.cappedSource(resolved),
+            text: limited.text,
             screenFrame: resolvedFrame(of: element, mouseLocation: mouseLocation),
             source: .accessibility,
-            bundleIdentifier: app.bundleIdentifier
+            bundleIdentifier: app.bundleIdentifier,
+            sourceWasCapped: limited.didTruncate
         )
     }
 
@@ -153,11 +158,13 @@ public struct AXSelectedTextReader: SelectedTextReading, @unchecked Sendable {
         app: FrontmostApplicationInfo,
         mouseLocation: CGPoint
     ) -> SelectedTextSnapshot {
-        SelectedTextSnapshot(
-            text: SelectionTranslateSupport.cappedSource(text),
+        let limited = SelectionTranslateSupport.limitSelectionSource(text)
+        return SelectedTextSnapshot(
+            text: limited.text,
             screenFrame: clipboardAnchorFrame(of: element, mouseLocation: mouseLocation),
             source: .clipboardFallback,
-            bundleIdentifier: app.bundleIdentifier
+            bundleIdentifier: app.bundleIdentifier,
+            sourceWasCapped: limited.didTruncate
         )
     }
 

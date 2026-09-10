@@ -3,7 +3,8 @@ import Foundation
 enum TranslationRequestValidator {
     static let maximumItems = 24
     static let maximumSourceCharacters = 4_000
-    static let maximumOutputCharacters = 4_000
+    /// One selection chunk can emit ~2k Chinese characters at the scaled local `max_tokens`.
+    static let maximumOutputCharacters = 8_192
 
     static func validate(_ request: TranslationRequest) throws {
         guard !request.items.isEmpty else {

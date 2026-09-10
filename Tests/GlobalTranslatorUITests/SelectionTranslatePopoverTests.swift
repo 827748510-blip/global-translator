@@ -41,10 +41,21 @@ struct SelectionTranslatePopoverTests {
         let size = SelectionTranslatePanelController.contentSize(for: content)
         #expect(size.width == GTSelectionMetrics.width)
         #expect(size.height >= 44)
+        let truncated = SelectionPopoverContent.translated(
+            original: String(repeating: "Hello world. ", count: 500),
+            translation: "部分译文",
+            screenFrame: CGRect(x: 100, y: 300, width: 120, height: 18),
+            sourceWasTruncated: true
+        )
+        #expect(truncated.displayTranslation.contains(SelectionTranslateSupport.truncatedSourceCopy))
+        controller.show(truncated)
+        copied.removeAll()
+        controller.copyCurrentTranslation()
+        #expect(copied == ["部分译文"])
         controller.dismiss()
         #expect(controller.currentContent == nil)
         #expect(controller.panelFrame == nil)
-        #expect(copied == ["你好，世界"])
+        #expect(copied == ["部分译文"])
         #expect(controller.copyFeedback == .idle)
     }
 

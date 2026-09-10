@@ -29,6 +29,53 @@ struct SelectedTextReaderTests {
         #expect(snapshot.bundleIdentifier == "com.apple.TextEdit")
         #expect(clipboard.callCount == 0)
         #expect(snapshot.screenFrame.width == 80)
+        #expect(!snapshot.sourceWasCapped)
+    }
+
+    @Test
+    func longSelectionIsNotSilentlyCappedAtFourThousand() {
+        let text = String(repeating: "Hello world. ", count: 400)
+        #expect(text.count > SelectionTranslateSupport.maxSourceCharacters)
+        let ax = FakeSelectionAXReader(
+            selectedText: text,
+            range: (0, text.count),
+            bounds: CGRect(x: 10, y: 20, width: 80, height: 16)
+        )
+        let reader = AXSelectedTextReader(
+            attributeReader: ax,
+            clipboard: RecordingClipboardFallback(text: "should-not-use"),
+            frontmostApplication: { FrontmostApplicationInfo(pid: 42, bundleIdentifier: "com.apple.TextEdit") },
+            primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 1440, height: 900) }
+        )
+        guard case .snapshot(let snapshot) = reader.readSelection(mouseLocation: CGPoint(x: 40, y: 40)) else {
+            Issue.record("expected snapshot")
+            return
+        }
+        #expect(snapshot.text.count == text.count)
+        #expect(!snapshot.sourceWasCapped)
+    }
+
+    @Test
+    func selectionReadAppliesHardCapWithVisibleFlag() {
+        let text = String(repeating: "Hello world. ", count: 4_000)
+        #expect(text.count > SelectionTranslateSupport.selectionHardLimitCharacters)
+        let ax = FakeSelectionAXReader(
+            selectedText: text,
+            range: (0, text.count),
+            bounds: CGRect(x: 10, y: 20, width: 80, height: 16)
+        )
+        let reader = AXSelectedTextReader(
+            attributeReader: ax,
+            clipboard: RecordingClipboardFallback(text: "should-not-use"),
+            frontmostApplication: { FrontmostApplicationInfo(pid: 42, bundleIdentifier: "com.apple.TextEdit") },
+            primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 1440, height: 900) }
+        )
+        guard case .snapshot(let snapshot) = reader.readSelection(mouseLocation: CGPoint(x: 40, y: 40)) else {
+            Issue.record("expected snapshot")
+            return
+        }
+        #expect(snapshot.text.count == SelectionTranslateSupport.selectionHardLimitCharacters)
+        #expect(snapshot.sourceWasCapped)
     }
 
     @Test
