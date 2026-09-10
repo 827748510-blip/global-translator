@@ -115,6 +115,11 @@ public final class SelectionTranslateController {
     private var suppressedSource: String?
     private var optimizeMode: PromptOptimizeMode = .communicationPolish
     private var backend: BackendKind = .deepSeekCloud
+    /// Consecutive drag-selections that stayed unreadable. Pauses the red
+    /// status line and the clipboard borrow instead of looping on an app that
+    /// never exposes a selection.
+    private var degrade = SelectionReadingDegradeState()
+    private let now: () -> TimeInterval
     public var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
 
     public var isEnabled: Bool { enabled }
@@ -135,7 +140,8 @@ public final class SelectionTranslateController {
         settleDelay: Duration = .milliseconds(SelectionTranslateSupport.settleDelayMilliseconds),
         unavailableDismissDelay: Duration = .milliseconds(
             SelectionTranslateSupport.unavailableDismissMilliseconds
-        )
+        ),
+        now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
         self.reader = reader
         self.popover = popover
@@ -149,6 +155,7 @@ public final class SelectionTranslateController {
         self.targetLanguage = targetLanguage
         self.settleDelay = settleDelay
         self.unavailableDismissDelay = unavailableDismissDelay
+        self.now = now
         let wired = self.popover
         wired.onUserDismiss = { [weak self] in
             self?.handleUserDismiss()
@@ -197,7 +204,7 @@ public final class SelectionTranslateController {
         if phase == .down {
             pointerPressBeganOnOwnedUI = onOwnedUI
         }
-        let action = pointer.handle(phase)
+        let action = pointer.handle(phase, at: location, timestamp: now())
         let swallow = pointerPressBeganOnOwnedUI || onOwnedUI
         if phase == .up {
             pointerPressBeganOnOwnedUI = false
@@ -234,6 +241,7 @@ public final class SelectionTranslateController {
         cancelSettle()
         cancelPresentation()
         popover.dismiss()
+        degrade.recordSuccess()
     }
 
     private func cancelPresentation() {
@@ -274,22 +282,50 @@ public final class SelectionTranslateController {
             popover.dismiss()
             return
         }
+        let timestamp = now()
+        let verdict = pointer.gestureVerdict
+        let isTextSelection = verdict == .textSelection
+        if verdict != .click {
+            logger.event(
+                "selection_gesture",
+                fields: Self.gestureFields(verdict: verdict, features: pointer.gestureFeatures)
+            )
+        }
         switch reader.readSelection(
             mouseLocation: location,
-            allowClipboardFallback: pointer.didDrag && !isOwnFrontmostApplication()
+            allowClipboardFallback: isTextSelection
+                && !degrade.isDegraded(at: timestamp)
+                && !isOwnFrontmostApplication()
         ) {
         case .empty:
             suppressedSource = nil
             cancelPresentation()
             popover.dismiss()
         case .unavailable:
-            logger.event("selection_ax_unavailable", fields: ["reason": "ax"])
-            if pointer.didDrag {
+            // Only a real drag-selection may surface the red status, and only
+            // while not degraded. A click or a window/scrollbar drag stays
+            // silent instead of flashing "无法读取所选文字".
+            logger.event(
+                "selection_ax_unavailable",
+                fields: ["reason": "ax", "gesture": verdict.rawValue]
+            )
+            let tripped = degrade.recordFailure(at: timestamp)
+            if tripped {
+                logger.event(
+                    "selection_degraded",
+                    fields: [
+                        "failures": "\(SelectionReadingDegradeState.failureThreshold)",
+                        "cooldownSeconds": "\(Int(SelectionReadingDegradeState.cooldown))"
+                    ]
+                )
+            }
+            if isTextSelection, !degrade.isDegraded(at: timestamp) {
                 presentUnavailable(screenFrame: fallback)
             } else {
                 popover.dismiss()
             }
         case .snapshot(let snapshot):
+            degrade.recordSuccess()
             if isOwnApplication(snapshot.bundleIdentifier) {
                 popover.dismiss()
                 return
@@ -493,6 +529,21 @@ public final class SelectionTranslateController {
 
     private func isOwnApplication(_ bundleIdentifier: String) -> Bool {
         !bundleIdentifier.isEmpty && ownBundleIdentifiers.contains(bundleIdentifier)
+    }
+
+    /// Numeric gesture telemetry only — never the selected text or app content.
+    private static func gestureFields(
+        verdict: SelectionGestureVerdict,
+        features: SelectionGestureFeatures
+    ) -> [String: String] {
+        [
+            "verdict": verdict.rawValue,
+            "offsetPt": "\(Int(features.maxOffset.rounded()))",
+            "travelPt": "\(Int(features.totalTravel.rounded()))",
+            "dragEvents": "\(features.dragEventCount)",
+            "durationMs": "\(Int((features.duration * 1000).rounded()))",
+            "stallMs": "\(Int((features.longestStall * 1000).rounded()))"
+        ]
     }
 
     private static func describe(_ error: Error) -> String {

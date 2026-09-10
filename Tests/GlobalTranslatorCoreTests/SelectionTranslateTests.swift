@@ -365,3 +365,140 @@ struct SelectionSourceChunkingTests {
         return String(text.prefix(characters))
     }
 }
+
+struct SelectionGestureClassificationTests {
+    private func gesture(
+        _ samples: [(SelectionPointerPhase, CGPoint, TimeInterval)]
+    ) -> SelectionPointerState {
+        var state = SelectionPointerState()
+        for (phase, point, timestamp) in samples {
+            _ = state.handle(phase, at: point, timestamp: timestamp)
+        }
+        return state
+    }
+
+    @Test
+    func clickWithoutMovementIsNotASelection() {
+        let state = gesture([
+            (.down, CGPoint(x: 10, y: 10), 0),
+            (.up, CGPoint(x: 10, y: 10), 0.05)
+        ])
+        #expect(state.gestureVerdict == .click)
+        #expect(!state.didDrag)
+    }
+
+    @Test
+    func subThresholdJitterStaysAClick() {
+        let state = gesture([
+            (.down, CGPoint(x: 10, y: 10), 0),
+            (.dragged, CGPoint(x: 11, y: 10), 0.05),
+            (.up, CGPoint(x: 11, y: 10), 0.08)
+        ])
+        #expect(state.didDrag)
+        #expect(state.gestureVerdict == .click)
+    }
+
+    @Test
+    func shortContinuousDragCountsAsTextSelection() {
+        let state = gesture([
+            (.down, CGPoint(x: 10, y: 10), 0),
+            (.dragged, CGPoint(x: 30, y: 12), 0.05),
+            (.dragged, CGPoint(x: 60, y: 12), 0.1),
+            (.up, CGPoint(x: 60, y: 12), 0.15)
+        ])
+        #expect(state.gestureVerdict == .textSelection)
+    }
+
+    @Test
+    func longDragIsNotATextSelection() {
+        let state = gesture([
+            (.down, CGPoint(x: 10, y: 10), 0),
+            (.dragged, CGPoint(x: 20, y: 10), 0.2),
+            (.dragged, CGPoint(x: 80, y: 10), 2),
+            (.up, CGPoint(x: 80, y: 10), 4)
+        ])
+        #expect(state.gestureVerdict == .nonTextDrag)
+    }
+
+    @Test
+    func stalledDragIsNotATextSelection() {
+        let state = gesture([
+            (.down, CGPoint(x: 10, y: 10), 0),
+            (.dragged, CGPoint(x: 30, y: 10), 0.1),
+            (.dragged, CGPoint(x: 40, y: 10), 2),
+            (.up, CGPoint(x: 40, y: 10), 2.1)
+        ])
+        #expect(state.gestureVerdict == .nonTextDrag)
+    }
+
+    @Test
+    func phaseOnlyTrackingStillReportsClick() {
+        var state = SelectionPointerState()
+        _ = state.handle(.down)
+        _ = state.handle(.dragged)
+        _ = state.handle(.up)
+        #expect(state.didDrag)
+        #expect(state.gestureVerdict == .click)
+    }
+}
+
+struct SelectionReadingDegradeStateTests {
+    @Test
+    func thirdConsecutiveFailureEntersDegradedMode() {
+        var state = SelectionReadingDegradeState()
+        #expect(SelectionReadingDegradeState.failureThreshold == 3)
+        let first = state.recordFailure(at: 0)
+        let second = state.recordFailure(at: 1)
+        #expect(!first)
+        #expect(!second)
+        #expect(!state.isDegraded(at: 2))
+        let third = state.recordFailure(at: 2)
+        #expect(third)
+        #expect(state.isDegraded(at: 2))
+    }
+
+    @Test
+    func cooldownExpiresAndRestoresAFreshAttempt() {
+        var state = SelectionReadingDegradeState()
+        for index in 0..<SelectionReadingDegradeState.failureThreshold {
+            state.recordFailure(at: TimeInterval(index))
+        }
+        let until = TimeInterval(SelectionReadingDegradeState.failureThreshold - 1)
+            + SelectionReadingDegradeState.cooldown
+        #expect(state.isDegraded(at: until - 0.1))
+        #expect(!state.isDegraded(at: until))
+        // After the cooldown a single failure must not re-trip immediately.
+        let afterCooldown = state.recordFailure(at: until)
+        #expect(!afterCooldown)
+    }
+
+    @Test
+    func failuresWhileDegradedDoNotSlideTheCooldown() {
+        var state = SelectionReadingDegradeState()
+        for index in 0..<SelectionReadingDegradeState.failureThreshold {
+            state.recordFailure(at: TimeInterval(index))
+        }
+        let until = TimeInterval(SelectionReadingDegradeState.failureThreshold - 1)
+            + SelectionReadingDegradeState.cooldown
+        let during = state.recordFailure(at: until - 1)
+        #expect(!during)
+        #expect(state.isDegraded(at: until - 0.1))
+        #expect(!state.isDegraded(at: until))
+    }
+
+    @Test
+    func successResetsTheFailureStreak() {
+        var state = SelectionReadingDegradeState()
+        state.recordFailure(at: 0)
+        state.recordFailure(at: 1)
+        state.recordSuccess()
+        let first = state.recordFailure(at: 2)
+        let second = state.recordFailure(at: 3)
+        #expect(!first)
+        #expect(!second)
+        #expect(!state.isDegraded(at: 3))
+        let third = state.recordFailure(at: 4)
+        #expect(third)
+        #expect(state.isDegraded(at: 4))
+    }
+}
