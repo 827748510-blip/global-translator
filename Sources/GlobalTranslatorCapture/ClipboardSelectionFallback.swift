@@ -42,8 +42,11 @@ public struct RestoringClipboardSelectionFallback: ClipboardSelectionFallingBack
     public init(
         pasteboard: any PasteboardSnapshotting = SystemPasteboardAccess(),
         keystroke: any CopyKeystrokeIssuing = HIDCopyKeystrokeIssuer(),
+        // Deliberately short: this runs synchronously on the main actor while a
+        // selection gesture settles, so the worst-case stall is bounded at
+        // attempts × delay (10 × 5 ms = 50 ms) rather than a flat 120 ms.
         wait: @escaping @Sendable () -> Void = {
-            Thread.sleep(forTimeInterval: 0.01)
+            Thread.sleep(forTimeInterval: 0.005)
         }
     ) {
         self.pasteboard = pasteboard
@@ -58,7 +61,7 @@ public struct RestoringClipboardSelectionFallback: ClipboardSelectionFallingBack
         keystroke.issueCopyKeystroke()
         var changed = pasteboard.changeCount != before
         if !changed {
-            for _ in 0..<12 {
+            for _ in 0..<10 {
                 wait()
                 if pasteboard.changeCount != before {
                     changed = true
@@ -112,8 +115,13 @@ public struct SystemPasteboardAccess: PasteboardSnapshotting, @unchecked Sendabl
 
     public func restore(_ items: [PasteboardItemSnapshot]) {
         let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        guard !items.isEmpty else { return }
+        guard !items.isEmpty else {
+            pasteboard.clearContents()
+            return
+        }
+        // Build the replacement items before clearing: if construction cannot
+        // produce anything, clearing first would leave the user with an empty
+        // pasteboard and no way back.
         let objects: [NSPasteboardItem] = items.map { snapshot in
             let item = NSPasteboardItem()
             for typeName in snapshot.types {
@@ -124,7 +132,12 @@ public struct SystemPasteboardAccess: PasteboardSnapshotting, @unchecked Sendabl
             }
             return item
         }
-        pasteboard.writeObjects(objects)
+        pasteboard.clearContents()
+        if !pasteboard.writeObjects(objects) {
+            // One retry so a transient failure does not silently drop the backup.
+            pasteboard.clearContents()
+            _ = pasteboard.writeObjects(objects)
+        }
     }
 }
 

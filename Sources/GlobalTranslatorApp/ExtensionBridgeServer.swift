@@ -69,6 +69,10 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
     private let handler: TranslateHandler
     private let queue = DispatchQueue(label: "global-translator.extension-bridge")
     private var listener: NWListener?
+    /// Token bucket: burst 30, refilled at 10/s. Normal page/video traffic stays
+    /// well under this, while a page driving the extension cannot drain the
+    /// user's translation quota.
+    private let rateLimiter = BridgeRateLimiter(capacity: 30, refillPerSecond: 10)
 
     /// Actual bound port; populated once the listener reports `.ready`
     /// (mainly so tests can bind port 0).
@@ -231,6 +235,11 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
     }
 
     private func handleTranslate(_ body: Data, origin: String?, on connection: NWConnection) {
+        guard rateLimiter.allow() else {
+            logger?.event("bridge_translate", fields: ["status": "rate_limited"])
+            send(.json(status: 429, object: ["error": "too many requests"]), on: connection, origin: origin)
+            return
+        }
         guard let payload = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
               let texts = payload["texts"] as? [String],
               !texts.isEmpty, texts.count <= Self.maximumTexts,
@@ -342,5 +351,42 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         case 503: return "Service Unavailable"
         default: return "Status"
         }
+    }
+}
+
+/// Minimal thread-safe token bucket guarding the bridge's translate endpoint.
+/// Kept as a separate type so it can be unit tested directly.
+final class BridgeRateLimiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private let capacity: Double
+    private let refillPerSecond: Double
+    private let now: () -> TimeInterval
+    private var tokens: Double
+    private var lastRefill: TimeInterval
+
+    init(
+        capacity: Double,
+        refillPerSecond: Double,
+        now: @escaping () -> TimeInterval = { Date().timeIntervalSince1970 }
+    ) {
+        let currentTime = now()
+        self.capacity = capacity
+        self.refillPerSecond = refillPerSecond
+        self.now = now
+        self.tokens = capacity
+        self.lastRefill = currentTime
+    }
+
+    /// Consumes one token. Returns false when the caller should be throttled.
+    func allow() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let timestamp = now()
+        let elapsed = max(0, timestamp - lastRefill)
+        tokens = min(capacity, tokens + elapsed * refillPerSecond)
+        lastRefill = timestamp
+        guard tokens >= 1 else { return false }
+        tokens -= 1
+        return true
     }
 }
