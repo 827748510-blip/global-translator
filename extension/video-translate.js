@@ -1,12 +1,15 @@
-// Video translation Phase A + B1 — overlay Simplified Chinese from textTracks,
-// optional local SRT/VTT sidecar, or YouTube in-session captions. No ASR,
-// no media capture, never pauses playback or rewrites original media.
+// Video translation Phase A + B1 + B2 — overlay Simplified Chinese from
+// textTracks, sidecar, YouTube in-session captions, or on-device ASR cues
+// from the desktop bridge. The page never captures audio or pauses playback.
 (() => {
   const Cues = (typeof GlobalTranslatorSubtitleCues !== "undefined")
     ? GlobalTranslatorSubtitleCues
     : null;
   const Youtube = (typeof GlobalTranslatorYouTubeCaptions !== "undefined")
     ? GlobalTranslatorYouTubeCaptions
+    : null;
+  const Asr = (typeof GlobalTranslatorVideoASR !== "undefined")
+    ? GlobalTranslatorVideoASR
     : null;
   if (!Cues) return;
 
@@ -15,6 +18,7 @@
   const PREFETCH = 4;
   const DESKTOP_SYNC_MS = 3000;
   const CUE_WAIT_MS = 8000;
+  const ASR_POLL_MS = 1000;
   const HOST_ATTR = "data-gt-video-translate";
   const PAINT_MS = 250;
 
@@ -33,6 +37,14 @@
   const boundList = [];
   let cueWaitText = "";
   let cueWaitSince = 0;
+  let asrTimer = null;
+  let asrWanted = false;
+  let asrStatus = "";
+  let asrMessage = "";
+  let asrCues = [];
+  let asrSeenSeq = {};
+  let asrInFlight = false;
+  let asrQueued = null;
 
   function safe(fn) {
     try {
@@ -105,19 +117,26 @@
     return Youtube.cuesFor(video) || [];
   }
 
+  function captionCues(video) {
+    if (sidecarCues.length > 0) return sidecarCues;
+    const fromYoutube = youtubeCues(video);
+    if (fromYoutube.length > 0) return fromYoutube;
+    return collectTrackCues(video);
+  }
+
+  function cuesFor(video) {
+    const captions = captionCues(video);
+    if (Cues.hasForeignCues(captions)) return captions;
+    if (asrCues.length > 0) return asrCues;
+    return captions;
+  }
+
   function youtubeNoForeignMessage() {
     if (sidecarCues.length > 0) return "";
     if (Youtube && Youtube.isActivePage() && Youtube.MESSAGES) {
       return Youtube.MESSAGES.noYouTubeCaptions || "";
     }
     return "";
-  }
-
-  function cuesFor(video) {
-    if (sidecarCues.length > 0) return sidecarCues;
-    const fromYoutube = youtubeCues(video);
-    if (fromYoutube.length > 0) return fromYoutube;
-    return collectTrackCues(video);
   }
 
   function overlayParent(_video) {
@@ -258,8 +277,11 @@
       serviceError,
       waitTimedOut,
       probed,
-      noForeignMessage: youtubeNoForeignMessage()
+      noForeignMessage: youtubeNoForeignMessage(),
+      asrStatus,
+      asrMessage
     });
+    const asrBit = Asr && Asr.overlayBits ? Asr.overlayBits(asrStatus) : "asr0";
     if (Youtube && typeof Youtube.overlayDebugBits === "function") {
       const bits = Youtube.overlayDebugBits({
         cues,
@@ -268,12 +290,14 @@
         pageWorld: !!(Youtube.pageWorldAlive && Youtube.pageWorldAlive(document)),
         dom: !!(Youtube.collectDomCaptionText && Youtube.collectDomCaptionText(document))
       });
-      record.host.setAttribute("data-gt-vt", bits);
+      record.host.setAttribute("data-gt-vt", bits + " " + asrBit);
       try {
         if (typeof localStorage !== "undefined" && localStorage.getItem("gtVtDebug") === "1") {
-          console.debug("[gt-vt]", bits);
+          console.debug("[gt-vt]", bits, asrBit);
         }
       } catch (_error) {}
+    } else {
+      record.host.setAttribute("data-gt-vt", asrBit);
     }
     if (!state.show || (!state.cueText && !state.message)) {
       record.box.style.display = "none";
@@ -404,6 +428,7 @@
     for (let i = boundList.length - 1; i >= 0; i--) {
       if (!boundList[i].isConnected) unbindVideo(boundList[i]);
     }
+    syncAsr();
     renderAll();
   }
 
@@ -475,12 +500,97 @@
     probed = hasImmediateCues();
     if (probed) {
       renderAll();
+      syncAsr();
       return;
     }
     probeTimer = setTimeout(() => {
       probed = true;
       renderAll();
+      syncAsr();
     }, probeDelay());
+  }
+
+  function clearAsrState() {
+    asrCues = [];
+    asrSeenSeq = {};
+    asrStatus = "";
+    asrMessage = "";
+  }
+
+  function applyAsrSnapshot(payload, video) {
+    if (!payload || typeof payload !== "object") return;
+    asrStatus = typeof payload.status === "string" ? payload.status : "";
+    asrMessage = Asr && Asr.messageFor
+      ? Asr.messageFor(asrStatus, payload.message)
+      : (payload.message || "");
+    if (!video) return;
+    const mapped = Asr && Asr.mapNewCues
+      ? Asr.mapNewCues(asrCues, payload.cues, video.currentTime || 0, asrSeenSeq)
+      : { cues: asrCues, seenSeq: asrSeenSeq };
+    asrCues = mapped.cues;
+    asrSeenSeq = mapped.seenSeq;
+  }
+
+  function postAsr(needed, video) {
+    if (asrInFlight) {
+      asrQueued = { needed: needed === true, video };
+      return;
+    }
+    asrInFlight = true;
+    try {
+      chrome.runtime.sendMessage({ type: "video-asr", needed: needed === true }, (response) => {
+        asrInFlight = false;
+        const queued = asrQueued;
+        asrQueued = null;
+        if (chrome.runtime.lastError) {
+          if (queued) postAsr(queued.needed, queued.video);
+          return;
+        }
+        safe(() => {
+          applyAsrSnapshot(response, video || listVideos()[0]);
+          renderAll();
+          if (video) prefetch(video);
+          else listVideos().forEach((item) => prefetch(item));
+        });
+        if (queued) postAsr(queued.needed, queued.video);
+      });
+    } catch (_error) {
+      asrInFlight = false;
+    }
+  }
+
+  function syncAsr() {
+    if (!enabled) return;
+    const videos = listVideos();
+    const video = videos[0];
+    const captions = video ? captionCues(video) : [];
+    const foreign = Cues.hasForeignCues(captions);
+    const want = probed && Asr && Asr.shouldRequest ? Asr.shouldRequest(foreign) : (probed && !foreign);
+    if (!want) {
+      if (asrWanted) postAsr(false, video);
+      asrWanted = false;
+      clearAsrState();
+      stopAsrPoll();
+      return;
+    }
+    asrWanted = true;
+    postAsr(true, video);
+    startAsrPoll();
+  }
+
+  function startAsrPoll() {
+    if (asrTimer) return;
+    asrTimer = setInterval(() => {
+      safe(() => {
+        if (!enabled || !asrWanted) return;
+        syncAsr();
+      });
+    }, ASR_POLL_MS);
+  }
+
+  function stopAsrPoll() {
+    if (asrTimer) clearInterval(asrTimer);
+    asrTimer = null;
   }
 
   function onViewportChange() {
@@ -522,6 +632,10 @@
     probeTimer = null;
     stopObserver();
     stopPaintLoop();
+    stopAsrPoll();
+    if (asrWanted) postAsr(false);
+    asrWanted = false;
+    clearAsrState();
     window.removeEventListener("scroll", onViewportChange, true);
     window.removeEventListener("resize", onViewportChange);
     document.removeEventListener("fullscreenchange", onViewportChange);

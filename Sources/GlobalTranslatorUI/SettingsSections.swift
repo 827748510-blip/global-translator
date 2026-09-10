@@ -73,7 +73,7 @@ struct SettingsHeaderSection: View {
                     )
                 )
                 .toggleStyle(.switch)
-                .accessibilityHint("启用后对网页视频字幕叠简体中文，默认关闭，不单独占一行")
+                .accessibilityHint("启用后对网页视频字幕叠简体中文；无外语字幕时用本机系统/窗口音频转写。默认关闭，不单独占一行")
             }
             .frame(minHeight: GTPopoverMetrics.minRowHitHeight)
             .frame(maxWidth: .infinity)

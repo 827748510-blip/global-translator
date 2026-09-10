@@ -59,5 +59,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(() => sendResponse({ ok: false, videoTranslateEnabled: false }));
     return true;
   }
+  if (message.type === "video-asr") {
+    const needed = message.needed === true;
+    fetch(ENDPOINT + "/video-asr", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ needed })
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          sendResponse({ error: "http " + response.status, status: "error" });
+          return;
+        }
+        const payload = await response.json();
+        sendResponse(payload);
+      })
+      .catch((error) => sendResponse({ error: String(error), status: "error" }));
+    return true;
+  }
   return false;
 });

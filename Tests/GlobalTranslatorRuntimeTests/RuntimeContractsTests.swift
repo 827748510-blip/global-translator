@@ -71,6 +71,7 @@ struct RuntimeContractsTests {
         #expect(paths.socketURL.path == "/Users/example/Library/Application Support/GlobalTranslator/runtime/control.sock")
         #expect(paths.logURL.path == "/Users/example/Library/Logs/GlobalTranslator/runtime.log")
         #expect(paths.recommendedBinaryURL.path == "/Users/example/.local/bin/global-translator")
+        #expect(paths.whisperDirectory.path == "/Users/example/Library/Application Support/GlobalTranslator/whisper")
     }
 
     @Test
@@ -284,6 +285,21 @@ struct RuntimeContractsTests {
         #expect(report.checks.contains { $0.level == .fail })
         #expect(report.renderChinese().contains("FAIL"))
         #expect(!report.renderChinese().contains("api_key"))
+        let whisperMissing = DoctorInputs(
+            operatingSystemMajor: 14,
+            architecture: "arm64",
+            physicalMemoryGiB: 16,
+            accessibilityTrusted: true,
+            screenCapturePreflight: true,
+            binaryAtRecommendedPath: true,
+            keychainReadable: true,
+            configurationDecodable: true,
+            whisperAvailable: false
+        )
+        let whisperReport = Doctor(inputs: whisperMissing).run()
+        #expect(!whisperReport.hasFailure)
+        #expect(whisperReport.renderChinese().contains("本地 Whisper.cpp"))
+        #expect(whisperReport.renderChinese().contains("WARN"))
     }
 
     @Test

@@ -2,7 +2,8 @@
 // Reads the local player's already-active captions (visible cue DOM) and
 // in-session timedtext the page itself fetched after the user turned CC on.
 // Never initiates a caption download, never sends PoToken, never enables CC,
-// never captures audio. Speech capture / system ASR are Phase B2.
+// never captures audio. Speech capture / system ASR are Phase B2 in the
+// native SystemAudioCapture module; this helper stays caption-only.
 (function (root) {
   const Cues = root.GlobalTranslatorSubtitleCues;
   const SOURCE_PAGE = "gt-youtube-captions";

@@ -24,6 +24,10 @@ const manifest = fs.readFileSync(path.join(dir, "manifest.json"), "utf8");
 const background = fs.readFileSync(path.join(dir, "background.js"), "utf8");
 const content = fs.readFileSync(path.join(dir, "content.js"), "utf8");
 const cuesSource = fs.readFileSync(path.join(dir, "subtitle-cues.js"), "utf8");
+const asrJs = fs.readFileSync(path.join(dir, "video-asr.js"), "utf8");
+assert(asrJs.indexOf("getUserMedia") === -1, "asr helper no getUserMedia");
+assert(asrJs.indexOf("shouldRequest") !== -1, "asr helper gates on captions");
+assert(asrJs.indexOf("mapNewCues") !== -1, "asr helper maps live cues");
 
 assert(popupHtml.indexOf("视频翻译") !== -1, "popup shows 视频翻译");
 assert(popupHtml.indexOf("id=\"videoTranslate\"") === -1, "no separate popup toggle");
@@ -70,8 +74,17 @@ assert(youtubeJs.toLowerCase().indexOf("whisper") === -1, "no whisper in youtube
 assert(youtubePage.indexOf("setOption") === -1, "never enable captions via player");
 assert(youtubePage.indexOf("loadModule") === -1, "never load caption module");
 assert(background.indexOf("ENDPOINT + \"/translate\"") !== -1, "backend translate path unchanged");
+assert(background.indexOf("ENDPOINT + \"/video-asr\"") !== -1, "background polls video-asr");
+assert(background.indexOf("message.type === \"video-asr\"") !== -1, "video-asr message");
+assert(background.indexOf("enqueueBridgeFetch(() =>\n      fetch(ENDPOINT + \"/video-asr\"") === -1, "video-asr is not queued behind translate");
+assert(videoJs.indexOf("type: \"video-asr\"") !== -1, "content requests desktop asr");
+assert(videoJs.indexOf("captionCues") !== -1, "caption path stays separate from asr");
+assert(videoJs.indexOf("GlobalTranslatorVideoASR") !== -1, "content uses asr helper");
+assert(videoJs.indexOf("asrStatus") !== -1, "overlay receives asr status");
+assert(manifest.indexOf("video-asr.js") !== -1, "manifest loads asr helper");
+assert(manifest.indexOf("microphone") === -1, "no microphone permission");
 
-assert(manifest.indexOf("\"version\": \"1.0.9\"") !== -1, "manifest version");
+assert(manifest.indexOf("\"version\": \"1.0.10\"") !== -1, "manifest version");
 assert(background.indexOf("importScripts(\"bridge-queue.js\")") !== -1, "background loads bridge queue");
 assert(background.indexOf("message.lane === \"video\"") !== -1, "background honors video lane");
 assert(background.indexOf("message.type === \"ping\"") !== -1, "background health ping");
@@ -95,7 +108,19 @@ assert(manifest.indexOf("desktopCapture") === -1, "no desktopCapture");
 
 const visual = fs.readFileSync(path.join(dir, "../Sources/GlobalTranslatorCapture/WindowVisualUpdates.swift"), "utf8");
 assert(visual.indexOf("configuration.capturesAudio = false") !== -1, "vision stream stays silent");
-assert(visual.indexOf("capturesAudio = true") === -1, "B1 does not enable capturesAudio");
+assert(visual.indexOf("capturesAudio = true") === -1, "visual path does not enable capturesAudio");
+const audio = fs.readFileSync(path.join(dir, "../Sources/GlobalTranslatorCapture/SystemAudioCapture.swift"), "utf8");
+assert(audio.indexOf("capturesAudio = true") !== -1, "independent audio module captures audio");
+assert(audio.indexOf("captureMicrophone = false") !== -1, "microphone stays off");
+assert(audio.indexOf("type: .audio") !== -1, "subscribes to audio output");
+assert(audio.indexOf(".microphone") === -1, "does not subscribe to microphone output");
+assert(audio.indexOf("getUserMedia") === -1, "native audio module has no getUserMedia");
+const asrController = fs.readFileSync(path.join(dir, "../Sources/GlobalTranslatorCapture/VideoAudioASRController.swift"), "utf8");
+assert(asrController.indexOf("enabled && needed") !== -1, "asr requires toggle and missing captions");
+assert(asrController.indexOf("VideoASRMessages.denied") !== -1, "denied has overlay copy");
+const whisper = fs.readFileSync(path.join(dir, "../Sources/GlobalTranslatorCapture/WhisperCppTranscriber.swift"), "utf8");
+assert(whisper.indexOf("https://") === -1, "whisper runner is local");
+assert(whisper.indexOf("api.deepseek.com") === -1, "no cloud asr");
 
 const settings = fs.readFileSync(path.join(dir, "../Sources/GlobalTranslatorUI/SettingsSections.swift"), "utf8");
 assert(settings.indexOf("\"滑词翻译\"") !== -1, "settings has 滑词翻译");
@@ -133,6 +158,11 @@ assert(docs.indexOf("英语>>中文") !== -1, "docs distinguish youtube UI machi
 assert(docs.indexOf("English (auto-generated)") !== -1, "corridor live path is auto english");
 assert(docs.indexOf("走廊片中文轨") === -1, "docs no longer treat corridor as native zh track");
 assert(docs.indexOf("不要用走廊片当 skip") !== -1, "docs say skip is not the corridor fixture");
+assert(docs.indexOf("Phase B2") !== -1, "docs cover B2");
+assert(docs.indexOf("Whisper.cpp") !== -1, "docs mention local whisper");
+assert(docs.indexOf("GLOBAL_TRANSLATOR_WHISPER_BIN") !== -1, "docs mention whisper env");
+assert(docs.indexOf("getUserMedia") !== -1, "docs ban getUserMedia");
+assert(docs.indexOf("WindowVisualUpdates") !== -1, "docs name visual path");
 const youtubeCaptionsTest = fs.readFileSync(path.join(dir, "youtube-captions.test.js"), "utf8");
 assert(youtubeCaptionsTest.indexOf("Do not treat YouTube iJ53c1zKgr8") !== -1, "unit skip fixture is not the corridor watch page");
 

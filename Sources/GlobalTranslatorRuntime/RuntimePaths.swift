@@ -12,6 +12,9 @@ public struct RuntimePaths: Equatable, Sendable {
     public let logURL: URL
     public let recommendedBinaryURL: URL
     public let usesOverrideRoot: Bool
+    public var whisperDirectory: URL {
+        applicationSupportDirectory.appendingPathComponent("whisper", isDirectory: true)
+    }
 
     public init(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) {
         let app = homeDirectory

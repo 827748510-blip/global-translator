@@ -46,6 +46,7 @@ public struct DoctorInputs: Equatable, Sendable {
     public let binaryAtRecommendedPath: Bool
     public let keychainReadable: Bool
     public let configurationDecodable: Bool
+    public let whisperAvailable: Bool
 
     public init(
         operatingSystemMajor: Int,
@@ -55,7 +56,8 @@ public struct DoctorInputs: Equatable, Sendable {
         screenCapturePreflight: Bool,
         binaryAtRecommendedPath: Bool,
         keychainReadable: Bool,
-        configurationDecodable: Bool
+        configurationDecodable: Bool,
+        whisperAvailable: Bool = true
     ) {
         self.operatingSystemMajor = operatingSystemMajor
         self.architecture = architecture
@@ -65,6 +67,7 @@ public struct DoctorInputs: Equatable, Sendable {
         self.binaryAtRecommendedPath = binaryAtRecommendedPath
         self.keychainReadable = keychainReadable
         self.configurationDecodable = configurationDecodable
+        self.whisperAvailable = whisperAvailable
     }
 
     public static func current(paths: RuntimePaths) -> DoctorInputs {
@@ -97,6 +100,11 @@ public struct DoctorInputs: Equatable, Sendable {
                 from: Data(contentsOf: paths.configURL)
             )) != nil
         }
+        let whisper = WhisperCppLocator.candidatesForSupportDirectory(paths.whisperDirectory)
+        let whisperAvailable = WhisperCppLocator.locate(
+            extraBinaryCandidates: whisper.binaries,
+            extraModelCandidates: whisper.models
+        ).isAvailable
         return DoctorInputs(
             operatingSystemMajor: operatingSystemMajor,
             architecture: architecture,
@@ -105,7 +113,8 @@ public struct DoctorInputs: Equatable, Sendable {
             screenCapturePreflight: screenCapturePreflight,
             binaryAtRecommendedPath: binaryAtRecommendedPath,
             keychainReadable: keychainReadable,
-            configurationDecodable: configurationDecodable
+            configurationDecodable: configurationDecodable,
+            whisperAvailable: whisperAvailable
         )
     }
 }
@@ -171,6 +180,13 @@ public struct Doctor: Sendable {
             name: "配置文件",
             level: inputs.configurationDecodable ? .pass : .fail,
             detail: inputs.configurationDecodable ? "可解码" : "config.json 无法解码"
+        ))
+        checks.append(DoctorCheck(
+            name: "本地 Whisper.cpp",
+            level: inputs.whisperAvailable ? .pass : .warn,
+            detail: inputs.whisperAvailable
+                ? "已找到本地 CLI 与模型"
+                : "未找到，无字幕视频翻译（B2）不可用；字幕路径仍可用"
         ))
         return DoctorReport(checks: checks)
     }
