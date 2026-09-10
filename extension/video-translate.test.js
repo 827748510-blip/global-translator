@@ -117,6 +117,10 @@ assert(audio.indexOf(".microphone") === -1, "does not subscribe to microphone ou
 assert(audio.indexOf("getUserMedia") === -1, "native audio module has no getUserMedia");
 const asrController = fs.readFileSync(path.join(dir, "../Sources/GlobalTranslatorCapture/VideoAudioASRController.swift"), "utf8");
 assert(asrController.indexOf("enabled && needed") !== -1, "asr requires toggle and missing captions");
+assert(asrController.indexOf("OSAllocatedUnfairLock") !== -1, "asr uses unfair lock not NSLock in async paths");
+assert(asrController.indexOf("NSLock()") === -1, "asr does not construct NSLock");
+assert(asrController.indexOf(".lock()") === -1, "asr does not call lock()");
+assert(asrController.indexOf(".unlock()") === -1, "asr does not call unlock()");
 assert(asrController.indexOf("VideoASRMessages.denied") !== -1, "denied has overlay copy");
 const whisper = fs.readFileSync(path.join(dir, "../Sources/GlobalTranslatorCapture/WhisperCppTranscriber.swift"), "utf8");
 assert(whisper.indexOf("https://") === -1, "whisper runner is local");

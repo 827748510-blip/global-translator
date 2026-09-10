@@ -1,5 +1,6 @@
 import Foundation
 import GlobalTranslatorCore
+import os
 
 public enum VideoASRStatus: String, Codable, Equatable, Sendable {
     case idle
@@ -96,22 +97,27 @@ public final class VideoAudioASRController: @unchecked Sendable {
     private let windowProvider: WindowProvider
     private let onEvent: EventSink
 
-    private let lock = NSLock()
-    private var enabled = false
-    private var needed = false
-    private var running = false
-    private var status: VideoASRStatus = .idle
-    private var message = ""
-    private var cues: [VideoASRCue] = []
-    private var seq = 0
-    private var lastText = ""
-    private var generation: UInt64 = 0
-    private var pcmBuffer: [Int16] = []
-    private var transcribing = false
-    private var pendingWindow: [Int16]?
+    /// Protects mutable ASR state. Closures passed to `withLock` are synchronous,
+    /// so async start/transcribe never hold a lock across `await`.
+    private struct State: Sendable {
+        var enabled = false
+        var needed = false
+        var running = false
+        var status: VideoASRStatus = .idle
+        var message = ""
+        var cues: [VideoASRCue] = []
+        var seq = 0
+        var lastText = ""
+        var generation: UInt64 = 0
+        var pcmBuffer: [Int16] = []
+        var transcribing = false
+        var pendingWindow: [Int16]?
+        var lastAttempt: Date?
+        var starting = false
+    }
+
+    private let state = OSAllocatedUnfairLock(initialState: State())
     private var startTask: Task<Void, Never>?
-    private var lastAttempt: Date?
-    private var starting = false
 
     public init(
         permissions: any PermissionControlling,
@@ -130,56 +136,60 @@ public final class VideoAudioASRController: @unchecked Sendable {
     }
 
     public func snapshot() -> VideoASRSnapshot {
-        lock.withLock {
+        state.withLock { current in
             VideoASRSnapshot(
-                enabled: enabled,
-                needed: needed,
-                running: running,
-                status: status,
-                message: message,
+                enabled: current.enabled,
+                needed: current.needed,
+                running: current.running,
+                status: current.status,
+                message: current.message,
                 target: capturer.activeTarget,
-                cues: cues
+                cues: current.cues
             )
         }
     }
 
     public func setVideoTranslateEnabled(_ enabled: Bool) {
-        lock.withLock {
-            self.enabled = enabled
+        state.withLock { current in
+            current.enabled = enabled
             if !enabled {
-                self.needed = false
+                current.needed = false
             } else {
-                status = .idle
-                message = ""
-                lastAttempt = nil
+                current.status = .idle
+                current.message = ""
+                current.lastAttempt = nil
             }
         }
         reconcile()
     }
 
     public func setCaptionsNeeded(_ needed: Bool) {
-        lock.withLock {
-            let previous = self.needed
-            self.needed = needed
+        state.withLock { current in
+            let previous = current.needed
+            current.needed = needed
             if needed && !previous {
-                status = .idle
-                message = ""
-                lastAttempt = nil
+                current.status = .idle
+                current.message = ""
+                current.lastAttempt = nil
             }
         }
         reconcile()
     }
 
     public func stop() {
-        lock.withLock {
-            enabled = false
-            needed = false
+        state.withLock { current in
+            current.enabled = false
+            current.needed = false
         }
         stopCapture(status: .idle, message: "")
     }
 
     private func reconcile() {
-        let shouldRun = lock.withLock { enabled && needed }
+        let shouldRun = state.withLock { current in
+            let enabled = current.enabled
+            let needed = current.needed
+            return enabled && needed
+        }
         if shouldRun {
             startIfNeeded()
         } else {
@@ -188,15 +198,15 @@ public final class VideoAudioASRController: @unchecked Sendable {
     }
 
     private func startIfNeeded() {
-        if lock.withLock({ running || starting }) { return }
-        let statusNow = lock.withLock { status }
+        if state.withLock({ $0.running || $0.starting }) { return }
+        let statusNow = state.withLock { $0.status }
         if statusNow == .denied || statusNow == .whisperMissing || statusNow == .error {
-            let last = lock.withLock { lastAttempt } ?? .distantPast
+            let last = state.withLock { $0.lastAttempt } ?? .distantPast
             if Date().timeIntervalSince(last) < 15 { return }
         }
-        let token = lock.withLock { () -> UInt64 in
-            starting = true
-            return generation
+        let token = state.withLock { current -> UInt64 in
+            current.starting = true
+            return current.generation
         }
         startTask = Task { [weak self] in
             await self?.begin(token: token)
@@ -204,9 +214,13 @@ public final class VideoAudioASRController: @unchecked Sendable {
     }
 
     private func begin(token: UInt64) async {
-        defer { lock.withLock { if generation == token { starting = false } } }
-        guard lock.withLock({ generation == token && enabled && needed && !running }) else { return }
-        lock.withLock { lastAttempt = Date() }
+        defer {
+            state.withLock { current in
+                if current.generation == token { current.starting = false }
+            }
+        }
+        guard state.withLock({ $0.generation == token && $0.enabled && $0.needed && !$0.running }) else { return }
+        state.withLock { $0.lastAttempt = Date() }
         let snapshot = permissions.snapshot
         if snapshot.sessionLocked || snapshot.secureInputEnabled {
             apply(status: .error, message: VideoASRMessages.error, running: false)
@@ -229,11 +243,11 @@ public final class VideoAudioASRController: @unchecked Sendable {
             try await capturer.start(window: window) { [weak self] chunk in
                 self?.ingest(chunk, token: token)
             }
-            guard lock.withLock({ generation == token && enabled && needed }) else {
+            guard state.withLock({ $0.generation == token && $0.enabled && $0.needed }) else {
                 capturer.stop()
                 return
             }
-            lock.withLock { running = true }
+            state.withLock { $0.running = true }
             apply(status: .running, message: "", running: true)
             onEvent("video_asr_start", ["target": capturer.activeTarget ?? "unknown"])
         } catch SystemAudioCaptureError.permissionDenied {
@@ -246,16 +260,16 @@ public final class VideoAudioASRController: @unchecked Sendable {
     }
 
     private func stopCapture(status: VideoASRStatus, message: String) {
-        let wasRunning = lock.withLock { () -> Bool in
-            let runningNow = running
-            generation &+= 1
-            running = false
-            starting = false
-            transcribing = false
-            pendingWindow = nil
-            pcmBuffer.removeAll(keepingCapacity: true)
-            cues.removeAll()
-            lastText = ""
+        let wasRunning = state.withLock { current -> Bool in
+            let runningNow = current.running
+            current.generation &+= 1
+            current.running = false
+            current.starting = false
+            current.transcribing = false
+            current.pendingWindow = nil
+            current.pcmBuffer.removeAll(keepingCapacity: true)
+            current.cues.removeAll()
+            current.lastText = ""
             return runningNow
         }
         startTask?.cancel()
@@ -270,26 +284,24 @@ public final class VideoAudioASRController: @unchecked Sendable {
     private func ingest(_ chunk: AudioPCMChunk, token: UInt64) {
         let samples = AudioPCM.int16Array(from: chunk.pcm16Mono16k)
         guard !samples.isEmpty else { return }
-        var windowToRun: [Int16]?
-        lock.lock()
-        defer { lock.unlock() }
-        guard generation == token, enabled, needed else { return }
-        pcmBuffer.append(contentsOf: samples)
-        let windowCount = Int(VideoASRTiming.windowSeconds * Double(AudioPCM.whisperSampleRate))
-        let hop = Int((VideoASRTiming.windowSeconds - VideoASRTiming.overlapSeconds) * Double(AudioPCM.whisperSampleRate))
-        if pcmBuffer.count >= windowCount {
-            let window = Array(pcmBuffer.prefix(windowCount))
-            if pcmBuffer.count > hop {
-                pcmBuffer.removeFirst(hop)
+        let windowToRun: [Int16]? = state.withLock { current in
+            guard current.generation == token, current.enabled, current.needed else { return nil }
+            current.pcmBuffer.append(contentsOf: samples)
+            let windowCount = Int(VideoASRTiming.windowSeconds * Double(AudioPCM.whisperSampleRate))
+            let hop = Int((VideoASRTiming.windowSeconds - VideoASRTiming.overlapSeconds) * Double(AudioPCM.whisperSampleRate))
+            guard current.pcmBuffer.count >= windowCount else { return nil }
+            let window = Array(current.pcmBuffer.prefix(windowCount))
+            if current.pcmBuffer.count > hop {
+                current.pcmBuffer.removeFirst(hop)
             } else {
-                pcmBuffer.removeAll(keepingCapacity: true)
+                current.pcmBuffer.removeAll(keepingCapacity: true)
             }
-            if transcribing {
-                pendingWindow = window
-            } else {
-                transcribing = true
-                windowToRun = window
+            if current.transcribing {
+                current.pendingWindow = window
+                return nil
             }
+            current.transcribing = true
+            return window
         }
         if let windowToRun {
             Task { await self.transcribe(windowToRun, token: token) }
@@ -298,20 +310,18 @@ public final class VideoAudioASRController: @unchecked Sendable {
 
     private func transcribe(_ samples: [Int16], token: UInt64) async {
         defer {
-            var next: [Int16]?
-            lock.lock()
-            transcribing = false
-            if generation == token, let pending = pendingWindow {
-                pendingWindow = nil
-                transcribing = true
-                next = pending
+            let next: [Int16]? = state.withLock { current in
+                current.transcribing = false
+                guard current.generation == token, let pending = current.pendingWindow else { return nil }
+                current.pendingWindow = nil
+                current.transcribing = true
+                return pending
             }
-            lock.unlock()
             if let next {
                 Task { await self.transcribe(next, token: token) }
             }
         }
-        guard lock.withLock({ generation == token && enabled && needed }) else { return }
+        guard state.withLock({ $0.generation == token && $0.enabled && $0.needed }) else { return }
         if AudioPCM.isSilent(samples, threshold: VideoASRTiming.silenceRMS) {
             return
         }
@@ -319,23 +329,23 @@ public final class VideoAudioASRController: @unchecked Sendable {
             let transcript = try await transcriber.transcribeEnglish(pcm16Mono16k: AudioPCM.data(from: samples))
             let text = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard text.count >= 2 else { return }
-            guard lock.withLock({ generation == token && enabled && needed }) else { return }
-            if lock.withLock({ lastText == text }) { return }
+            guard state.withLock({ $0.generation == token && $0.enabled && $0.needed }) else { return }
+            if state.withLock({ $0.lastText == text }) { return }
             let durationMs = max(1200, Int((transcript.duration * 1000).rounded()))
-            lock.lock()
-            seq += 1
-            lastText = text
-            cues.append(VideoASRCue(seq: seq, text: text, durationMs: durationMs))
-            if cues.count > 6 {
-                cues.removeFirst(cues.count - 6)
+            state.withLock { current in
+                current.seq += 1
+                current.lastText = text
+                current.cues.append(VideoASRCue(seq: current.seq, text: text, durationMs: durationMs))
+                if current.cues.count > 6 {
+                    current.cues.removeFirst(current.cues.count - 6)
+                }
             }
-            lock.unlock()
             onEvent("video_asr_transcribe", [
                 "chars": String(text.count),
                 "ms": String(durationMs)
             ])
         } catch WhisperTranscribeError.unavailable {
-            apply(status: .whisperMissing, message: VideoASRMessages.whisperMissing, running: lock.withLock { running })
+            apply(status: .whisperMissing, message: VideoASRMessages.whisperMissing, running: state.withLock { $0.running })
             onEvent("video_asr_whisper_missing", [:])
         } catch {
             onEvent("video_asr_failed", ["kind": "whisper"])
@@ -343,10 +353,10 @@ public final class VideoAudioASRController: @unchecked Sendable {
     }
 
     private func apply(status: VideoASRStatus, message: String, running: Bool) {
-        lock.withLock {
-            self.status = status
-            self.message = message
-            self.running = running
+        state.withLock { current in
+            current.status = status
+            current.message = message
+            current.running = running
         }
     }
 }
