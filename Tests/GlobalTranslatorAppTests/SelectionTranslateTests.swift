@@ -1019,6 +1019,31 @@ extension ApplicationControllerTests {
         await controller.stop()
     }
 
+    @Test
+    func laterSelectionStillWorksAfterChunkedSelectionOnLiveCoordinator() async throws {
+        let coordinator = TranslationCoordinator(
+            backends: [StubBackend(kind: .local)],
+            permissions: FakePermissionController(snapshot: .allGranted)
+        )
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: false, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, coordinator: coordinator)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        let long = Self.longEnglish(characters: 4_500)
+        #expect(SelectionTranslateSupport.prepareSource(long).chunks.count >= 3)
+        let first = try await session.translateSelection(long)
+        #expect(!first.text.isEmpty)
+        let second = try await session.translateSelection("Hello there")
+        #expect(second.text == "ok")
+        #expect(!second.sourceWasTruncated)
+        await controller.stop()
+    }
+
     private static func longEnglish(characters: Int) -> String {
         let unit = "A cinematic wide shot of a girl standing in the rain on a city street at night. "
         var text = ""
