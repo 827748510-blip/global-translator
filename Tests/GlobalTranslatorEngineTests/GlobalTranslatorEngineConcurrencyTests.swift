@@ -79,6 +79,13 @@ extension GlobalTranslatorEngineTests {
         }
         scheduler.submit(snapshot: makeSnapshot(regions: [makeRegion(text: "one")], revision: 1), backend: .local, modelIdentifier: "m", visionFallbackEnabled: false)
         scheduler.submit(snapshot: makeSnapshot(regions: [makeRegion(text: "two")], revision: 2), backend: .local, modelIdentifier: "m", visionFallbackEnabled: false)
+        // Wait for the debounced submission to land instead of assuming a fixed
+        // 450 ms is enough; on a loaded machine the scheduler can still be one
+        // tick away when that sleep ends. The trailing window then confirms the
+        // burst was collapsed into a single request.
+        for _ in 0..<400 where await backend.requests.isEmpty {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
         try await Task.sleep(nanoseconds: 450_000_000)
         #expect(await backend.requests.count == 1)
         #expect(collector.values().map(\.windowRevision) == [2])

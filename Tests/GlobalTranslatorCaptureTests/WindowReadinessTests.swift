@@ -13,6 +13,7 @@ struct WindowReadinessTests {
             permissions: FakePermissionController(snapshot: .allGranted),
             callback: { callbacks.record($0) }
         )
+        monitor.workspaceNotificationCenter = NotificationCenter()
         monitor.frontmostApplicationProvider = { (42, "qa.editor") }
         monitor.windowDescriptorProvider = { pid, bundleIdentifier, invalidates in
             ActiveWindowDescriptor(pid: pid, bundleIdentifier: bundleIdentifier, windowID: 17, frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 0, invalidatesOverlay: invalidates)
@@ -130,6 +131,9 @@ struct WindowReadinessTests {
             translatedBundleIdentifiers: ["qa.editor"],
             permissions: permissions ?? probe.permissions
         )
+        // Isolate from the real workspace center: a stray app activation while
+        // the test sleeps resets the retry budget and adds an extra lookup.
+        monitor.workspaceNotificationCenter = NotificationCenter()
         monitor.frontmostApplicationProvider = {
             probe.hasApplication ? (42, probe.bundleIdentifier) : nil
         }

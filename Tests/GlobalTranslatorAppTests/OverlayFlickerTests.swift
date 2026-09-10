@@ -197,7 +197,10 @@ extension ApplicationControllerTests {
         // empty (FakeCoordinator). A healthy channel with nothing to apply
         // must NOT fall back to the bubble pipeline.
         fixture.monitor.emit(ActiveWindowDescriptor(pid: 42, bundleIdentifier: "com.google.Chrome", windowID: 17, frame: CGRect(x: 0, y: 0, width: 800, height: 600), revision: 1, invalidatesOverlay: true))
-        try await waitForCapture(timeout: 5) { inPage.extractCount == 1 }
+        // `extractCount` bumps at the start of extract; `apply` lands later, after
+        // the (empty) translation result comes back. Waiting only on extractCount
+        // left `applied` still empty on a loaded machine.
+        try await waitForCapture(timeout: 5) { inPage.extractCount == 1 && !inPage.applied.isEmpty }
         #expect(inPage.extractCount == 1)
         #expect(inPage.applied.first?.isEmpty == true)
         try await Task.sleep(for: .milliseconds(300))
