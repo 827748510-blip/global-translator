@@ -117,6 +117,7 @@ extension ApplicationController {
     public func setVideoTranslate(_ enabled: Bool) {
         configuration.videoTranslateEnabled = enabled
         viewModel.isVideoTranslateEnabled = enabled
+        videoASR?.setVideoTranslateEnabled(enabled)
         queueSave()
     }
 

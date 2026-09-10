@@ -95,9 +95,9 @@ struct ExtensionBridgeServerTests {
             .deletingLastPathComponent()
             .appendingPathComponent("extension/manifest.json")
         let source = try String(contentsOf: url, encoding: .utf8)
-        #expect(source.contains("\"version\": \"1.0.9\""))
-        #expect(!source.contains("\"version\": \"1.0.8\""))
-        #expect(source.contains("\"js\": [\"text-filter.js\", \"subtitle-cues.js\", \"youtube-captions.js\", \"content.js\", \"video-translate.js\"]"))
+        #expect(source.contains("\"version\": \"1.0.10\""))
+        #expect(!source.contains("\"version\": \"1.0.9\""))
+        #expect(source.contains("\"js\": [\"text-filter.js\", \"subtitle-cues.js\", \"youtube-captions.js\", \"video-asr.js\", \"content.js\", \"video-translate.js\"]"))
         #expect(source.contains("youtube-captions-page.js"))
         #expect(source.contains("\"world\": \"MAIN\""))
     }
@@ -123,6 +123,14 @@ struct ExtensionBridgeServerTests {
         let youtubeJs = try String(contentsOf: root.appendingPathComponent("extension/youtube-captions.js"), encoding: .utf8)
         let youtubePage = try String(contentsOf: root.appendingPathComponent("extension/youtube-captions-page.js"), encoding: .utf8)
         let contentJs = try String(contentsOf: root.appendingPathComponent("extension/content.js"), encoding: .utf8)
+        let audio = try String(
+            contentsOf: root.appendingPathComponent("Sources/GlobalTranslatorCapture/SystemAudioCapture.swift"),
+            encoding: .utf8
+        )
+        let asr = try String(
+            contentsOf: root.appendingPathComponent("Sources/GlobalTranslatorCapture/VideoAudioASRController.swift"),
+            encoding: .utf8
+        )
         #expect(settings.contains("\"滑词翻译\""))
         #expect(settings.contains("\"视频翻译\""))
         #expect(settings.contains("HStack(alignment: .center, spacing: GTSpacing.medium)"))
@@ -152,6 +160,12 @@ struct ExtensionBridgeServerTests {
         #expect(cuesJs.contains("videoTranslateEnabled: false"))
         #expect(visual.contains("configuration.capturesAudio = false"))
         #expect(!visual.contains("capturesAudio = true"))
+        #expect(audio.contains("capturesAudio = true"))
+        #expect(audio.contains("captureMicrophone = false"))
+        #expect(!audio.contains(".microphone"))
+        #expect(asr.contains("enabled && needed"))
+        #expect(videoJs.contains("type: \"video-asr\""))
+        #expect(videoJs.contains("GlobalTranslatorVideoASR"))
         #expect(videoJs.contains("GlobalTranslatorYouTubeCaptions"))
         #expect(videoJs.contains("data-gt-video-translate"))
         #expect(!videoJs.contains("#movie_player"))
@@ -315,6 +329,7 @@ struct ExtensionBridgeServerTests {
         let health = try #require(try JSONSerialization.jsonObject(with: postData) as? [String: Any])
         #expect(health["ok"] as? Bool == true)
         #expect(health["videoTranslateEnabled"] as? Bool == false)
+        #expect(health["videoAsrStatus"] as? String == "idle")
 
         let postDenied = request(port, method: "POST", path: "/health", origin: "https://evil.example")
         #expect(((try await session.data(for: postDenied)).1 as? HTTPURLResponse)?.statusCode == 403)
@@ -334,6 +349,58 @@ struct ExtensionBridgeServerTests {
         let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(object["ok"] as? Bool == true)
         #expect(object["videoTranslateEnabled"] as? Bool == true)
+    }
+
+    @Test
+    func videoAsrEndpointIsOriginGatedAndReportsSnapshot() async throws {
+        let lock = NSLock()
+        var neededFlag = false
+        let server = ExtensionBridgeServer(
+            port: 0,
+            videoTranslateEnabled: { true },
+            videoASRSnapshot: {
+                lock.lock()
+                let needed = neededFlag
+                lock.unlock()
+                return VideoASRSnapshot(
+                    enabled: true,
+                    needed: needed,
+                    running: needed,
+                    status: needed ? .running : .idle,
+                    message: "",
+                    target: needed ? "display" : nil,
+                    cues: needed ? [VideoASRCue(seq: 1, text: "Hello from the speaker", durationMs: 2500)] : []
+                )
+            },
+            videoASRSetNeeded: { value in
+                lock.lock()
+                neededFlag = value
+                lock.unlock()
+            }
+        ) { texts in ExtensionBridgeTranslation(translations: texts.map { $0 }) }
+        server.start()
+        defer { server.stop() }
+        let port = try await #require(waitForPort(server))
+        let session = URLSession(configuration: .ephemeral)
+
+        let denied = request(port, method: "POST", path: "/video-asr", origin: nil,
+                             body: try JSONSerialization.data(withJSONObject: ["needed": true]))
+        #expect(((try await session.data(for: denied)).1 as? HTTPURLResponse)?.statusCode == 403)
+
+        let body = try JSONSerialization.data(withJSONObject: ["needed": true])
+        let ok = request(port, method: "POST", path: "/video-asr",
+                         origin: ExtensionBridgeServer.allowedOrigin, body: body)
+        let (data, response) = try await session.data(for: ok)
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["ok"] as? Bool == true)
+        #expect(object["enabled"] as? Bool == true)
+        #expect(object["needed"] as? Bool == true)
+        #expect(object["status"] as? String == "running")
+        #expect(object["audio"] == nil)
+        let cues = try #require(object["cues"] as? [[String: Any]])
+        #expect(cues.first?["text"] as? String == "Hello from the speaker")
+        #expect((cues.first?["durationMs"] as? NSNumber)?.intValue == 2500)
     }
 
     @Test

@@ -169,6 +169,29 @@ const noForeign = cues.overlayState({
 });
 assertDeep(noForeign, { show: true, cueText: "", message: "未检测到外语内容" }, "no foreign after probe");
 
+const asrQuiet = cues.overlayState({
+  enabled: true,
+  cues: [],
+  time: 1,
+  probed: true,
+  asrStatus: "running"
+});
+assertDeep(asrQuiet, { show: false, cueText: "", message: "" }, "asr running stays quiet");
+
+const asrDenied = cues.overlayState({
+  enabled: true,
+  cues: [],
+  time: 1,
+  probed: true,
+  asrStatus: "denied",
+  asrMessage: "系统音频未授权（请在屏幕录制中允许）"
+});
+assertDeep(asrDenied, {
+  show: true,
+  cueText: "",
+  message: "系统音频未授权（请在屏幕录制中允许）"
+}, "asr denied message");
+
 const probing = cues.overlayState({
   enabled: true,
   cues: [],

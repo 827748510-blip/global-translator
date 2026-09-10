@@ -14,6 +14,8 @@ public final class TranslationSession {
     /// `DeepSeekBackend` after health adopts a different identifier.
     public var configuredModel: String { model }
     public private(set) var activeRevision: UInt64 = 0
+    /// Frontmost translated window, used by B2 window-audio capture.
+    public var currentWindow: ActiveWindowDescriptor? { activeWindow }
 
     private let monitor: any ActiveWindowMonitoring
     private let capture: any CapturePipelining

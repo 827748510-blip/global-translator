@@ -176,6 +176,7 @@
     const serviceError = !!(input && input.serviceError);
     const waitTimedOut = !!(input && input.waitTimedOut);
     const probed = !!(input && input.probed);
+    const asrHold = asrHoldOrMessage(input);
     const cue = activeCue(cues, time);
     if (cue) {
       const source = normalizeCueText(cue.text);
@@ -183,7 +184,7 @@
         // Live Chinese CC used to hide the pill AND stay `on wait`. After
         // probe, tell the user this track is already the target language.
         if (probed && !hasForeignCues(cues)) {
-          return { show: true, cueText: "", message: noForeignOverlayMessage(input, cues) };
+          return asrHold || { show: true, cueText: "", message: noForeignOverlayMessage(input, cues) };
         }
         return { show: false, cueText: "", message: "" };
       }
@@ -197,9 +198,21 @@
       return { show: false, cueText: "", message: "" };
     }
     if (probed && !hasForeignCues(cues)) {
-      return { show: true, cueText: "", message: noForeignOverlayMessage(input, cues) };
+      return asrHold || { show: true, cueText: "", message: noForeignOverlayMessage(input, cues) };
     }
     return { show: false, cueText: "", message: "" };
+  }
+
+  function asrHoldOrMessage(input) {
+    const asrStatus = input && input.asrStatus;
+    const asrMessage = input && input.asrMessage;
+    if (asrStatus === "running" && !asrMessage) {
+      return { show: false, cueText: "", message: "" };
+    }
+    if (typeof asrMessage === "string" && asrMessage) {
+      return { show: true, cueText: "", message: asrMessage };
+    }
+    return null;
   }
 
   /// Desktop /health is the source of truth. A transient lastError (service

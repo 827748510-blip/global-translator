@@ -43,6 +43,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
     static let maxBackendRetryAttempts = 30
     var applicationPicker: NSOpenPanel?
     var bridgeServer: ExtensionBridgeServer?
+    var videoASR: VideoAudioASRController?
 
     public init(
         paths: RuntimePaths,
@@ -84,6 +85,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         if settingsRequested { statusItem?.showSettings() }
         makeSession()
         makeSelectionTranslate()
+        makeVideoASR()
         startExtensionBridge()
         if configurationLoadFailed {
             viewModel.backendReady = false
@@ -126,6 +128,8 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         session = nil
         selectionTranslate?.setEnabled(false)
         selectionTranslate = nil
+        videoASR?.stop()
+        videoASR = nil
         bridgeServer?.stop()
         bridgeServer = nil
         statusItem?.stop()
@@ -262,6 +266,40 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         controller.setEnabled(configuration.selectionTranslateEnabled)
     }
 
+    func makeVideoASR() {
+        guard videoASR == nil else { return }
+        let support = WhisperCppLocator.candidatesForSupportDirectory(paths.whisperDirectory)
+        let scratch = paths.runtimeDirectory.appendingPathComponent("whisper-scratch", isDirectory: true)
+        videoASR = VideoAudioASRController(
+            permissions: components.permissionController,
+            locate: {
+                WhisperCppLocator.locate(
+                    extraBinaryCandidates: support.binaries,
+                    extraModelCandidates: support.models
+                )
+            },
+            capturer: ScreenCaptureKitSystemAudioCapturer(),
+            transcriber: WhisperCppTranscriber(
+                locate: {
+                    WhisperCppLocator.locate(
+                        extraBinaryCandidates: support.binaries,
+                        extraModelCandidates: support.models
+                    )
+                },
+                scratchDirectory: scratch
+            ),
+            windowProvider: { [weak self] in
+                await MainActor.run { self?.session?.currentWindow }
+            },
+            onEvent: { [weak self] code, fields in
+                Task { @MainActor in
+                    self?.components.logger.event(code, fields: fields)
+                }
+            }
+        )
+        videoASR?.setVideoTranslateEnabled(configuration.videoTranslateEnabled)
+    }
+
     func rebuildSession() {
         session?.stop()
         session = nil
@@ -278,6 +316,12 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             logger: components.logger,
             videoTranslateEnabled: { [weak self] in
                 self?.configuration.videoTranslateEnabled == true
+            },
+            videoASRSnapshot: { [weak self] in
+                self?.videoASR?.snapshot() ?? .idle
+            },
+            videoASRSetNeeded: { [weak self] needed in
+                self?.videoASR?.setCaptionsNeeded(needed)
             }
         ) { [weak self] texts in
             guard let session = self?.session else { throw ExtensionBridgeError.translatorUnavailable }

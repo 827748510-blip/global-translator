@@ -39,6 +39,8 @@ final class WindowVisualUpdates: NSObject, SCStreamOutput, @unchecked Sendable {
             configuration.minimumFrameInterval = CMTime(value: 1, timescale: 4)
             configuration.queueDepth = 3
             configuration.showsCursor = false
+            // Visual / OCR path only. Phase B2 system audio lives in
+            // SystemAudioCapture.swift on a separate SCStream.
             configuration.capturesAudio = false
             let stream = SCStream(filter: SCContentFilter(desktopIndependentWindow: window), configuration: configuration, delegate: nil)
             try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "GlobalTranslator.visualChanges", qos: .utility))

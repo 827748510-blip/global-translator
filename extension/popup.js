@@ -15,7 +15,7 @@ const Cues = (typeof GlobalTranslatorSubtitleCues !== "undefined")
 function setVideoExtrasVisible(on) {
   videoExtras.hidden = !on;
   videoHint.textContent = on
-    ? "视频翻译已开启。可选本地 SRT/VTT；不改原片。YouTube 请先打开播放器字幕，再叠简体中文。"
+    ? "视频翻译已开启。可选本地 SRT/VTT；不改原片。YouTube 请先打开播放器字幕；没有外语字幕时才走本机系统/窗口音频转写。"
     : "视频翻译开关在菜单栏设置，与「滑词翻译」同一行，默认关闭。";
 }
 

@@ -29,15 +29,20 @@ public struct ExtensionBridgeTranslation: Equatable, Sendable {
 /// listener never leaves the loopback interface.
 ///
 /// Protocol:
-///   GET  /health     -> 200 {"ok":true,"videoTranslateEnabled":Bool}
+///   GET  /health     -> 200 {"ok":true,"videoTranslateEnabled":Bool,"videoAsrStatus":String}
 ///   POST /translate  {"texts":[String]} -> 200
 ///                     {"translations":[String?], "retry":[Int]}
 ///                     null is a deliberate skip; `retry` lists indexes
 ///                     that failed transiently and should be asked again.
+///   POST /video-asr  {"needed":Bool?} -> 200 VideoASRSnapshot JSON
+///                     English ASR cues for the extension to POST /translate.
+///                     Audio never appears in this payload.
 ///   OPTIONS *        -> 204 with CORS headers for the extension origin.
 public final class ExtensionBridgeServer: @unchecked Sendable {
     public typealias TranslateHandler = @MainActor @Sendable ([String]) async throws -> ExtensionBridgeTranslation
     public typealias VideoTranslateEnabledHandler = @MainActor @Sendable () -> Bool
+    public typealias VideoASRSnapshotHandler = @MainActor @Sendable () -> VideoASRSnapshot
+    public typealias VideoASRNeededHandler = @MainActor @Sendable (Bool) -> Void
 
     /// Origin produced by the extension whose manifest pins the bundled key.
     /// The ID is what Chrome actually derives from the manifest key —
@@ -59,6 +64,8 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
     private let requestedPort: UInt16
     private let logger: (any AppRuntimeLogger)?
     private let videoTranslateEnabled: VideoTranslateEnabledHandler
+    private let videoASRSnapshot: VideoASRSnapshotHandler
+    private let videoASRSetNeeded: VideoASRNeededHandler
     private let handler: TranslateHandler
     private let queue = DispatchQueue(label: "global-translator.extension-bridge")
     private var listener: NWListener?
@@ -71,11 +78,15 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         port: UInt16 = ExtensionBridgeServer.defaultPort,
         logger: (any AppRuntimeLogger)? = nil,
         videoTranslateEnabled: @escaping VideoTranslateEnabledHandler = { false },
+        videoASRSnapshot: @escaping VideoASRSnapshotHandler = { .idle },
+        videoASRSetNeeded: @escaping VideoASRNeededHandler = { _ in },
         handler: @escaping TranslateHandler
     ) {
         self.requestedPort = port
         self.logger = logger
         self.videoTranslateEnabled = videoTranslateEnabled
+        self.videoASRSnapshot = videoASRSnapshot
+        self.videoASRSetNeeded = videoASRSetNeeded
         self.handler = handler
     }
 
@@ -201,15 +212,19 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
             Task { [weak self] in
                 guard let self else { return }
                 let enabled = await MainActor.run { self.videoTranslateEnabled() }
+                let asr = await MainActor.run { self.videoASRSnapshot() }
                 self.queue.async {
                     self.send(.json(status: 200, object: [
                         "ok": true,
-                        "videoTranslateEnabled": enabled
+                        "videoTranslateEnabled": enabled,
+                        "videoAsrStatus": asr.status.rawValue
                     ]), on: connection, origin: request.origin)
                 }
             }
         case ("POST", "/translate"):
             handleTranslate(request.body, origin: request.origin, on: connection)
+        case ("POST", "/video-asr"):
+            handleVideoASR(request.body, origin: request.origin, on: connection)
         default:
             send(.json(status: 404, object: ["error": "not found"]), on: connection, origin: request.origin)
         }
@@ -244,6 +259,28 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
                 response = .json(status: 500, object: ["error": "translation failed"])
             }
             self.queue.async { self.send(response, on: connection, origin: origin) }
+        }
+    }
+
+    private func handleVideoASR(_ body: Data, origin: String?, on connection: NWConnection) {
+        var needed: Bool?
+        if !body.isEmpty,
+           let payload = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+           let value = payload["needed"] as? Bool {
+            needed = value
+        }
+        logger?.event("video_asr_bridge", fields: [
+            "needed": needed.map { $0 ? "1" : "0" } ?? "poll"
+        ])
+        Task { [weak self] in
+            guard let self else { return }
+            if let needed {
+                await MainActor.run { self.videoASRSetNeeded(needed) }
+            }
+            let snapshot = await MainActor.run { self.videoASRSnapshot() }
+            self.queue.async {
+                self.send(.json(status: 200, object: snapshot.jsonObject()), on: connection, origin: origin)
+            }
         }
     }
 
