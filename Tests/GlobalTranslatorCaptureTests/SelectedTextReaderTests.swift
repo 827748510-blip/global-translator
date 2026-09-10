@@ -160,13 +160,31 @@ struct SelectedTextReaderTests {
     }
 
     @Test
-    func dragWithEmptyAXAndEmptyClipboardIsUnavailable() {
+    func dragWithEmptyAXAndEmptyClipboardStaysSilent() {
+        // Dragging a scroll bar / slider: no AX selection and ⌘C copies nothing.
+        // This must stay silent instead of flashing 无法读取所选文字.
         let ax = FakeSelectionAXReader(selectedText: "", range: (0, 0), bounds: nil)
         let clipboard = RecordingClipboardFallback(text: nil)
         let reader = AXSelectedTextReader(
             attributeReader: ax,
             clipboard: clipboard,
-            frontmostApplication: { FrontmostApplicationInfo(pid: 21, bundleIdentifier: "com.electron.lark") },
+            frontmostApplication: { FrontmostApplicationInfo(pid: 21, bundleIdentifier: "com.google.Chrome") },
+            primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
+        )
+        #expect(reader.readSelection(mouseLocation: .zero, allowClipboardFallback: true) == .empty)
+        #expect(clipboard.callCount == 1)
+    }
+
+    @Test
+    func dragWithPositiveRangeButNoTextStillReportsUnavailable() {
+        // AX claims a real selection it cannot produce text for, and ⌘C yields
+        // nothing: that is a genuine read failure, so keep surfacing it.
+        let ax = FakeSelectionAXReader(selectedText: "", range: (2, 11), bounds: CGRect(x: 0, y: 0, width: 40, height: 12))
+        let clipboard = RecordingClipboardFallback(text: nil)
+        let reader = AXSelectedTextReader(
+            attributeReader: ax,
+            clipboard: clipboard,
+            frontmostApplication: { FrontmostApplicationInfo(pid: 11, bundleIdentifier: "com.google.Chrome") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
         #expect(reader.readSelection(mouseLocation: .zero, allowClipboardFallback: true) == .unavailable)

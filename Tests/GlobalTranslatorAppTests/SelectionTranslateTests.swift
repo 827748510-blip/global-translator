@@ -755,6 +755,32 @@ struct SelectionTranslateControllerTests {
         #expect(!reader.lastAllowClipboardFallback)
     }
 
+    @Test
+    func clicksThatCannotReadDoNotTripDegradedMode() async throws {
+        let reader = FakeSelectedTextReader(result: .unavailable)
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        let controller = makeClockController(
+            reader: reader,
+            popover: popover,
+            translator: translator,
+            clock: { 0 }
+        )
+        controller.setEnabled(true)
+        // Five clicks that read nothing: only drag-selections may count toward
+        // the failure streak, otherwise tapping around locks the feature out.
+        for index in 0..<5 {
+            controller.handlePointer(.down, location: CGPoint(x: 10, y: 10))
+            controller.handlePointer(.up, location: CGPoint(x: 10, y: 10))
+            let expected = index + 1
+            try await waitUntil { reader.readCount >= expected }
+        }
+        #expect(popover.shown.isEmpty)
+        // Not degraded, so a real drag whose text cannot be read still surfaces.
+        dragSelect(controller)
+        try await waitUntil { popover.shown.contains { $0.status == .unavailable } }
+    }
+
     private func makeClockController(
         reader: FakeSelectedTextReader,
         popover: FakeSelectionPopover,

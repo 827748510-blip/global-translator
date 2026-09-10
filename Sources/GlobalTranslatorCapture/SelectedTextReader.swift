@@ -128,7 +128,11 @@ public struct AXSelectedTextReader: SelectedTextReading, @unchecked Sendable {
             }
         }
 
-        if candidates.isEmpty || allowClipboardFallback {
+        // A failed ⌘C (nothing was copied) means the drag landed on something
+        // with no selectable text — a scroll bar, a slider, window chrome — so
+        // stay silent. Report `.unavailable` only when AX exposes no element at
+        // all, or when it claims a selection it cannot produce text for.
+        if candidates.isEmpty || hasPositiveRange {
             return .unavailable
         }
         return .empty
