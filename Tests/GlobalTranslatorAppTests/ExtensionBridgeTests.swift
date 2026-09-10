@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Testing
 @testable import GlobalTranslatorApp
 import GlobalTranslatorCapture
@@ -357,15 +358,12 @@ struct ExtensionBridgeServerTests {
 
     @Test
     func videoAsrEndpointIsOriginGatedAndReportsSnapshot() async throws {
-        let lock = NSLock()
-        var neededFlag = false
+        let neededFlag = OSAllocatedUnfairLock(initialState: false)
         let server = ExtensionBridgeServer(
             port: 0,
             videoTranslateEnabled: { true },
             videoASRSnapshot: {
-                lock.lock()
-                let needed = neededFlag
-                lock.unlock()
+                let needed = neededFlag.withLock { $0 }
                 return VideoASRSnapshot(
                     enabled: true,
                     needed: needed,
@@ -377,9 +375,7 @@ struct ExtensionBridgeServerTests {
                 )
             },
             videoASRSetNeeded: { value in
-                lock.lock()
-                neededFlag = value
-                lock.unlock()
+                neededFlag.withLock { $0 = value }
             }
         ) { texts in ExtensionBridgeTranslation(translations: texts.map { $0 }) }
         server.start()
