@@ -196,9 +196,7 @@ struct ExtensionBridgeServerTests {
     @Test
     func allowedOriginStaysPinnedToTheShippedExtensionId() {
         #expect(ExtensionBridgeServer.allowedOrigin == "chrome-extension://fjggaipmhcfmgikhkjppkdliaoopaefc")
-        #expect(ExtensionBridgeServer.sideloadOrigin == "chrome-extension://fignfifoniblkonapihmkfakmlgkbkcf")
-        #expect(ExtensionBridgeServer.allowedOrigins.contains(ExtensionBridgeServer.allowedOrigin))
-        #expect(ExtensionBridgeServer.allowedOrigins.contains(ExtensionBridgeServer.sideloadOrigin))
+        #expect(ExtensionBridgeServer.allowedOrigins == [ExtensionBridgeServer.allowedOrigin])
     }
     private func waitForPort(_ server: ExtensionBridgeServer) async -> UInt16? {
         for _ in 0..<200 {
@@ -293,24 +291,22 @@ struct ExtensionBridgeServerTests {
     }
 
     @Test
-    func sideloadOriginIsAcceptedAndEchoed() async throws {
+    func legacySideloadOriginIsRejected() async throws {
         let server = ExtensionBridgeServer(port: 0) { texts in ExtensionBridgeTranslation(translations: texts.map { "译:" + $0 }) }
         server.start()
         defer { server.stop() }
         let port = try await #require(waitForPort(server))
         let body = try JSONSerialization.data(withJSONObject: ["texts": ["hello"]])
-        let urlRequest = request(port, method: "POST", path: "/translate",
-                                 origin: ExtensionBridgeServer.sideloadOrigin, body: body)
-        let (data, response) = try await URLSession(configuration: .ephemeral).data(for: urlRequest)
-        #expect((response as? HTTPURLResponse)?.statusCode == 200)
-        #expect((response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Access-Control-Allow-Origin") == ExtensionBridgeServer.sideloadOrigin)
-        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-        #expect((object["translations"] as? [String]) == ["译:hello"])
+        // The extension now ships with exactly one whitelisted origin; the old
+        // sideload ID must no longer reach the bridge.
+        let legacy = "chrome-extension://fignfifoniblkonapihmkfakmlgkbkcf"
+        let urlRequest = request(port, method: "POST", path: "/translate", origin: legacy, body: body)
+        let (_, response) = try await URLSession(configuration: .ephemeral).data(for: urlRequest)
+        #expect((response as? HTTPURLResponse)?.statusCode == 403)
 
-        let preflight = request(port, method: "OPTIONS", path: "/translate", origin: ExtensionBridgeServer.sideloadOrigin)
+        let preflight = request(port, method: "OPTIONS", path: "/translate", origin: legacy)
         let (_, preflightResponse) = try await URLSession(configuration: .ephemeral).data(for: preflight)
-        #expect((preflightResponse as? HTTPURLResponse)?.statusCode == 204)
-        #expect((preflightResponse as? HTTPURLResponse)?.value(forHTTPHeaderField: "Access-Control-Allow-Origin") == ExtensionBridgeServer.sideloadOrigin)
+        #expect((preflightResponse as? HTTPURLResponse)?.statusCode == 403)
     }
 
     @Test
