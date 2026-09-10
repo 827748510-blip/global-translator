@@ -55,6 +55,9 @@ public final class TranslationSession {
     private var confirmedRevision: UInt64?
     private var confirmedRegions: [TextRegion] = []
     private var deferredOutput: EngineOutput?
+    /// Dedicated 滑词 coordinator still has a monotonic revision gate.
+    /// Chunked selections must never restart at 1, or the next selection is stale.
+    private var selectionRevision: UInt64 = 0
 
     public init(
         monitor: any ActiveWindowMonitoring,
@@ -288,12 +291,12 @@ public final class TranslationSession {
         await coordinator.selectBackend(kind: backend, modelIdentifier: model)
         var parts: [String] = []
         parts.reserveCapacity(plan.chunks.count)
-        for (offset, chunk) in plan.chunks.enumerated() {
+        for chunk in plan.chunks {
             try Task.checkCancellation()
             let translated = try await translateOneSelectionChunk(
                 chunk,
                 coordinator: coordinator,
-                revision: UInt64(offset + 1)
+                revision: nextSelectionRevision()
             )
             parts.append(translated)
         }
@@ -343,6 +346,11 @@ public final class TranslationSession {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let translated, !translated.isEmpty else { throw SelectionTranslateError.emptyResult }
         return translated
+    }
+
+    private func nextSelectionRevision() -> UInt64 {
+        selectionRevision &+= 1
+        return selectionRevision
     }
 
     private static func runSelectionTranslate(
