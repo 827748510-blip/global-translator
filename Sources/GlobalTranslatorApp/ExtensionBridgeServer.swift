@@ -50,10 +50,9 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
     /// Chrome for Testing 151 with a fresh profile loading `extension/`:
     /// the live isolated-world origin is `fjggaipmhcfmgikhkjppkdliaoopaefc`.
     public static let allowedOrigin = "chrome-extension://fjggaipmhcfmgikhkjppkdliaoopaefc"
-    /// Chrome `--load-extension` sideload sometimes derives this ID even
-    /// when the manifest key is present (Chrome 152 experiment leftover).
-    public static let sideloadOrigin = "chrome-extension://fignfifoniblkonapihmkfakmlgkbkcf"
-    public static let allowedOrigins: Set<String> = [allowedOrigin, sideloadOrigin]
+    /// Exactly one accepted origin: the shipped extension. The legacy sideload
+    /// ID is deliberately not whitelisted any more.
+    public static let allowedOrigins: Set<String> = [allowedOrigin]
     public static let defaultPort: UInt16 = 9_233
 
     private static let maximumHeaderBytes = 16_384
