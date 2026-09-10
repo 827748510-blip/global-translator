@@ -337,6 +337,25 @@ struct SelectionSourceChunkingTests {
         #expect(SelectionTranslateSupport.joinTranslatedChunks(["你好，世界"]) == "你好，世界")
     }
 
+    @Test
+    func limitSelectionSourceKeepsEveryCharacterUnderTheHardCap() {
+        let text = String(repeating: "Hello world. ", count: 400)
+        #expect(text.count == 5_200)
+        let limited = SelectionTranslateSupport.limitSelectionSource(text)
+        #expect(limited.text == text)
+        #expect(limited.text.count == 5_200)
+        #expect(!limited.didTruncate)
+        let exact = String(repeating: "a", count: SelectionTranslateSupport.selectionHardLimitCharacters)
+        let atLimit = SelectionTranslateSupport.limitSelectionSource(exact)
+        #expect(atLimit.text.count == SelectionTranslateSupport.selectionHardLimitCharacters)
+        #expect(!atLimit.didTruncate)
+        let over = exact + "x"
+        let capped = SelectionTranslateSupport.limitSelectionSource(over)
+        #expect(capped.didTruncate)
+        #expect(capped.text.count == SelectionTranslateSupport.selectionHardLimitCharacters)
+        #expect(capped.text == exact)
+    }
+
     private func longEnglish(characters: Int) -> String {
         let unit = "A cinematic wide shot of a girl standing in the rain on a city street at night. "
         var text = ""

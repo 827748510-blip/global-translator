@@ -34,7 +34,10 @@ struct SelectedTextReaderTests {
 
     @Test
     func longSelectionIsNotSilentlyCappedAtFourThousand() {
-        let text = String(repeating: "Hello world. ", count: 400)
+        // `"Hello world. " × 400` is 5200 scalars, but AX read trims
+        // whitespace, so a trailing space is not a cap off-by-one.
+        let text = String(repeating: "Hello world.", count: 434)
+        #expect(text.count == 5_208)
         #expect(text.count > SelectionTranslateSupport.maxSourceCharacters)
         let ax = FakeSelectionAXReader(
             selectedText: text,
@@ -51,7 +54,33 @@ struct SelectedTextReaderTests {
             Issue.record("expected snapshot")
             return
         }
+        #expect(snapshot.text == text)
         #expect(snapshot.text.count == text.count)
+        #expect(!snapshot.sourceWasCapped)
+    }
+
+    @Test
+    func longSelectionTrimsTrailingWhitespaceWithoutHittingTheCap() {
+        let padded = String(repeating: "Hello world. ", count: 400)
+        #expect(padded.count == 5_200)
+        let ax = FakeSelectionAXReader(
+            selectedText: padded,
+            range: (0, padded.count),
+            bounds: CGRect(x: 10, y: 20, width: 80, height: 16)
+        )
+        let reader = AXSelectedTextReader(
+            attributeReader: ax,
+            clipboard: RecordingClipboardFallback(text: "should-not-use"),
+            frontmostApplication: { FrontmostApplicationInfo(pid: 42, bundleIdentifier: "com.apple.TextEdit") },
+            primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 1440, height: 900) }
+        )
+        guard case .snapshot(let snapshot) = reader.readSelection(mouseLocation: CGPoint(x: 40, y: 40)) else {
+            Issue.record("expected snapshot")
+            return
+        }
+        let trimmed = padded.trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(trimmed.count == 5_199)
+        #expect(snapshot.text == trimmed)
         #expect(!snapshot.sourceWasCapped)
     }
 
