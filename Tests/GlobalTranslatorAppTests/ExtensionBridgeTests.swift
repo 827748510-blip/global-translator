@@ -83,6 +83,8 @@ struct ExtensionBridgeServerTests {
         #expect(source.contains("enqueueBridgeFetch(() =>"))
         #expect(source.contains("retry: Array.isArray(payload.retry) ? payload.retry : []"))
         #expect(source.contains("payload.videoTranslateEnabled === true"))
+        #expect(source.contains("message.type === \"ping\""))
+        #expect(!source.contains("enqueueBridgeFetch(() =>\n      fetch(ENDPOINT + \"/health\""))
     }
 
     @Test
@@ -93,8 +95,8 @@ struct ExtensionBridgeServerTests {
             .deletingLastPathComponent()
             .appendingPathComponent("extension/manifest.json")
         let source = try String(contentsOf: url, encoding: .utf8)
-        #expect(source.contains("\"version\": \"1.0.8\""))
-        #expect(!source.contains("\"version\": \"1.0.7\""))
+        #expect(source.contains("\"version\": \"1.0.9\""))
+        #expect(!source.contains("\"version\": \"1.0.8\""))
         #expect(source.contains("\"js\": [\"text-filter.js\", \"subtitle-cues.js\", \"youtube-captions.js\", \"content.js\", \"video-translate.js\"]"))
         #expect(source.contains("youtube-captions-page.js"))
         #expect(source.contains("\"world\": \"MAIN\""))
@@ -156,6 +158,10 @@ struct ExtensionBridgeServerTests {
         #expect(!videoJs.contains("html5-main-video, video"))
         #expect(videoJs.contains("syncFromDom"))
         #expect(videoJs.contains("lane: \"video\""))
+        #expect(videoJs.contains("desktopVideoPrefFromPing"))
+        #expect(videoJs.contains("CUE_WAIT_MS"))
+        #expect(cuesJs.contains("desktopVideoPrefFromPing"))
+        #expect(youtubeJs.contains("\"skip\""))
         #expect(!videoJs.contains("all:initial"))
         #expect(youtubePage.contains("data-gt-ytcap"))
         #expect(youtubeJs.contains("adoptLiveCaption"))
@@ -698,6 +704,30 @@ extension ApplicationControllerTests {
             nil, nil, nil
         ])
         #expect(result.retryIndexes == [3, 4, 5])
+        await controller.stop()
+    }
+
+    @Test
+    func deepSeekBridgeInvalidJSONReturnsRetryInsteadOfThrowing() async throws {
+        let coordinator = ThrowingJSONCoordinator()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: true, backend: .deepSeekCloud, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store,
+                permission: FakePermissionController(snapshot: PermissionSnapshot(
+                    accessibilityTrusted: false, screenCaptureAuthorized: false,
+                    secureInputEnabled: false, sessionLocked: false)),
+                coordinator: coordinator
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        let result = try await session.translateBridgeTexts(["Hello from a youtube cue now"])
+        #expect(result.translations == [nil])
+        #expect(result.retryIndexes == [0])
         await controller.stop()
     }
 

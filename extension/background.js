@@ -44,18 +44,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "ping") {
     // POST so Chrome attaches `Origin: chrome-extension://<id>` — the app
     // rejects origin-less GETs, which is exactly what a plain fetch is.
-    enqueueBridgeFetch(() =>
-      fetch(ENDPOINT + "/health", { method: "POST" })
-        .then(async (response) => {
-          let videoTranslateEnabled = false;
-          try {
-            const payload = await response.json();
-            videoTranslateEnabled = payload.videoTranslateEnabled === true;
-          } catch (_error) {}
-          sendResponse({ ok: response.ok, videoTranslateEnabled });
-        })
-        .catch(() => sendResponse({ ok: false, videoTranslateEnabled: false }))
-    );
+    // Health does not touch Ollama/DeepSeek; never queue it behind page or
+    // video /translate or Chrome's sendResponse channel times out and the
+    // content script used to clobber storage.local to false.
+    fetch(ENDPOINT + "/health", { method: "POST" })
+      .then(async (response) => {
+        let videoTranslateEnabled = false;
+        try {
+          const payload = await response.json();
+          videoTranslateEnabled = payload.videoTranslateEnabled === true;
+        } catch (_error) {}
+        sendResponse({ ok: response.ok, videoTranslateEnabled });
+      })
+      .catch(() => sendResponse({ ok: false, videoTranslateEnabled: false }));
     return true;
   }
   return false;

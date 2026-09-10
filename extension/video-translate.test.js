@@ -71,9 +71,18 @@ assert(youtubePage.indexOf("setOption") === -1, "never enable captions via playe
 assert(youtubePage.indexOf("loadModule") === -1, "never load caption module");
 assert(background.indexOf("ENDPOINT + \"/translate\"") !== -1, "backend translate path unchanged");
 
-assert(manifest.indexOf("\"version\": \"1.0.8\"") !== -1, "manifest version");
+assert(manifest.indexOf("\"version\": \"1.0.9\"") !== -1, "manifest version");
 assert(background.indexOf("importScripts(\"bridge-queue.js\")") !== -1, "background loads bridge queue");
 assert(background.indexOf("message.lane === \"video\"") !== -1, "background honors video lane");
+assert(background.indexOf("message.type === \"ping\"") !== -1, "background health ping");
+assert(background.indexOf("enqueueBridgeFetch(() =>\n      fetch(ENDPOINT + \"/health\"") === -1, "health ping is not queued behind translate");
+assert(videoJs.indexOf("desktopVideoPrefFromPing") !== -1, "content uses ping decision helper");
+assert(videoJs.indexOf("applyDesktopVideoPref") !== -1, "content applies desktop pref immediately");
+assert(videoJs.indexOf("if (!enabled) start()") !== -1, "repeated health true does not restart probe");
+assert(videoJs.indexOf("CUE_WAIT_MS") !== -1, "foreign cue wait timeout");
+assert(videoJs.indexOf("waitTimedOut") !== -1, "overlay gets wait timeout");
+assert(cuesSource.indexOf("desktopVideoPrefFromPing") !== -1, "ping helper is shared");
+assert(youtubeJs.indexOf("\"skip\"") !== -1, "debug bits can skip chinese cues");
 assert(youtubePage.indexOf("data-gt-ytcap") !== -1, "page script marks injection");
 assert(manifest.indexOf("subtitle-cues.js") !== -1, "manifest loads cue helper");
 assert(manifest.indexOf("youtube-captions.js") !== -1, "manifest loads youtube helper");
@@ -116,5 +125,15 @@ const mid = cues.overlayState({
 });
 assertEqual(mid.cueText, "来自轨道的问候", "translated overlay text");
 assertEqual(mid.message, "", "no failure message when translated");
+
+const docs = fs.readFileSync(path.join(dir, "../docs/video-translate.md"), "utf8");
+assert(docs.indexOf("Ks-_Mh1QhMc") !== -1, "docs keep TED english fixture");
+assert(docs.indexOf("iJ53c1zKgr8") !== -1, "docs still list corridor video");
+assert(docs.indexOf("英语>>中文") !== -1, "docs distinguish youtube UI machine translation");
+assert(docs.indexOf("English (auto-generated)") !== -1, "corridor live path is auto english");
+assert(docs.indexOf("走廊片中文轨") === -1, "docs no longer treat corridor as native zh track");
+assert(docs.indexOf("不要用走廊片当 skip") !== -1, "docs say skip is not the corridor fixture");
+const youtubeCaptionsTest = fs.readFileSync(path.join(dir, "youtube-captions.test.js"), "utf8");
+assert(youtubeCaptionsTest.indexOf("Do not treat YouTube iJ53c1zKgr8") !== -1, "unit skip fixture is not the corridor watch page");
 
 console.log("extension/video-translate.test.js ok");

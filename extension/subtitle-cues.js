@@ -131,7 +131,17 @@
     const letters = String(value || "").replace(/[\s\d.,!?;:'"()[\]{}<>/~@#$%^&*+=_|\\-]/g, "");
     if (!letters) return false;
     const cjk = (letters.match(/[\u3400-\u9FFF]/g) || []).length;
-    return cjk / letters.length >= 0.8;
+    const kana = (letters.match(/[\u3040-\u30FF]/g) || []).length;
+    const hangul = (letters.match(/[\u1100-\u11FF\uAC00-\uD7AF]/g) || []).length;
+    if (kana > 0 || hangul > 0) return false;
+    if (cjk / letters.length >= 0.8) return true;
+    // Long CJK captions with a few Latin names (hotel, Aethos) are still
+    // already the target language — do not send them to /translate.
+    if (cjk >= 8) {
+      const latin = (letters.match(/[A-Za-z\u00C0-\u024F]/g) || []).length;
+      return latin === 0 || cjk / (cjk + latin) >= 0.6;
+    }
+    return false;
   }
 
   function shouldSendForVideoTranslate(text) {
@@ -149,6 +159,12 @@
     return false;
   }
 
+  function noForeignOverlayMessage(input, cues) {
+    const empty = !cues || cues.length === 0;
+    if (empty && input && input.noForeignMessage) return input.noForeignMessage;
+    return MESSAGES.noForeign;
+  }
+
   function overlayState(input) {
     const enabled = !!(input && input.enabled);
     if (!enabled) {
@@ -158,14 +174,20 @@
     const time = input && input.time;
     const translations = (input && input.translations) || {};
     const serviceError = !!(input && input.serviceError);
+    const waitTimedOut = !!(input && input.waitTimedOut);
     const probed = !!(input && input.probed);
     const cue = activeCue(cues, time);
     if (cue) {
       const source = normalizeCueText(cue.text);
       if (!shouldSendForVideoTranslate(source)) {
+        // Live Chinese CC used to hide the pill AND stay `on wait`. After
+        // probe, tell the user this track is already the target language.
+        if (probed && !hasForeignCues(cues)) {
+          return { show: true, cueText: "", message: noForeignOverlayMessage(input, cues) };
+        }
         return { show: false, cueText: "", message: "" };
       }
-      if (serviceError) {
+      if (serviceError || waitTimedOut) {
         return { show: true, cueText: "", message: MESSAGES.serviceUnavailable };
       }
       const translated = translations[source];
@@ -175,13 +197,20 @@
       return { show: false, cueText: "", message: "" };
     }
     if (probed && !hasForeignCues(cues)) {
-      const empty = cues.length === 0;
-      const message = empty && input && input.noForeignMessage
-        ? input.noForeignMessage
-        : MESSAGES.noForeign;
-      return { show: true, cueText: "", message };
+      return { show: true, cueText: "", message: noForeignOverlayMessage(input, cues) };
     }
     return { show: false, cueText: "", message: "" };
+  }
+
+  /// Desktop /health is the source of truth. A transient lastError (service
+  /// worker busy, message channel timeout) must not write false over true.
+  function desktopVideoPrefFromPing(response, lastError) {
+    if (lastError) return { write: false, enabled: false };
+    if (!response) return { write: false, enabled: false };
+    if (response.ok === true) {
+      return { write: true, enabled: response.videoTranslateEnabled === true };
+    }
+    return { write: true, enabled: false };
   }
 
   const api = {
@@ -196,7 +225,9 @@
     activeCue,
     shouldSendForVideoTranslate,
     hasForeignCues,
-    overlayState
+    overlayState,
+    desktopVideoPrefFromPing,
+    isMostlySimplifiedChinese
   };
   root.GlobalTranslatorSubtitleCues = api;
   if (typeof module !== "undefined" && module.exports) {

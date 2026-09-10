@@ -37,7 +37,7 @@ global-translator stop
 
 ## Chrome 扩展
 
-仓库 `extension/` 是配套的 **Global Translator Bridge**。整页翻译默认开启；**视频翻译** 在菜单栏设置里与「滑词翻译」同一行，默认关闭。启用后把 HTML5 `video.textTracks`、可选本地 SRT/VTT，或 YouTube 用户已打开的字幕 / 本会话 timedtext 译成简体中文叠在画面上，走桌面端已有 `POST /translate` 桥，不做语音识别。加载方式、YouTube 范围与验收步骤见 [视频翻译](docs/video-translate.md)。
+仓库 `extension/` 是配套的 **Global Translator Bridge**。整页翻译默认开启；**视频翻译** 在菜单栏设置里与「滑词翻译」同一行，默认关闭。启用后把 HTML5 `video.textTracks`、可选本地 SRT/VTT，或 YouTube 用户已打开的字幕 / 本会话 timedtext 译成简体中文叠在画面上；已是简体中文的轨会跳过 `/translate`。走桌面端已有 `POST /translate` 桥，不做语音识别。加载方式、YouTube 范围与验收步骤见 [视频翻译](docs/video-translate.md)。
 
 开发调试可执行：
 

@@ -212,7 +212,8 @@ const hiddenWhileEnglishCc = cues.overlayState({
   translations: {},
   probed: true
 });
-assertEqual(hiddenWhileEnglishCc.show, false, "english CC visible, overlay missing when timedtext is chinese");
+assertEqual(hiddenWhileEnglishCc.show, true, "chinese-only timedtext is no-foreign not a silent wait");
+assertEqual(hiddenWhileEnglishCc.message, "未检测到外语内容", "leftover chinese timedtext does not pretend to wait for zh");
 const chosen = yt.selectCues(timedChinese, liveVisible, 412.4);
 assertEqual(chosen[0].text, visibleCc, "visible english CC wins over leftover timedtext");
 const waitingForCueTranslate = cues.overlayState({
@@ -243,6 +244,51 @@ const tedBits = yt.overlayDebugBits({
 assert(tedBits.indexOf("on") !== -1 && tedBits.indexOf("zh") !== -1, "retest bits include on zh");
 assert(tedBits.indexOf("pw1") !== -1 && tedBits.indexOf("dom1") !== -1, "retest bits include pw1 dom1");
 assert(tedBits.indexOf("Dana") === -1 && tedBits.indexOf("collaborator") === -1, "bits omit cue text");
+
+// Native-zh live cue (synthetic). Do not treat YouTube iJ53c1zKgr8 as this
+// fixture: that video is English auto-generated CC; 「英语>>中文」 is UI MT.
+const nativeZhCaption = "我很兴奋能去一个有空调的地方。酒店就";
+const nativeZhLive = yt.liveCueFromNow(nativeZhCaption, 12);
+const englishTimed = [{
+  start: 10,
+  end: 20,
+  text: "I am so excited to go somewhere with air conditioning."
+}];
+assertEqual(
+  yt.selectCues(englishTimed, nativeZhLive, 12)[0].text,
+  englishTimed[0].text,
+  "prefer foreign timedtext over chinese live CC"
+);
+assertEqual(
+  yt.selectCues([{ start: 10, end: 20, text: nativeZhCaption }], nativeZhLive, 12)[0].text,
+  nativeZhCaption,
+  "zh-only live stays when timedtext is also chinese"
+);
+assertEqual(
+  yt.selectCues([], nativeZhLive, 12)[0].text,
+  nativeZhCaption,
+  "zh-only live with no timedtext"
+);
+assertEqual(cues.shouldSendForVideoTranslate(nativeZhCaption), false, "native zh cue is not sent to /translate");
+const nativeZhState = cues.overlayState({
+  enabled: true,
+  cues: nativeZhLive,
+  time: 12,
+  translations: {},
+  probed: true
+});
+assertEqual(nativeZhState.message, "未检测到外语内容", "zh live cue shows no-foreign");
+assertEqual(nativeZhState.cueText, "", "zh live cue does not invent a translation");
+const skipBits = yt.overlayDebugBits({
+  cues: nativeZhLive,
+  time: 12,
+  translations: {},
+  pageWorld: true,
+  dom: true
+});
+assert(skipBits.indexOf("on") !== -1 && skipBits.indexOf("skip") !== -1, "chinese live is on skip");
+assert(skipBits.indexOf("wait") === -1, "chinese live must not stick on wait");
+assert(skipBits.indexOf("zh") === -1, "chinese live skip is not a fake zh hit");
 
 assertEqual(yt.parseTimedText(")]}'\n" + json3)[0].text, "Hello from YouTube", "json3 xssi prefix");
 

@@ -222,7 +222,21 @@ public final class TranslationSession {
             }
             return ExtensionBridgeTranslation(translations: results, retryIndexes: retryIndexes)
         }
-        return ExtensionBridgeTranslation(translations: try await translateBridgeSlice(capped))
+        do {
+            return ExtensionBridgeTranslation(translations: try await translateBridgeSlice(capped))
+        } catch let error as ExtensionBridgeError {
+            throw error
+        } catch {
+            // Invalid model JSON used to 500 the whole /translate call, so
+            // video cues stayed on `wait` with an empty overlay. Return retry
+            // indexes like the local path; the extension can wait, then show
+            // 翻译服务不可用 without stopping playback.
+            logger.event("bridge_item_failed", fields: ["reason": String(describing: error)])
+            return ExtensionBridgeTranslation(
+                translations: Array(repeating: nil, count: capped.count),
+                retryIndexes: Array(capped.indices)
+            )
+        }
     }
 
     private func translateBridgeSlice(_ texts: [String]) async throws -> [String?] {

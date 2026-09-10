@@ -80,6 +80,8 @@ assertEqual(cues.shouldSendForVideoTranslate("これは日本語です"), true, 
 assertEqual(cues.shouldSendForVideoTranslate("안녕하세요"), true, "korean");
 assertEqual(cues.shouldSendForVideoTranslate("这是中文"), false, "chinese skipped");
 assertEqual(cues.shouldSendForVideoTranslate("你好世界！"), false, "chinese punct");
+assertEqual(cues.shouldSendForVideoTranslate("我很兴奋能去一个有空调的地方。酒店就"), false, "native zh cue skipped");
+assertEqual(cues.shouldSendForVideoTranslate("我很兴奋能去 Aethos 酒店住一晚"), false, "chinese with latin name");
 assertEqual(cues.shouldSendForVideoTranslate(""), false, "empty");
 assertEqual(cues.hasForeignCues(srtCues), true, "srt has foreign");
 assertEqual(cues.hasForeignCues([{ start: 0, end: 1, text: "你好" }]), false, "chinese only");
@@ -119,6 +121,15 @@ const failed = cues.overlayState({
 });
 assertDeep(failed, { show: true, cueText: "", message: "翻译服务不可用" }, "service failure");
 
+const waitTimedOut = cues.overlayState({
+  enabled: true,
+  cues: srtCues,
+  time: 2,
+  translations: {},
+  waitTimedOut: true
+});
+assertDeep(waitTimedOut, { show: true, cueText: "", message: "翻译服务不可用" }, "cue wait timeout");
+
 const chineseActive = cues.overlayState({
   enabled: true,
   cues: srtCues,
@@ -127,6 +138,19 @@ const chineseActive = cues.overlayState({
   probed: true
 });
 assertDeep(chineseActive, { show: false, cueText: "", message: "" }, "keep original chinese cue");
+
+const nativeZhActive = cues.overlayState({
+  enabled: true,
+  cues: [{ start: 10, end: 20, text: "我很兴奋能去一个有空调的地方。酒店就" }],
+  time: 12,
+  translations: {},
+  probed: true
+});
+assertDeep(nativeZhActive, {
+  show: true,
+  cueText: "",
+  message: "未检测到外语内容"
+}, "zh-only live cue is no-foreign not silent wait");
 
 const youtubeHint = cues.overlayState({
   enabled: true,
@@ -161,5 +185,16 @@ const betweenCues = cues.overlayState({
   probed: true
 });
 assertDeep(betweenCues, { show: false, cueText: "", message: "" }, "hide between foreign cues");
+
+assertDeep(cues.desktopVideoPrefFromPing({ ok: true, videoTranslateEnabled: true }, null),
+  { write: true, enabled: true }, "health true writes on");
+assertDeep(cues.desktopVideoPrefFromPing({ ok: true, videoTranslateEnabled: false }, null),
+  { write: true, enabled: false }, "health false writes off");
+assertDeep(cues.desktopVideoPrefFromPing({ ok: false, videoTranslateEnabled: false }, null),
+  { write: true, enabled: false }, "desktop down writes off");
+assertDeep(cues.desktopVideoPrefFromPing({ ok: true, videoTranslateEnabled: true }, { message: "timeout" }),
+  { write: false, enabled: false }, "lastError must not clobber");
+assertDeep(cues.desktopVideoPrefFromPing(undefined, null),
+  { write: false, enabled: false }, "missing response does not write");
 
 console.log("extension/subtitle-cues.test.js ok");

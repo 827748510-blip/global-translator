@@ -305,11 +305,18 @@
     const cue = Cues && Number.isFinite(time) ? Cues.activeCue(cues, time) : null;
     const source = Cues && cue ? Cues.normalizeCueText(cue.text) : "";
     const hasZh = !!(source && translations[source]);
+    const foreign = !!(source && Cues && Cues.shouldSendForVideoTranslate(source));
+    let trans = "idle";
+    if (cue) {
+      if (!foreign) trans = "skip";
+      else if (hasZh) trans = "zh";
+      else trans = "wait";
+    }
     return [
       "c" + cues.length,
       Number.isFinite(time) ? "t" + Math.floor(time) : "t-",
       cue ? "on" : "off",
-      hasZh ? "zh" : "wait",
+      trans,
       input && input.pageWorld === true ? "pw1" : "pw0",
       input && input.dom === true ? "dom1" : "dom0"
     ].join(" ");
@@ -324,18 +331,25 @@
     liveCues = adoptLiveCaption(liveCues, text, time);
   }
 
+  function isForeignCue(cue) {
+    return !!(cue && Cues && Cues.shouldSendForVideoTranslate(cue.text));
+  }
+
   function selectCues(timed, live, time) {
     const timedList = Array.isArray(timed) ? timed : [];
     const liveList = Array.isArray(live) ? live : [];
     const t = Number(time);
-    // On-screen CC is the source of truth. A leftover / other-language
-    // timedtext cue at the same clock must not hide the English overlay path.
-    if (liveList.length > 0 && Cues && Number.isFinite(t) && Cues.activeCue(liveList, t)) {
-      return liveList;
-    }
+    const liveActive = Cues && Number.isFinite(t) ? Cues.activeCue(liveList, t) : null;
+    const timedActive = Cues && Number.isFinite(t) ? Cues.activeCue(timedList, t) : null;
+    // Visible English still wins leftover Chinese timedtext. Already-Chinese
+    // live CC must not hide a foreign timedtext cue at the same clock, and
+    // must not look like a foreign cue pending /translate (`on wait`).
+    if (isForeignCue(liveActive)) return liveList;
+    if (isForeignCue(timedActive)) return timedList;
+    if (liveActive) return liveList;
     if (timedList.length === 0) return liveList;
     if (!Number.isFinite(t)) return timedList;
-    if (Cues && Cues.activeCue(timedList, t)) return timedList;
+    if (timedActive) return timedList;
     return timedList;
   }
 
