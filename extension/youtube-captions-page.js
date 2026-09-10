@@ -210,6 +210,7 @@
 
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
+    if (event.origin !== location.origin) return;
     const data = event.data;
     if (!data || data.source !== SOURCE_ISOLATED) return;
     if (data.kind === "hello") {

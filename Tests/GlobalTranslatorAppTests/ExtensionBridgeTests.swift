@@ -945,3 +945,39 @@ extension ApplicationControllerTests {
         await controller.stop()
     }
 }
+
+struct BridgeRateLimiterTests {
+    @Test
+    func burstIsAllowedThenThrottled() {
+        let limiter = BridgeRateLimiter(capacity: 3, refillPerSecond: 0, now: { 0 })
+        #expect(limiter.allow())
+        #expect(limiter.allow())
+        #expect(limiter.allow())
+        #expect(!limiter.allow())
+    }
+
+    @Test
+    func tokensRefillOverTime() {
+        var clock: TimeInterval = 0
+        let limiter = BridgeRateLimiter(capacity: 2, refillPerSecond: 1, now: { clock })
+        #expect(limiter.allow())
+        #expect(limiter.allow())
+        #expect(!limiter.allow())
+        clock = 1
+        #expect(limiter.allow())
+        #expect(!limiter.allow())
+    }
+
+    @Test
+    func refillIsCappedAtCapacity() {
+        var clock: TimeInterval = 0
+        let limiter = BridgeRateLimiter(capacity: 2, refillPerSecond: 10, now: { clock })
+        #expect(limiter.allow())
+        #expect(limiter.allow())
+        #expect(!limiter.allow())
+        clock = 100
+        #expect(limiter.allow())
+        #expect(limiter.allow())
+        #expect(!limiter.allow())
+    }
+}

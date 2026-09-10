@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import os
 import UniformTypeIdentifiers
 import GlobalTranslatorCapture
 import GlobalTranslatorCore
@@ -528,10 +529,13 @@ extension ApplicationController {
 }
 
 private final class InMemoryCredentialStore: CredentialStoring, @unchecked Sendable {
-    private var value: String?
+    private let value: OSAllocatedUnfairLock<String?>
 
-    init(value: String?) { self.value = value }
-    func save(apiKey: String) throws { value = apiKey }
-    func read() throws -> String? { value }
-    func delete() throws { value = nil }
+    init(value: String?) {
+        self.value = OSAllocatedUnfairLock(initialState: value)
+    }
+
+    func save(apiKey: String) throws { value.withLock { $0 = apiKey } }
+    func read() throws -> String? { value.withLock { $0 } }
+    func delete() throws { value.withLock { $0 = nil } }
 }
