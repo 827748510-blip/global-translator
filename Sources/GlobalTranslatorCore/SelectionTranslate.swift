@@ -21,6 +21,100 @@ public enum SelectionPointerAction: Equatable, Sendable {
     case ignore
 }
 
+/// Explainable features of a single press→drag→release gesture. Only geometry
+/// and timing are recorded — never the selected text or any app content.
+public struct SelectionGestureFeatures: Equatable, Sendable {
+    /// Largest straight-line distance from the press point.
+    public let maxOffset: CGFloat
+    /// Accumulated path length travelled while the button was down.
+    public let totalTravel: CGFloat
+    /// Number of mouse-dragged samples seen during the press.
+    public let dragEventCount: Int
+    /// Press-to-release duration in seconds.
+    public let duration: TimeInterval
+    /// Longest gap between two consecutive samples (a hand resting mid-drag).
+    public let longestStall: TimeInterval
+
+    public static let empty = SelectionGestureFeatures()
+
+    public init(
+        maxOffset: CGFloat = 0,
+        totalTravel: CGFloat = 0,
+        dragEventCount: Int = 0,
+        duration: TimeInterval = 0,
+        longestStall: TimeInterval = 0
+    ) {
+        self.maxOffset = maxOffset
+        self.totalTravel = totalTravel
+        self.dragEventCount = dragEventCount
+        self.duration = duration
+        self.longestStall = longestStall
+    }
+}
+
+/// Three-way classification so a plain click or a window/scrollbar drag is
+/// never treated as a text selection.
+public enum SelectionGestureVerdict: String, Equatable, Sendable {
+    /// Click, or movement below the selection thresholds.
+    case click
+    /// Short, continuous drag with enough movement: treat as a text selection.
+    case textSelection
+    /// Long drag, or a drag that stalled mid-way: window / scrollbar / slider.
+    case nonTextDrag
+}
+
+/// Thresholds for `SelectionGestureVerdict`. Biased toward low false positives:
+/// a missed popover is a nuisance, a stray "无法读取所选文字" over someone's
+/// editor is worse.
+public enum SelectionGestureThresholds {
+    public static let minOffset: CGFloat = 4
+    public static let minTravel: CGFloat = 8
+    public static let maxDuration: TimeInterval = 3.0
+    public static let maxStall: TimeInterval = 1.2
+}
+
+/// Consecutive "dragged but nothing readable" outcomes pause auto-surfacing so
+/// the red status line and the ⌘C borrow cannot loop on an app that never
+/// exposes a selection. Recovers on the next readable selection, or after a
+/// cooldown so the feature is not permanently disabled.
+public struct SelectionReadingDegradeState: Equatable, Sendable {
+    public static let failureThreshold = 3
+    public static let cooldown: TimeInterval = 30
+
+    public private(set) var consecutiveFailures = 0
+    public private(set) var degradedUntil: TimeInterval?
+
+    public init() {}
+
+    public func isDegraded(at timestamp: TimeInterval) -> Bool {
+        guard let degradedUntil else { return false }
+        return timestamp < degradedUntil
+    }
+
+    /// Returns true when this failure flips the state into degraded mode.
+    @discardableResult
+    public mutating func recordFailure(at timestamp: TimeInterval) -> Bool {
+        if let until = degradedUntil {
+            if timestamp < until {
+                // Already degraded: keep the existing cooldown, do not slide it.
+                return false
+            }
+            // Cooldown elapsed: give the app one fresh chance before re-tripping.
+            degradedUntil = nil
+            consecutiveFailures = 0
+        }
+        consecutiveFailures += 1
+        guard consecutiveFailures >= Self.failureThreshold else { return false }
+        degradedUntil = timestamp + Self.cooldown
+        return true
+    }
+
+    public mutating func recordSuccess() {
+        consecutiveFailures = 0
+        degradedUntil = nil
+    }
+}
+
 /// Mouse-up selection must not pop while the button is still down. Down and
 /// drag cancel any pending settle; a matching up schedules one. Up with no
 /// prior down is ignored so a swallowed menu press cannot resettle.
@@ -30,23 +124,113 @@ public struct SelectionPointerState: Equatable, Sendable {
     /// selection: no clipboard fallback, and AX `.unavailable` must not spawn
     /// a sticky status.
     public private(set) var didDrag = false
+    /// Features of the most recent gesture, used to classify click vs drag.
+    public private(set) var gestureFeatures = SelectionGestureFeatures.empty
+
+    private var pressLocation: CGPoint?
+    private var lastLocation: CGPoint?
+    private var pressTimestamp: TimeInterval?
+    private var lastTimestamp: TimeInterval?
+    private var travel: CGFloat = 0
+    private var maxOffset: CGFloat = 0
+    private var dragEvents = 0
+    private var longestStall: TimeInterval = 0
 
     public init() {}
 
+    /// Classifies the last completed gesture. Only meaningful after an `up`
+    /// that followed a `down`; otherwise it reports `.click`.
+    public var gestureVerdict: SelectionGestureVerdict {
+        guard didDrag else { return .click }
+        let features = gestureFeatures
+        let moved =
+            features.maxOffset >= SelectionGestureThresholds.minOffset
+            || features.totalTravel >= SelectionGestureThresholds.minTravel
+        guard moved, features.dragEventCount >= 1 else { return .click }
+        if features.duration > SelectionGestureThresholds.maxDuration
+            || features.longestStall > SelectionGestureThresholds.maxStall {
+            return .nonTextDrag
+        }
+        return .textSelection
+    }
+
+    /// Phase-only transitions (no geometry): equivalent to a gesture too short
+    /// to be a selection. Kept for callers and tests that only track state.
     public mutating func handle(_ phase: SelectionPointerPhase) -> SelectionPointerAction {
+        handle(phase, at: nil, timestamp: nil)
+    }
+
+    /// Full sampling. `location` and `timestamp` are optional so a caller with
+    /// only phase information still gets a valid (`.click`) verdict.
+    public mutating func handle(
+        _ phase: SelectionPointerPhase,
+        at location: CGPoint?,
+        timestamp: TimeInterval?
+    ) -> SelectionPointerAction {
         switch phase {
         case .down:
             isButtonDown = true
             didDrag = false
+            resetGesture()
+            pressLocation = location
+            lastLocation = location
+            pressTimestamp = timestamp
+            lastTimestamp = timestamp
             return .cancelPending
         case .dragged:
-            if isButtonDown { didDrag = true }
-            return isButtonDown ? .cancelPending : .ignore
+            guard isButtonDown else { return .ignore }
+            didDrag = true
+            dragEvents += 1
+            accumulate(location: location, timestamp: timestamp)
+            updateFeatures(duration: elapsed(since: pressTimestamp, to: timestamp))
+            return .cancelPending
         case .up:
             let wasDown = isButtonDown
             isButtonDown = false
-            return wasDown ? .scheduleSettle : .ignore
+            guard wasDown else { return .ignore }
+            updateFeatures(duration: elapsed(since: pressTimestamp, to: timestamp))
+            return .scheduleSettle
         }
+    }
+
+    private mutating func accumulate(location: CGPoint?, timestamp: TimeInterval?) {
+        if let location {
+            if let pressLocation {
+                let offset = hypot(location.x - pressLocation.x, location.y - pressLocation.y)
+                maxOffset = max(maxOffset, offset)
+            }
+            if let lastLocation {
+                travel += hypot(location.x - lastLocation.x, location.y - lastLocation.y)
+            }
+            lastLocation = location
+        }
+        if let timestamp, let lastTimestamp {
+            longestStall = max(longestStall, timestamp - lastTimestamp)
+        }
+        if let timestamp { lastTimestamp = timestamp }
+    }
+
+    private func elapsed(since start: TimeInterval?, to end: TimeInterval?) -> TimeInterval {
+        guard let start, let end, end > start else { return 0 }
+        return end - start
+    }
+
+    private mutating func resetGesture() {
+        gestureFeatures = .empty
+        travel = 0
+        maxOffset = 0
+        dragEvents = 0
+        longestStall = 0
+    }
+
+    private mutating func updateFeatures(duration: TimeInterval) {
+        gestureFeatures = SelectionGestureFeatures(
+            maxOffset: maxOffset,
+            totalTravel: travel,
+            dragEventCount: dragEvents,
+            duration: duration,
+            longestStall: longestStall
+        )
     }
 }
 

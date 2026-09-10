@@ -43,6 +43,10 @@ public final class ActiveWindowMonitor {
         }
         return self?.descriptor(for: pid, bundleIdentifier: bundleIdentifier, invalidatesOverlay: invalidates)
     }
+    /// Injectable so tests do not subscribe to the real workspace center: an
+    /// unrelated app activation mid-test resets the retry budget and performs
+    /// an extra lookup, which made bounded-retry tests flaky on busy machines.
+    var workspaceNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter
 
     public init(
         ownBundleIdentifier: String? = Bundle.main.bundleIdentifier,
@@ -71,7 +75,7 @@ public final class ActiveWindowMonitor {
     public func start() {
         guard !running else { return }
         running = true
-        workspaceToken = NSWorkspace.shared.notificationCenter.addObserver(
+        workspaceToken = workspaceNotificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
             queue: .main
@@ -89,7 +93,7 @@ public final class ActiveWindowMonitor {
         throttleTask?.cancel()
         throttleTask = nil
         if let token = workspaceToken {
-            NSWorkspace.shared.notificationCenter.removeObserver(token)
+            workspaceNotificationCenter.removeObserver(token)
             workspaceToken = nil
         }
         removeAXObserver()

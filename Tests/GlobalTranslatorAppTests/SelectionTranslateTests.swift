@@ -681,6 +681,101 @@ struct SelectionTranslateControllerTests {
         #expect(popover.currentContent?.status != .failed)
     }
 
+    @Test
+    func slowWindowDragDoesNotSurfaceUnavailableStatus() async throws {
+        let reader = FakeSelectedTextReader(result: .unavailable)
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        var clock: TimeInterval = 0
+        let controller = makeClockController(
+            reader: reader,
+            popover: popover,
+            translator: translator,
+            clock: { clock }
+        )
+        controller.setEnabled(true)
+        controller.handlePointer(.down, location: CGPoint(x: 10, y: 10))
+        clock = 0.3
+        controller.handlePointer(.dragged, location: CGPoint(x: 90, y: 10))
+        clock = 4.0
+        controller.handlePointer(.up, location: CGPoint(x: 90, y: 10))
+        try await waitUntil { reader.readCount >= 1 }
+        #expect(popover.shown.isEmpty)
+        #expect(!reader.lastAllowClipboardFallback)
+    }
+
+    @Test
+    func repeatedUnreadableDragsStopSurfacingAfterThreeFailures() async throws {
+        let reader = FakeSelectedTextReader(result: .unavailable)
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        var clock: TimeInterval = 0
+        let controller = makeClockController(
+            reader: reader,
+            popover: popover,
+            translator: translator,
+            clock: { clock }
+        )
+        controller.setEnabled(true)
+        for index in 0..<4 {
+            clock = TimeInterval(index)
+            dragSelect(controller)
+            let expected = index + 1
+            try await waitUntil { reader.readCount >= expected }
+        }
+        let surfaces = popover.shown.filter { $0.status == .unavailable }.count
+        #expect(surfaces == SelectionReadingDegradeState.failureThreshold - 1)
+    }
+
+    @Test
+    func degradedModeStopsBorrowingTheClipboard() async throws {
+        let reader = FakeSelectedTextReader(result: .unavailable)
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        var clock: TimeInterval = 0
+        let controller = makeClockController(
+            reader: reader,
+            popover: popover,
+            translator: translator,
+            clock: { clock }
+        )
+        controller.setEnabled(true)
+        for index in 0..<SelectionReadingDegradeState.failureThreshold {
+            clock = TimeInterval(index)
+            dragSelect(controller)
+            let expected = index + 1
+            try await waitUntil { reader.readCount >= expected }
+        }
+        clock = TimeInterval(SelectionReadingDegradeState.failureThreshold)
+        reader.setResult(.empty)
+        reader.clipboardFallbackSnapshot = snapshot("Hello from Feishu", bundle: "com.electron.lark")
+        dragSelect(controller)
+        try await waitUntil { reader.readCount >= SelectionReadingDegradeState.failureThreshold + 1 }
+        #expect(reader.clipboardFallbackUseCount == 0)
+        #expect(!reader.lastAllowClipboardFallback)
+    }
+
+    private func makeClockController(
+        reader: FakeSelectedTextReader,
+        popover: FakeSelectionPopover,
+        translator: StubSelectionTranslator,
+        clock: @escaping () -> TimeInterval
+    ) -> SelectionTranslateController {
+        SelectionTranslateController(
+            reader: reader,
+            popover: popover,
+            monitor: NullSelectionPointerMonitor(),
+            permissions: FakePermissionController(snapshot: .allGranted),
+            logger: RecordingLogger(),
+            translator: { translator },
+            ownBundleIdentifiers: ["com.maodashu.global-translator"],
+            frontmostBundleIdentifier: { "com.apple.TextEdit" },
+            settleDelay: .milliseconds(5),
+            unavailableDismissDelay: .milliseconds(30),
+            now: clock
+        )
+    }
+
     private func waitUntil(_ condition: @escaping () -> Bool, timeout: TimeInterval = 1) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition(), Date() < deadline {
