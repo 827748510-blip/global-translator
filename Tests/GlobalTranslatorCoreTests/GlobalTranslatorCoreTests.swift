@@ -296,6 +296,8 @@ struct GlobalTranslatorCoreTests {
         #expect(intValue(object["max_tokens"]) == 128)
         #expect(LocalOpenAIBackend.maxTokens(itemCount: 1) == 128)
         #expect(LocalOpenAIBackend.maxTokens(itemCount: 3) == 256)
+        #expect(LocalOpenAIBackend.maxTokens(itemCount: 1, sourceCharacters: 1_800) > 256)
+        #expect(LocalOpenAIBackend.maxTokens(itemCount: 1, sourceCharacters: 1_800) <= 2_048)
         let format = try #require(object["response_format"] as? [String: Any])
         #expect(format["type"] as? String == "json_object")
         #expect(!format.keys.contains("json_schema"))
@@ -310,6 +312,25 @@ struct GlobalTranslatorCoreTests {
         #expect(!user.contains("segmentId"))
         #expect(!user.contains(id.uuidString))
         #expect(user.count < 80)
+
+        let longSource = String(repeating: "A cinematic wide shot of rain on a night street. ", count: 40)
+        let longTransport = FakeTransport(responses: [
+            HTTPResponse(statusCode: 200, headers: [:], body: try chatEnvelope(["0": "夜雨宽镜头"]))
+        ])
+        let longBackend = try LocalOpenAIBackend(
+            baseURL: URL(string: "http://[::1]:11434/v1")!,
+            model: "qwen-local",
+            transport: longTransport
+        )
+        _ = try await longBackend.translate(TranslationRequest(
+            windowRevision: 2,
+            items: [TranslationItem(id: id, sourceText: longSource)]
+        ))
+        let longBody = try #require(await longTransport.requests.first?.httpBody)
+        let longObject = try #require(try JSONSerialization.jsonObject(with: longBody) as? [String: Any])
+        let expectedLongTokens = LocalOpenAIBackend.maxTokens(itemCount: 1, sourceCharacters: longSource.count)
+        #expect(intValue(longObject["max_tokens"]) == expectedLongTokens)
+        #expect(expectedLongTokens > 256)
 
         let unavailableTransport = FakeTransport(responses: [HTTPResponse(statusCode: 200, headers: [:], body: Data(#"{"data":[]}"#.utf8))])
         let unavailableBackend = try LocalOpenAIBackend(baseURL: URL(string: "http://127.0.0.1:11434/v1")!, model: "missing", transport: unavailableTransport)

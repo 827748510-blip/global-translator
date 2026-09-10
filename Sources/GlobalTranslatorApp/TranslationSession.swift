@@ -275,35 +275,57 @@ public final class TranslationSession {
     /// Single-string 滑词翻译. Not gated on overlay `isRunning` or the
     /// extension-bridge master switch; uses a dedicated coordinator so Chrome
     /// overlay-skip and bridge batches cannot stale this request.
-    public func translateSelection(_ text: String) async throws -> String {
+    public func translateSelection(_ text: String) async throws -> SelectionTranslationOutcome {
         guard let coordinator = selectionCoordinator else { throw SelectionTranslateError.translatorUnavailable }
-        let capped = SelectionTranslateSupport.cappedSource(text)
-        switch TextFilter.selectionDecision(capped) {
+        let plan = SelectionTranslateSupport.prepareSource(text)
+        switch TextFilter.selectionDecision(SelectionTranslateSupport.limitSelectionSource(text).text) {
         case .translate, .noTranslationNeeded:
             break
         case .skip, .alreadyTargetLanguage:
             throw SelectionTranslateError.emptyResult
         }
+        guard !plan.chunks.isEmpty else { throw SelectionTranslateError.emptyResult }
+        await coordinator.selectBackend(kind: backend, modelIdentifier: model)
+        var parts: [String] = []
+        parts.reserveCapacity(plan.chunks.count)
+        for (offset, chunk) in plan.chunks.enumerated() {
+            try Task.checkCancellation()
+            let translated = try await translateOneSelectionChunk(
+                chunk,
+                coordinator: coordinator,
+                revision: UInt64(offset + 1)
+            )
+            parts.append(translated)
+        }
+        let joined = SelectionTranslateSupport.joinTranslatedChunks(parts)
+        guard !joined.isEmpty else { throw SelectionTranslateError.emptyResult }
+        return SelectionTranslationOutcome(text: joined, sourceWasTruncated: plan.didTruncate)
+    }
+
+    private func translateOneSelectionChunk(
+        _ text: String,
+        coordinator: any TranslationCoordinating,
+        revision: UInt64
+    ) async throws -> String {
         let region = TextRegion(
             id: UUID(),
-            sourceText: capped,
+            sourceText: text,
             screenFrame: .zero,
             confidence: 1,
             source: .accessibility,
-            windowRevision: 0
+            windowRevision: revision
         )
         let descriptor = ActiveWindowDescriptor(
             pid: 0,
             bundleIdentifier: "selection.translate",
             windowID: nil,
             frame: .zero,
-            revision: 0,
+            revision: revision,
             invalidatesOverlay: false
         )
         let snapshot = CaptureSnapshot(
             window: CapturedWindow(descriptor: descriptor, regions: [region], source: .pageText)
         )
-        await coordinator.selectBackend(kind: backend, modelIdentifier: model)
         let output: EngineOutput
         do {
             output = try await Self.runSelectionTranslate(

@@ -662,6 +662,25 @@ struct SelectionTranslateControllerTests {
         #expect(popover.currentContent?.displayTranslation == SelectionTranslateSupport.missingDeepSeekKeyCopy)
     }
 
+    @Test
+    func truncatedOutcomeSurfacesChineseNoteWithoutBlockingCopy() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Hello world")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "部分译文"
+        translator.sourceWasTruncated = true
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .translated }
+        #expect(popover.currentContent?.sourceWasTruncated == true)
+        #expect(popover.currentContent?.displayTranslation.contains("部分译文") == true)
+        #expect(popover.currentContent?.displayTranslation.contains(SelectionTranslateSupport.truncatedSourceCopy) == true)
+        #expect(popover.currentContent?.copyText == "部分译文")
+        #expect(popover.currentContent?.allowsCopy == true)
+        #expect(popover.currentContent?.status != .failed)
+    }
+
     private func waitUntil(_ condition: @escaping () -> Bool, timeout: TimeInterval = 1) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition(), Date() < deadline {
@@ -785,7 +804,7 @@ extension ApplicationControllerTests {
         try await Task.sleep(for: .milliseconds(300))
         #expect(await capture.count == 0)
         #expect(overlay.lastTranslations.isEmpty)
-        #expect(try await session.translateSelection("Hello from Chrome") == "你好 Hello from Chrome")
+        #expect(try await session.translateSelection("Hello from Chrome").text == "你好 Hello from Chrome")
         let selection = try #require(controller.selectionTranslate)
         selection.handlePointer(SelectionPointerPhase.down, location: CGPoint(x: 50, y: 90))
         selection.handlePointer(SelectionPointerPhase.up, location: CGPoint(x: 50, y: 90))
@@ -810,9 +829,9 @@ extension ApplicationControllerTests {
         let session = try #require(controller.session)
         #expect(!session.isRunning)
         #expect(!session.isBridgeActive)
-        #expect(try await session.translateSelection("Hello there") == "你好 Hello there")
+        #expect(try await session.translateSelection("Hello there").text == "你好 Hello there")
         #expect(
-            try await session.translateSelection("Swift 6 + SwiftUI + ScreenCaptureKit")
+            try await session.translateSelection("Swift 6 + SwiftUI + ScreenCaptureKit").text
                 == "你好 Swift 6 + SwiftUI + ScreenCaptureKit"
         )
         #expect(try await session.optimizePrompt("一个女孩站在雨里") == "优化 一个女孩站在雨里")
@@ -935,7 +954,7 @@ extension ApplicationControllerTests {
         try await controller.start()
         await waitForStartupHealthCheck(controller)
         let session = try #require(controller.session)
-        #expect(try await session.translateSelection("Hello there") == "你好 Hello there")
+        #expect(try await session.translateSelection("Hello there").text == "你好 Hello there")
         #expect(await coordinator.translateBackends == [.local])
         _ = try await session.optimizePrompt("把这段写清楚")
         #expect(await coordinator.completePlainBackends == [.local])
@@ -944,10 +963,68 @@ extension ApplicationControllerTests {
         #expect(controller.configuration.backend == .deepSeekCloud)
         #expect(controller.viewModel.selectedBackend == .deepSeekCloud)
         let switched = try #require(controller.session)
-        #expect(try await switched.translateSelection("Hello there") == "你好 Hello there")
+        #expect(try await switched.translateSelection("Hello there").text == "你好 Hello there")
         #expect(try await switched.optimizePrompt("把这段写清楚") == "rewritten")
         #expect(await coordinator.translateBackends == [.local, .deepSeekCloud])
         #expect(await coordinator.completePlainBackends == [.local, .deepSeekCloud])
         await controller.stop()
+    }
+
+    @Test
+    func longSelectionIsChunkedTranslatedAndJoinedInOrder() async throws {
+        let coordinator = RecordingPlainCoordinator()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: false, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, coordinator: coordinator)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        let source = Self.longEnglish(characters: 4_500)
+        let plan = SelectionTranslateSupport.prepareSource(source)
+        #expect(plan.chunks.count >= 3)
+        let outcome = try await session.translateSelection(source)
+        #expect(!outcome.sourceWasTruncated)
+        let expected = SelectionTranslateSupport.joinTranslatedChunks(
+            plan.chunks.map { "你好 " + $0 }
+        )
+        #expect(outcome.text == expected)
+        #expect(await coordinator.sources.count == plan.chunks.count)
+        #expect(await coordinator.sources.allSatisfy { $0.count == 1 })
+        #expect(await coordinator.sources.map { $0[0] } == plan.chunks)
+        #expect(await coordinator.translateBackends.allSatisfy { $0 == .local })
+        await controller.stop()
+    }
+
+    @Test
+    func selectionOverHardCapJoinsChunksAndFlagsTruncation() async throws {
+        let coordinator = RecordingPlainCoordinator()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: false, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, coordinator: coordinator)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        let source = Self.longEnglish(characters: SelectionTranslateSupport.selectionHardLimitCharacters + 800)
+        let outcome = try await session.translateSelection(source)
+        #expect(outcome.sourceWasTruncated)
+        #expect(!outcome.text.contains(SelectionTranslateSupport.truncatedSourceCopy))
+        #expect(outcome.text.hasPrefix("你好 "))
+        #expect(await coordinator.sources.count == SelectionTranslateSupport.prepareSource(source).chunks.count)
+        await controller.stop()
+    }
+
+    private static func longEnglish(characters: Int) -> String {
+        let unit = "A cinematic wide shot of a girl standing in the rain on a city street at night. "
+        var text = ""
+        while text.count < characters {
+            text += unit
+        }
+        return String(text.prefix(characters))
     }
 }

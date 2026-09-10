@@ -152,6 +152,14 @@ struct SelectionPopoverContentTests {
         #expect(done.displayTranslation == "你好，世界")
         #expect(done.allowsCopy)
         #expect(done.copyText == "你好，世界")
+        let truncated = SelectionPopoverContent.translated(
+            original: "Hello world",
+            translation: "你好，世界",
+            screenFrame: .zero,
+            sourceWasTruncated: true
+        )
+        #expect(truncated.displayTranslation.contains(SelectionTranslateSupport.truncatedSourceCopy))
+        #expect(truncated.copyText == "你好，世界")
     }
 
     @Test
@@ -254,5 +262,106 @@ struct SelectionPopoverContentTests {
         #expect(SelectionTranslateSupport.missingDeepSeekKeyCopy.contains("设置"))
         #expect(SelectionTranslateSupport.missingDeepSeekKeyCopy.contains("API Key"))
         #expect(SelectionTranslateSupport.missingDeepSeekKeyCopy.contains("测试连接"))
+    }
+
+    @Test
+    func truncatedSelectionShowsChineseNoteAndKeepsCopyOfTranslation() {
+        let content = SelectionPopoverContent.translated(
+            original: String(repeating: "Hello world. ", count: 4000),
+            translation: "部分译文",
+            screenFrame: .zero,
+            sourceWasTruncated: true
+        )
+        #expect(content.status == .translated)
+        #expect(content.sourceWasTruncated)
+        #expect(content.displayTranslation.contains("部分译文"))
+        #expect(content.displayTranslation.contains(SelectionTranslateSupport.truncatedSourceCopy))
+        #expect(content.copyText == "部分译文")
+        #expect(content.allowsCopy)
+        let short = SelectionPopoverContent.translated(
+            original: "Hello world",
+            translation: "你好，世界",
+            screenFrame: .zero
+        )
+        #expect(!short.sourceWasTruncated)
+        #expect(short.displayTranslation == "你好，世界")
+    }
+}
+
+struct SelectionSourceChunkingTests {
+    @Test
+    func shortTextStaysASingleChunk() {
+        let plan = SelectionTranslateSupport.prepareSource("Hello world")
+        #expect(plan.chunks == ["Hello world"])
+        #expect(!plan.didTruncate)
+        #expect(plan.usedCharacterCount == 11)
+    }
+
+    @Test
+    func sourceOverFourThousandIsChunkedNotSilentlyCappedAtMaxSourceCharacters() {
+        let source = longEnglish(characters: 4_500)
+        let plan = SelectionTranslateSupport.prepareSource(source)
+        #expect(source.count > SelectionTranslateSupport.maxSourceCharacters)
+        #expect(!plan.didTruncate)
+        #expect(plan.usedCharacterCount == source.count)
+        #expect(plan.chunks.count >= 3)
+        #expect(plan.chunks.allSatisfy { $0.count <= SelectionTranslateSupport.selectionChunkCharacters })
+        #expect(plan.chunks.joined(separator: "").count >= source.count - plan.chunks.count * 2)
+    }
+
+    @Test
+    func paragraphAndSentenceBreaksAvoidMidWordCuts() {
+        let paragraph = String(repeating: "hello ", count: 40)
+        let source = (0..<6).map { "Scene \($0). \(paragraph)" }.joined(separator: "\n\n")
+        let chunks = SelectionTranslateSupport.chunkSource(source, targetCharacters: 400)
+        #expect(chunks.count >= 3)
+        #expect(chunks.allSatisfy { $0.count <= 400 })
+        #expect(!chunks.contains { $0.hasPrefix("ello") })
+        #expect(chunks.allSatisfy { $0.hasPrefix("Scene") || $0.hasPrefix("hello") })
+    }
+
+    @Test
+    func hardSafetyCapSetsTruncationFlag() {
+        let source = longEnglish(characters: SelectionTranslateSupport.selectionHardLimitCharacters + 200)
+        let plan = SelectionTranslateSupport.prepareSource(source)
+        #expect(plan.didTruncate)
+        #expect(plan.usedCharacterCount == SelectionTranslateSupport.selectionHardLimitCharacters)
+        #expect(plan.chunks.count > 1)
+        #expect(SelectionTranslateSupport.truncatedSourceCopy.contains("原文过长"))
+    }
+
+    @Test
+    func joinedChunksPreserveOrder() {
+        let parts = ["第一段", "第二段", "第三段"]
+        #expect(SelectionTranslateSupport.joinTranslatedChunks(parts) == "第一段\n\n第二段\n\n第三段")
+        #expect(SelectionTranslateSupport.joinTranslatedChunks(["你好，世界"]) == "你好，世界")
+    }
+
+    @Test
+    func limitSelectionSourceKeepsEveryCharacterUnderTheHardCap() {
+        let text = String(repeating: "Hello world. ", count: 400)
+        #expect(text.count == 5_200)
+        let limited = SelectionTranslateSupport.limitSelectionSource(text)
+        #expect(limited.text == text)
+        #expect(limited.text.count == 5_200)
+        #expect(!limited.didTruncate)
+        let exact = String(repeating: "a", count: SelectionTranslateSupport.selectionHardLimitCharacters)
+        let atLimit = SelectionTranslateSupport.limitSelectionSource(exact)
+        #expect(atLimit.text.count == SelectionTranslateSupport.selectionHardLimitCharacters)
+        #expect(!atLimit.didTruncate)
+        let over = exact + "x"
+        let capped = SelectionTranslateSupport.limitSelectionSource(over)
+        #expect(capped.didTruncate)
+        #expect(capped.text.count == SelectionTranslateSupport.selectionHardLimitCharacters)
+        #expect(capped.text == exact)
+    }
+
+    private func longEnglish(characters: Int) -> String {
+        let unit = "A cinematic wide shot of a girl standing in the rain on a city street at night. "
+        var text = ""
+        while text.count < characters {
+            text += unit
+        }
+        return String(text.prefix(characters))
     }
 }

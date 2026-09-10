@@ -137,10 +137,13 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
     }
 
     /// Caps generation so a short UI string does not walk toward the
-    /// Modelfile `num_predict` default. One translation JSON object fits in
-    /// 128 tokens; three items still fit in 256.
-    static func maxTokens(itemCount: Int) -> Int {
-        min(256, 64 + 64 * max(itemCount, 1))
+    /// Modelfile `num_predict` default. Overlay / page batches stay at
+    /// 128 (one item) / 256 (three). Long selection chunks scale up so a
+    /// 1500–2000 character piece can finish instead of truncating at 128.
+    static func maxTokens(itemCount: Int, sourceCharacters: Int = 0) -> Int {
+        let overlayBudget = min(256, 64 + 64 * max(itemCount, 1))
+        guard sourceCharacters > 320 else { return overlayBudget }
+        return min(2_048, max(overlayBudget, sourceCharacters + 128))
     }
 
     static let plainCompletionMaxTokens = 1_024
@@ -175,7 +178,10 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
                 ChatPrompt(role: "system", content: LocalTranslationPrompt.system),
                 ChatPrompt(role: "user", content: LocalTranslationPrompt.userContent(for: request.items))
             ],
-            maxTokens: Self.maxTokens(itemCount: request.items.count),
+            maxTokens: Self.maxTokens(
+                itemCount: request.items.count,
+                sourceCharacters: request.items.reduce(0) { $0 + $1.sourceText.count }
+            ),
             responseFormat: ChatResponseFormat()
         )
         do {

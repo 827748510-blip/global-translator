@@ -408,6 +408,7 @@ actor RecordingPlainCoordinator: TranslationCoordinating {
     private(set) var users: [String] = []
     private(set) var completePlainBackends: [BackendKind] = []
     private(set) var translateBackends: [BackendKind] = []
+    private(set) var sources: [[String]] = []
 
     func selectBackend(kind: BackendKind, modelIdentifier: String) async { selectedKinds.append(kind) }
     func clearCache() async {}
@@ -419,6 +420,7 @@ actor RecordingPlainCoordinator: TranslationCoordinating {
         visionFallbackEnabled: Bool
     ) async throws -> EngineOutput {
         translateBackends.append(backend)
+        sources.append(snapshot.regions.map(\.sourceText))
         let translations = snapshot.regions.map { region in
             RenderedTranslation(region: region, text: "你好 " + region.sourceText)
         }
@@ -697,17 +699,18 @@ final class StubSelectionTranslator: SelectionTranslating {
     var optimizeResult = "优化后的提示词"
     var error: Error?
     var delay: Duration?
+    var sourceWasTruncated = false
     private(set) var texts: [String] = []
     private(set) var optimizedTexts: [String] = []
     private(set) var optimizedModes: [PromptOptimizeMode] = []
 
-    func translateSelection(_ text: String) async throws -> String {
+    func translateSelection(_ text: String) async throws -> SelectionTranslationOutcome {
         texts.append(text)
         if let delay {
             try await Task.sleep(for: delay)
         }
         if let error { throw error }
-        return result
+        return SelectionTranslationOutcome(text: result, sourceWasTruncated: sourceWasTruncated)
     }
 
     func optimizePrompt(_ text: String, mode: PromptOptimizeMode) async throws -> String {
