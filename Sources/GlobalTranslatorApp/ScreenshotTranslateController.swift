@@ -100,7 +100,7 @@ public final class ScreenshotTranslateController {
 
     public func stopHotkey() {
         hotkeyEnabled = false
-        registrar.unregister(id: ScreenshotTranslateSupport.hotkeyID)
+        registrar.unregisterAll()
         selector.cancel()
         cancelPresentation()
         popover.dismiss()

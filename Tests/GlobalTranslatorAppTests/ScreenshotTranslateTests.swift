@@ -55,6 +55,7 @@ struct ScreenshotTranslateControllerTests {
         #expect(copied.isEmpty)
         controller.stopHotkey()
         #expect(registrar.registered.isEmpty)
+        #expect(registrar.unregisterAllCount == 1)
     }
 
     @Test

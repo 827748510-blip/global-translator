@@ -21,6 +21,7 @@ public final class NullHotkeyRegistrar: HotkeyRegistering {
 @MainActor
 public final class RecordingHotkeyRegistrar: HotkeyRegistering {
     public private(set) var registered: [UInt32: KeyboardShortcutSpec] = [:]
+    public private(set) var unregisterAllCount = 0
     public var errorToThrow: HotkeyRegistrationError?
     private var handlers: [UInt32: () -> Void] = [:]
 
@@ -39,6 +40,7 @@ public final class RecordingHotkeyRegistrar: HotkeyRegistering {
     }
 
     public func unregisterAll() {
+        unregisterAllCount += 1
         registered.removeAll()
         handlers.removeAll()
     }
@@ -48,6 +50,8 @@ public final class RecordingHotkeyRegistrar: HotkeyRegistering {
     }
 }
 
+/// Carbon hotkeys live on the main actor. Release them with `unregisterAll()`;
+/// Swift 6 does not allow `deinit` to touch these non-Sendable refs.
 @MainActor
 public final class CarbonHotkeyRegistrar: HotkeyRegistering {
     private var hotKeys: [UInt32: EventHotKeyRef] = [:]
@@ -55,15 +59,6 @@ public final class CarbonHotkeyRegistrar: HotkeyRegistering {
     private var handlerRef: EventHandlerRef?
 
     public init() {}
-
-    deinit {
-        for key in hotKeys.values {
-            UnregisterEventHotKey(key)
-        }
-        if let handlerRef {
-            RemoveEventHandler(handlerRef)
-        }
-    }
 
     public func register(id: UInt32, shortcut: KeyboardShortcutSpec, handler: @escaping () -> Void) throws {
         guard shortcut.isValid else { throw HotkeyRegistrationError.invalid }
@@ -102,6 +97,10 @@ public final class CarbonHotkeyRegistrar: HotkeyRegistering {
         }
         hotKeys.removeAll()
         handlers.removeAll()
+        if let handlerRef {
+            RemoveEventHandler(handlerRef)
+            self.handlerRef = nil
+        }
     }
 
     nonisolated func handle(id: UInt32) {
