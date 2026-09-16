@@ -175,6 +175,10 @@ public protocol SettingsActions: AnyObject {
     func setSelectionTranslate(_ enabled: Bool)
     func setVideoTranslate(_ enabled: Bool)
     func setPromptOptimizeMode(_ mode: PromptOptimizeMode)
+    func setAutoCopyScreenshotTranslation(_ enabled: Bool)
+    func setScreenshotTranslateHotkey(_ spec: KeyboardShortcutSpec)
+    func beginScreenshotHotkeyRecording()
+    func cancelScreenshotHotkeyRecording()
     func selectBackend(_ kind: BackendKind)
     /// Persists the draft API key. The UI never logs or stores it; the draft is
     /// cleared by the view model only after this call succeeds.

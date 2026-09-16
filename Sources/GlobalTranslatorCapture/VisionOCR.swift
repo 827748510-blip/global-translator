@@ -93,7 +93,11 @@ public final class VisionOCRService: VisionOCRProviding, @unchecked Sendable {
 
 @available(macOS 14.0, *)
 public final class VisionFrameworkRecognizer: VisionTextRecognizing, @unchecked Sendable {
-    public init() {}
+    public let recognitionLanguages: [String]
+
+    public init(recognitionLanguages: [String] = []) {
+        self.recognitionLanguages = recognitionLanguages
+    }
 
     public func recognize(image: CGImage, level: OCRRecognitionLevel) async throws -> [VisionTextObservation] {
         try Task.checkCancellation()
@@ -111,7 +115,12 @@ public final class VisionFrameworkRecognizer: VisionTextRecognizing, @unchecked 
         }
         request.recognitionLevel = level == .fast ? .fast : .accurate
         request.usesLanguageCorrection = true
-        request.automaticallyDetectsLanguage = true
+        if recognitionLanguages.isEmpty {
+            request.automaticallyDetectsLanguage = true
+        } else {
+            request.recognitionLanguages = recognitionLanguages
+            request.automaticallyDetectsLanguage = true
+        }
         let handler = VNImageRequestHandler(cgImage: image, options: [:])
         try handler.perform([request])
         return output

@@ -16,6 +16,10 @@ private final class SpyActions: SettingsActions {
     var selectionTranslateValues: [Bool] = []
     var videoTranslateValues: [Bool] = []
     var promptOptimizeModes: [PromptOptimizeMode] = []
+    var autoCopyScreenshotValues: [Bool] = []
+    var screenshotHotkeys: [KeyboardShortcutSpec] = []
+    var beginHotkeyRecordingCount = 0
+    var cancelHotkeyRecordingCount = 0
     var selectedBackends: [BackendKind] = []
     var savedKeyDrafts: [String] = []
     var deleteKeyCallCount = 0
@@ -51,6 +55,22 @@ private final class SpyActions: SettingsActions {
 
     func setPromptOptimizeMode(_ mode: PromptOptimizeMode) {
         promptOptimizeModes.append(mode)
+    }
+
+    func setAutoCopyScreenshotTranslation(_ enabled: Bool) {
+        autoCopyScreenshotValues.append(enabled)
+    }
+
+    func setScreenshotTranslateHotkey(_ spec: KeyboardShortcutSpec) {
+        screenshotHotkeys.append(spec)
+    }
+
+    func beginScreenshotHotkeyRecording() {
+        beginHotkeyRecordingCount += 1
+    }
+
+    func cancelScreenshotHotkeyRecording() {
+        cancelHotkeyRecordingCount += 1
     }
 
     func selectBackend(_ kind: BackendKind) {
@@ -296,6 +316,42 @@ struct SettingsViewModelTests {
         #expect(actions.videoTranslateValues == [true, false])
         viewModel.setVideoTranslate(false)
         #expect(actions.videoTranslateValues == [true, false])
+    }
+
+    @Test
+    func screenshotAutoCopyDefaultsOffAndForwards() {
+        let (viewModel, actions) = makeViewModel()
+        #expect(!viewModel.autoCopyScreenshotTranslation)
+        #expect(viewModel.screenshotTranslateHotkey == .screenshotTranslateDefault)
+        viewModel.setAutoCopyScreenshotTranslation(true)
+        #expect(viewModel.autoCopyScreenshotTranslation)
+        #expect(actions.autoCopyScreenshotValues == [true])
+        viewModel.setAutoCopyScreenshotTranslation(true)
+        #expect(actions.autoCopyScreenshotValues == [true])
+        viewModel.setAutoCopyScreenshotTranslation(false)
+        #expect(!viewModel.autoCopyScreenshotTranslation)
+        #expect(actions.autoCopyScreenshotValues == [true, false])
+    }
+
+    @Test
+    func screenshotHotkeyRecordingAndConflictSurface() {
+        let (viewModel, actions) = makeViewModel()
+        viewModel.beginRecordingScreenshotHotkey()
+        #expect(viewModel.isRecordingScreenshotHotkey)
+        #expect(actions.beginHotkeyRecordingCount == 1)
+        viewModel.cancelRecordingScreenshotHotkey()
+        #expect(!viewModel.isRecordingScreenshotHotkey)
+        #expect(actions.cancelHotkeyRecordingCount == 1)
+        let conflicting = KeyboardShortcutSpec(
+            keyCode: KeyboardShortcutSpec.KeyCode.four,
+            shift: true,
+            command: true
+        )
+        viewModel.setScreenshotTranslateHotkey(conflicting)
+        #expect(viewModel.screenshotTranslateHotkey == conflicting)
+        #expect(viewModel.screenshotHotkeyConflictMessage == KeyboardShortcutSupport.systemScreenshotConflictCopy)
+        #expect(actions.screenshotHotkeys == [conflicting])
+        #expect(!viewModel.isRecordingScreenshotHotkey)
     }
 
     @Test

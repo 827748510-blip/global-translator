@@ -93,6 +93,73 @@ struct SettingsHeaderSection: View {
     }
 }
 
+// MARK: - Screenshot translate
+
+struct ScreenshotTranslateSection: View {
+    @ObservedObject var viewModel: SettingsViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: GTSpacing.small) {
+            Text("截图翻译")
+                .font(GTType.sectionTitle)
+
+            GTLabeledControl(title: "快捷键") {
+                HStack(spacing: GTSpacing.xSmall) {
+                    Text(viewModel.screenshotTranslateHotkey.displayString)
+                        .font(GTType.body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, GTSpacing.small)
+                        .frame(height: GTControlMetrics.fieldHeight)
+                        .background(GTColor.fieldFill)
+                        .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous)
+                                .strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
+                        )
+                        .accessibilityLabel("截图翻译快捷键")
+                        .accessibilityValue(viewModel.screenshotTranslateHotkey.displayString)
+                    Button(viewModel.isRecordingScreenshotHotkey
+                           ? KeyboardShortcutSupport.recordingPromptCopy
+                           : "录制") {
+                        if viewModel.isRecordingScreenshotHotkey {
+                            viewModel.cancelRecordingScreenshotHotkey()
+                        } else {
+                            viewModel.beginRecordingScreenshotHotkey()
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityHint("录制新的截图翻译快捷键，按下带修饰键的组合即可保存")
+                }
+            }
+
+            if let message = viewModel.screenshotHotkeyConflictMessage, !message.isEmpty {
+                Text(message)
+                    .font(GTType.secondary)
+                    .foregroundStyle(GTColor.destructive)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("快捷键冲突")
+                    .accessibilityValue(message)
+            }
+
+            Toggle(
+                "自动复制译文",
+                isOn: Binding(
+                    get: { viewModel.autoCopyScreenshotTranslation },
+                    set: { viewModel.setAutoCopyScreenshotTranslation($0) }
+                )
+            )
+            .toggleStyle(.switch)
+            .frame(minHeight: GTPopoverMetrics.minRowHitHeight)
+            .accessibilityHint("翻译成功后自动把简体中文译文写入剪贴板，默认关闭")
+
+            Text("按快捷键后拖选区域。文字由本机 Vision 识别（中/英），再走当前翻译后端。需要屏幕录制权限。")
+                .font(GTType.caption)
+                .foregroundStyle(GTColor.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
 // MARK: - Backend picker + fixed target
 
 struct BackendPickerSection: View {

@@ -18,6 +18,10 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     public var videoTranslateEnabled: Bool
     /// Last 优化提示词 scene. Default is workplace/social polish.
     public var promptOptimizeMode: PromptOptimizeMode
+    /// Global hotkey that starts region-select screenshot translate.
+    public var screenshotTranslateHotkey: KeyboardShortcutSpec
+    /// Copy screenshot-translate result automatically. Default off.
+    public var autoCopyScreenshotTranslation: Bool
 
     public init(
         autoTranslateEnabled: Bool = false,
@@ -30,7 +34,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         translatedBundleIDs: [String] = [],
         selectionTranslateEnabled: Bool = true,
         videoTranslateEnabled: Bool = false,
-        promptOptimizeMode: PromptOptimizeMode = .communicationPolish
+        promptOptimizeMode: PromptOptimizeMode = .communicationPolish,
+        screenshotTranslateHotkey: KeyboardShortcutSpec = .screenshotTranslateDefault,
+        autoCopyScreenshotTranslation: Bool = false
     ) {
         self.autoTranslateEnabled = autoTranslateEnabled
         self.backend = backend
@@ -43,6 +49,10 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         self.selectionTranslateEnabled = selectionTranslateEnabled
         self.videoTranslateEnabled = videoTranslateEnabled
         self.promptOptimizeMode = promptOptimizeMode
+        self.screenshotTranslateHotkey = screenshotTranslateHotkey.isValid
+            ? screenshotTranslateHotkey
+            : .screenshotTranslateDefault
+        self.autoCopyScreenshotTranslation = autoCopyScreenshotTranslation
     }
 
     public static let defaultLocalBaseURL = URL(string: "http://127.0.0.1:11434/v1")!
@@ -72,6 +82,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         case selectionTranslateEnabled
         case videoTranslateEnabled
         case promptOptimizeMode
+        case screenshotTranslateHotkey
+        case autoCopyScreenshotTranslation
     }
 
     public init(from decoder: Decoder) throws {
@@ -90,6 +102,13 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         selectionTranslateEnabled = try container.decodeIfPresent(Bool.self, forKey: .selectionTranslateEnabled) ?? true
         videoTranslateEnabled = try container.decodeIfPresent(Bool.self, forKey: .videoTranslateEnabled) ?? false
         promptOptimizeMode = try container.decodeIfPresent(PromptOptimizeMode.self, forKey: .promptOptimizeMode) ?? .communicationPolish
+        if let hotkey = try container.decodeIfPresent(KeyboardShortcutSpec.self, forKey: .screenshotTranslateHotkey),
+           hotkey.isValid {
+            screenshotTranslateHotkey = hotkey
+        } else {
+            screenshotTranslateHotkey = .screenshotTranslateDefault
+        }
+        autoCopyScreenshotTranslation = try container.decodeIfPresent(Bool.self, forKey: .autoCopyScreenshotTranslation) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -105,5 +124,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         try container.encode(selectionTranslateEnabled, forKey: .selectionTranslateEnabled)
         try container.encode(videoTranslateEnabled, forKey: .videoTranslateEnabled)
         try container.encode(promptOptimizeMode, forKey: .promptOptimizeMode)
+        try container.encode(screenshotTranslateHotkey, forKey: .screenshotTranslateHotkey)
+        try container.encode(autoCopyScreenshotTranslation, forKey: .autoCopyScreenshotTranslation)
     }
 }

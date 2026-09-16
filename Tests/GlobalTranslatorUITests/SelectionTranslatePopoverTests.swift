@@ -139,6 +139,28 @@ struct SelectionTranslatePopoverTests {
     }
 
     @Test
+    func screenshotContentOmitsOptimizePickerButKeepsCopy() {
+        let content = SelectionPopoverContent.translated(
+            original: "Hello world",
+            translation: "你好，世界",
+            screenFrame: CGRect(x: 0, y: 0, width: 10, height: 10)
+        ).asScreenshotResult()
+        #expect(!content.showsOptimizeAction)
+        #expect(!content.showsTranslateAction)
+        #expect(content.allowsCopy)
+        #expect(content.copyText == "你好，世界")
+        let withOptimize = SelectionPopoverContent.translated(
+            original: "Hello world",
+            translation: "你好，世界",
+            screenFrame: CGRect(x: 0, y: 0, width: 10, height: 10)
+        )
+        let screenshotSize = SelectionTranslatePanelController.contentSize(for: content)
+        let selectionSize = SelectionTranslatePanelController.contentSize(for: withOptimize)
+        #expect(screenshotSize.height < selectionSize.height)
+        #expect(screenshotSize.width == GTSelectionMetrics.width)
+    }
+
+    @Test
     func selectionMetricsUseDedicatedPaddingAndWidth() {
         #expect(GTSelectionMetrics.width >= 300)
         #expect(GTSelectionMetrics.width <= 320)

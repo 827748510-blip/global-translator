@@ -18,6 +18,10 @@ public final class SettingsViewModel: ObservableObject {
     @Published public var isSelectionTranslateEnabled = true
     @Published public var isVideoTranslateEnabled = false
     @Published public var promptOptimizeMode: PromptOptimizeMode = .communicationPolish
+    @Published public var autoCopyScreenshotTranslation = false
+    @Published public var screenshotTranslateHotkey = KeyboardShortcutSpec.screenshotTranslateDefault
+    @Published public var isRecordingScreenshotHotkey = false
+    @Published public var screenshotHotkeyConflictMessage: String?
     @Published public var selectedBackend: BackendKind = .deepSeekCloud
     @Published public var visionFallbackEnabled = false
     @Published public var keyConfigured = false
@@ -177,6 +181,31 @@ public final class SettingsViewModel: ObservableObject {
         guard promptOptimizeMode != mode else { return }
         promptOptimizeMode = mode
         actions.setPromptOptimizeMode(mode)
+    }
+
+    public func setAutoCopyScreenshotTranslation(_ enabled: Bool) {
+        guard autoCopyScreenshotTranslation != enabled else { return }
+        autoCopyScreenshotTranslation = enabled
+        actions.setAutoCopyScreenshotTranslation(enabled)
+    }
+
+    public func beginRecordingScreenshotHotkey() {
+        screenshotHotkeyConflictMessage = nil
+        isRecordingScreenshotHotkey = true
+        actions.beginScreenshotHotkeyRecording()
+    }
+
+    public func cancelRecordingScreenshotHotkey() {
+        guard isRecordingScreenshotHotkey else { return }
+        isRecordingScreenshotHotkey = false
+        actions.cancelScreenshotHotkeyRecording()
+    }
+
+    public func setScreenshotTranslateHotkey(_ spec: KeyboardShortcutSpec) {
+        screenshotTranslateHotkey = spec
+        isRecordingScreenshotHotkey = false
+        screenshotHotkeyConflictMessage = spec.conflictWarning
+        actions.setScreenshotTranslateHotkey(spec)
     }
 
     public func selectBackend(_ kind: BackendKind) {

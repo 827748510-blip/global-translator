@@ -25,6 +25,8 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
     var overlay: (any OverlayControlling)?
     var session: TranslationSession?
     var selectionTranslate: SelectionTranslateController?
+    var screenshotTranslate: ScreenshotTranslateController?
+    var hotkeyRecordingMonitor: Any?
     var callbackBox: WindowCallbackBox?
     var automaticRequestToken: UInt64 = 0
     var automaticEnablePending = false
@@ -85,6 +87,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         if settingsRequested { statusItem?.showSettings() }
         makeSession()
         makeSelectionTranslate()
+        makeScreenshotTranslate()
         makeVideoASR()
         startExtensionBridge()
         if configurationLoadFailed {
@@ -128,6 +131,9 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         session = nil
         selectionTranslate?.setEnabled(false)
         selectionTranslate = nil
+        cancelScreenshotHotkeyRecording()
+        screenshotTranslate?.stopHotkey()
+        screenshotTranslate = nil
         videoASR?.stop()
         videoASR = nil
         bridgeServer?.stop()
@@ -156,6 +162,8 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         viewModel.isSelectionTranslateEnabled = configuration.selectionTranslateEnabled
         viewModel.isVideoTranslateEnabled = configuration.videoTranslateEnabled
         viewModel.promptOptimizeMode = configuration.promptOptimizeMode
+        viewModel.autoCopyScreenshotTranslation = configuration.autoCopyScreenshotTranslation
+        viewModel.screenshotTranslateHotkey = configuration.screenshotTranslateHotkey
         viewModel.deepSeekModel = AppConfiguration.resolvedDeepSeekModel(configuration.deepSeekModel)
         viewModel.permissionSnapshot = components.permissionController.snapshot
         viewModel.keyConfigured = configuration.deepSeekAPIKeyConfigured
@@ -264,6 +272,46 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             self?.setPromptOptimizeMode(mode)
         }
         controller.setEnabled(configuration.selectionTranslateEnabled)
+    }
+
+    func makeScreenshotTranslate() {
+        guard screenshotTranslate == nil else { return }
+        let controller = ScreenshotTranslateController(
+            selector: components.regionSelectorFactory(),
+            capturer: components.regionCapturerFactory(),
+            ocr: components.regionOCRFactory(),
+            popover: components.screenshotPopoverFactory(),
+            permissions: components.permissionController,
+            logger: components.logger,
+            registrar: components.hotkeyRegistrarFactory(),
+            translator: { [weak self] in self?.session },
+            backendReadiness: { [weak self] in
+                self?.screenshotBackendReadiness() ?? .localNotReady
+            },
+            requestScreenCapture: { [weak self] in
+                _ = self?.components.permissionController.requestScreenCapturePermission()
+                self?.refreshPermissions()
+            },
+            shortcut: configuration.screenshotTranslateHotkey
+        )
+        screenshotTranslate = controller
+        controller.setBackend(configuration.backend)
+        controller.setAutoCopy(configuration.autoCopyScreenshotTranslation)
+        controller.startHotkey()
+        if let message = controller.lastHotkeyError, !message.isEmpty {
+            viewModel.screenshotHotkeyConflictMessage = message
+        }
+    }
+
+    func screenshotBackendReadiness() -> ScreenshotBackendReadiness {
+        switch configuration.backend {
+        case .deepSeekCloud:
+            return configuration.deepSeekAPIKeyConfigured ? .ready : .missingCloudKey
+        case .local:
+            let modelReady = !configuration.localModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let urlReady = (try? EndpointValidator.validateLocalBaseURL(configuration.localBaseURL)) != nil
+            return modelReady && urlReady ? .ready : .localNotReady
+        }
     }
 
     func makeVideoASR() {
