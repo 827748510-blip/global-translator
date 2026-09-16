@@ -67,7 +67,7 @@ public final class CarbonHotkeyRegistrar: HotkeyRegistering {
 
     public func register(id: UInt32, shortcut: KeyboardShortcutSpec, handler: @escaping () -> Void) throws {
         guard shortcut.isValid else { throw HotkeyRegistrationError.invalid }
-        unregister(id)
+        unregister(id: id)
         installHandlerIfNeeded()
         var hotKeyRef: EventHotKeyRef?
         let hotKeyID = EventHotKeyID(signature: Self.signature, id: id)
