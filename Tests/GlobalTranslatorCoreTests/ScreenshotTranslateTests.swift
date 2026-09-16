@@ -53,13 +53,20 @@ struct ScreenshotTranslateCoreTests {
     @Test
     func regionDragRequiresMinimumSize() {
         var drag = ScreenshotRegionDrag()
+        #expect(drag.completePointerUp(clampedTo: nil) == nil)
+
         drag.begin(at: CGPoint(x: 10, y: 10))
         drag.move(to: CGPoint(x: 12, y: 11))
-        #expect(drag.finish() == nil)
+        let tiny = drag.completePointerUp(clampedTo: nil)
+        #expect(tiny == .completed(CGRect(x: 10, y: 10, width: 2, height: 1)))
+        #expect(!ScreenshotTranslateSupport.isUsableRegion(CGRect(x: 10, y: 10, width: 2, height: 1)))
+        #expect(tiny != .cancelled)
+
         drag.begin(at: CGPoint(x: 100, y: 200))
         drag.move(to: CGPoint(x: 180, y: 260))
         let rect = drag.finish()
         #expect(rect == CGRect(x: 100, y: 200, width: 80, height: 60))
+        #expect(ScreenshotTranslateSupport.isUsableRegion(rect))
         #expect(!drag.isDragging)
     }
 

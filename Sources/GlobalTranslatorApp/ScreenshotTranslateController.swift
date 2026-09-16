@@ -135,8 +135,8 @@ public final class ScreenshotTranslateController {
         }
     }
 
-    public func completeSelectionForTesting(_ rect: CGRect?) async {
-        await process(rect: rect)
+    public func completeSelectionForTesting(_ outcome: RegionSelectionOutcome) async {
+        await process(outcome)
     }
 
     private func retryCurrent() {
@@ -154,17 +154,24 @@ public final class ScreenshotTranslateController {
                 return
             }
         }
-        let rect = await selector.selectRegion()
+        let outcome = await selector.selectRegion()
         guard !Task.isCancelled else { return }
-        await process(rect: rect)
+        await process(outcome)
     }
 
-    private func process(rect: CGRect?) async {
+    private func process(_ outcome: RegionSelectionOutcome) async {
         guard !Task.isCancelled else { return }
-        guard let rect else {
+        switch outcome {
+        case .cancelled:
             logger.event("screenshot_cancelled", fields: [:])
             return
+        case .completed(let rect):
+            await process(rect: rect)
         }
+    }
+
+    private func process(rect: CGRect) async {
+        guard !Task.isCancelled else { return }
         guard ScreenshotTranslateSupport.isUsableRegion(rect) else {
             logger.event("screenshot_region_empty", fields: [:])
             presentFailure(

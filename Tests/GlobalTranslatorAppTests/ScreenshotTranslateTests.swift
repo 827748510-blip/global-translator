@@ -113,16 +113,17 @@ struct ScreenshotTranslateControllerTests {
     @Test
     func emptyRegionShowsExplicitMessage() async throws {
         let selector = FakeRegionSelector()
-        selector.result = CGRect(x: 10, y: 10, width: 2, height: 2)
+        selector.result = .completed(CGRect(x: 10, y: 10, width: 2, height: 2))
         let popover = FakeSelectionPopover()
         let ocr = FakeRegionOCR()
+        let logger = RecordingLogger()
         let controller = ScreenshotTranslateController(
             selector: selector,
             capturer: FakeRegionCapturer(),
             ocr: ocr,
             popover: popover,
             permissions: FakePermissionController(snapshot: .allGranted),
-            logger: RecordingLogger(),
+            logger: logger,
             registrar: RecordingHotkeyRegistrar(),
             translator: { StubSelectionTranslator() },
             backendReadiness: { .ready }
@@ -131,6 +132,8 @@ struct ScreenshotTranslateControllerTests {
         try await waitUntil { popover.currentContent?.status == .failed }
         #expect(popover.currentContent?.displayTranslation == ScreenshotTranslateSupport.emptyRegionCopy)
         #expect(ocr.callCount == 0)
+        #expect(logger.records.contains(where: { $0.0 == "screenshot_region_empty" }))
+        #expect(!logger.records.contains(where: { $0.0 == "screenshot_cancelled" }))
     }
 
     @Test
@@ -267,22 +270,26 @@ struct ScreenshotTranslateControllerTests {
     @Test
     func cancelledRegionDoesNotShowPopover() async throws {
         let selector = FakeRegionSelector()
-        selector.result = nil
+        selector.result = .cancelled
         let popover = FakeSelectionPopover()
+        let logger = RecordingLogger()
         let controller = ScreenshotTranslateController(
             selector: selector,
             capturer: FakeRegionCapturer(),
             ocr: FakeRegionOCR(),
             popover: popover,
             permissions: FakePermissionController(snapshot: .allGranted),
-            logger: RecordingLogger(),
+            logger: logger,
             registrar: RecordingHotkeyRegistrar(),
             translator: { StubSelectionTranslator() },
             backendReadiness: { .ready }
         )
         controller.handleHotkey()
-        try await Task.sleep(for: .milliseconds(30))
+        try await waitUntil { selector.selectCount == 1 }
+        try await Task.sleep(for: .milliseconds(20))
         #expect(popover.shown.isEmpty)
+        #expect(logger.records.contains(where: { $0.0 == "screenshot_cancelled" }))
+        #expect(!logger.records.contains(where: { $0.0 == "screenshot_region_empty" }))
     }
 
     @Test

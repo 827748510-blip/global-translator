@@ -19,6 +19,13 @@ public enum ScreenshotTranslateError: Error, Equatable, Sendable {
     case cancelled
 }
 
+/// Overlay result: Esc / dismiss is `cancelled`; mouse-up is always `completed`,
+/// even when the rect is smaller than `minRegionSize`.
+public enum RegionSelectionOutcome: Equatable, Sendable {
+    case cancelled
+    case completed(CGRect)
+}
+
 public enum ScreenshotTranslateSupport {
     public static let emptyRegionCopy = "未选中有效区域"
     public static let ocrFailedCopy = "未能识别文字"
@@ -96,10 +103,24 @@ public struct ScreenshotRegionDrag: Equatable, Sendable {
         current = point
     }
 
-    public mutating func finish() -> CGRect? {
+    /// Ends the drag and returns the actual rect, including too-small geometry.
+    /// Callers must not treat a tiny rect as cancel; only `RegionSelectionOutcome.cancelled` is silent.
+    public mutating func finish() -> CGRect {
         let rect = screenRect
         reset()
-        return ScreenshotTranslateSupport.isUsableRegion(rect) ? rect : nil
+        return rect
+    }
+
+    /// Mouse-up for an in-progress drag. `nil` means no drag started (ignore stray up).
+    /// Too-small / invalid geometry is still `.completed`; Esc uses `.cancelled`.
+    public mutating func completePointerUp(clampedTo screen: CGRect?) -> RegionSelectionOutcome? {
+        guard isDragging else { return nil }
+        var rect = finish()
+        if let screen {
+            let clamped = RegionCaptureGeometry.clamp(rect, to: screen)
+            rect = (clamped.isNull || clamped.isInfinite) ? .zero : clamped
+        }
+        return .completed(rect)
     }
 
     public mutating func cancel() {

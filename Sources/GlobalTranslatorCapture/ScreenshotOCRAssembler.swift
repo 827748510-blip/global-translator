@@ -31,7 +31,7 @@ public enum ScreenshotOCRAssembler {
             let text = observation.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
             let y = observation.boundingBox.standardized.midY
-            if let currentY, abs(currentY - y) > lineTolerance {
+            if let lastY = currentY, abs(lastY - y) > lineTolerance {
                 let line = current.joined(separator: " ")
                 if !line.isEmpty { lines.append(line) }
                 current = [text]

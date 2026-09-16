@@ -659,12 +659,12 @@ final class FakeSelectionPopover: SelectionPopoverControlling {
 
 @MainActor
 final class FakeRegionSelector: RegionSelectionPresenting {
-    var result: CGRect? = CGRect(x: 40, y: 80, width: 200, height: 60)
+    var result: RegionSelectionOutcome = .completed(CGRect(x: 40, y: 80, width: 200, height: 60))
     var selectCount = 0
     var cancelCount = 0
     var isSelecting = false
 
-    func selectRegion() async -> CGRect? {
+    func selectRegion() async -> RegionSelectionOutcome {
         selectCount += 1
         return result
     }

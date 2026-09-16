@@ -5,7 +5,7 @@ import GlobalTranslatorCore
 @MainActor
 public protocol RegionSelectionPresenting: AnyObject {
     var isSelecting: Bool { get }
-    func selectRegion() async -> CGRect?
+    func selectRegion() async -> RegionSelectionOutcome
     func cancel()
 }
 
@@ -13,7 +13,7 @@ public protocol RegionSelectionPresenting: AnyObject {
 public final class NullRegionSelector: RegionSelectionPresenting {
     public var isSelecting: Bool { false }
     public init() {}
-    public func selectRegion() async -> CGRect? { nil }
+    public func selectRegion() async -> RegionSelectionOutcome { .cancelled }
     public func cancel() {}
 }
 
@@ -80,7 +80,7 @@ public final class RegionSelectionOverlayController: RegionSelectionPresenting {
     private var eventMonitors: [Any] = []
     private var drag = ScreenshotRegionDrag()
     private var activeScreenFrame: CGRect?
-    private var continuation: CheckedContinuation<CGRect?, Never>?
+    private var continuation: CheckedContinuation<RegionSelectionOutcome, Never>?
     private var didPushCursor = false
     private let screensProvider: () -> [NSScreen]
 
@@ -88,7 +88,7 @@ public final class RegionSelectionOverlayController: RegionSelectionPresenting {
         self.screensProvider = screensProvider
     }
 
-    public func selectRegion() async -> CGRect? {
+    public func selectRegion() async -> RegionSelectionOutcome {
         cancel()
         return await withCheckedContinuation { continuation in
             self.continuation = continuation
@@ -97,7 +97,7 @@ public final class RegionSelectionOverlayController: RegionSelectionPresenting {
     }
 
     public func cancel() {
-        finish(nil)
+        finish(.cancelled)
     }
 
     public var isSelecting: Bool { continuation != nil }
@@ -168,7 +168,7 @@ public final class RegionSelectionOverlayController: RegionSelectionPresenting {
             guard let self else { return }
             assert(Thread.isMainThread)
             MainActor.assumeIsolated {
-                self.finish(nil)
+                self.finish(.cancelled)
             }
         }) {
             monitors.append(escapeGlobal)
@@ -178,7 +178,7 @@ public final class RegionSelectionOverlayController: RegionSelectionPresenting {
             guard let self else { return event }
             assert(Thread.isMainThread)
             MainActor.assumeIsolated {
-                self.finish(nil)
+                self.finish(.cancelled)
             }
             return nil
         }) {
@@ -199,12 +199,8 @@ public final class RegionSelectionOverlayController: RegionSelectionPresenting {
             drag.move(to: location)
             updateCanvases()
         case .up:
-            var rect = drag.finish()
-            if let screen = activeScreenFrame, let selected = rect {
-                let clamped = RegionCaptureGeometry.clamp(selected, to: screen)
-                rect = ScreenshotTranslateSupport.isUsableRegion(clamped) ? clamped : nil
-            }
-            finish(rect)
+            guard let outcome = drag.completePointerUp(clampedTo: activeScreenFrame) else { return }
+            finish(outcome)
         }
     }
 
@@ -215,7 +211,7 @@ public final class RegionSelectionOverlayController: RegionSelectionPresenting {
         }
     }
 
-    private func finish(_ rect: CGRect?) {
+    private func finish(_ outcome: RegionSelectionOutcome) {
         guard continuation != nil else {
             hideOverlay()
             return
@@ -223,7 +219,7 @@ public final class RegionSelectionOverlayController: RegionSelectionPresenting {
         let pending = continuation
         continuation = nil
         hideOverlay()
-        pending?.resume(returning: rect)
+        pending?.resume(returning: outcome)
     }
 
     private func hideOverlay() {
