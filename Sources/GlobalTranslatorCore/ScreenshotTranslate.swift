@@ -147,6 +147,25 @@ public enum RegionCaptureGeometry {
         )
     }
 
+    /// ScreenCaptureKit sometimes ignores `sourceRect` and returns a full-display
+    /// buffer. Compare **pixels to pixels** (image size vs points × scale). Mixing
+    /// `image.width` (pixels) with `sourceRect` / `screenFrame` (points) false-triggers
+    /// on Retina: a half-screen capture is already `≈ screenFrame.width` pixels.
+    public static func looksLikeFullDisplayBuffer(
+        imageSize: CGSize,
+        selection: CGRect,
+        screenFrame: CGRect,
+        scale: CGFloat
+    ) -> Bool {
+        let expectedWidth = displayLocalSourceRect(selection: selection, screenFrame: screenFrame).width
+        let pixelScale = max(scale, 1)
+        guard imageSize.width > 0, expectedWidth > 0, screenFrame.width > 0 else { return false }
+        let expectedPixelWidth = expectedWidth * pixelScale
+        let screenPixelWidth = screenFrame.width * pixelScale
+        return imageSize.width > expectedPixelWidth * 1.5
+            && imageSize.width >= screenPixelWidth * 0.8
+    }
+
     /// Crop in lower-left image pixels (matches `CGImageUtilities.crop`).
     public static func imageCropRect(
         selection: CGRect,
