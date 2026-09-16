@@ -3,6 +3,31 @@ import CoreGraphics
 import Foundation
 import ScreenCaptureKit
 
+enum RegionCaptureFallback {
+    /// Crops only when ScreenCaptureKit returned a full-display buffer for a
+    /// smaller `sourceRect`. Pixel vs point sizes must not be mixed (Retina).
+    static func croppedIfFullDisplay(
+        _ image: CGImage,
+        selection: CGRect,
+        screenFrame: CGRect,
+        scale: CGFloat
+    ) -> CGImage {
+        let imageSize = CGSize(width: image.width, height: image.height)
+        guard RegionCaptureGeometry.looksLikeFullDisplayBuffer(
+            imageSize: imageSize,
+            selection: selection,
+            screenFrame: screenFrame,
+            scale: scale
+        ) else { return image }
+        let crop = RegionCaptureGeometry.imageCropRect(
+            selection: selection,
+            screenFrame: screenFrame,
+            imageSize: imageSize
+        )
+        return CGImageUtilities.crop(image, rectInLowerLeftPixels: crop) ?? image
+    }
+}
+
 public protocol RegionScreenCapturing: Sendable {
     func capture(rect: CGRect) async throws -> CGImage
 }
@@ -57,10 +82,11 @@ public final class ScreenCaptureKitRegionCapturer: RegionScreenCapturing, @unche
         configuration.showsCursor = false
         configuration.capturesAudio = false
         let image = try await captureImage(filter: filter, configuration: configuration)
-        return croppedIfFullDisplay(
+        return RegionCaptureFallback.croppedIfFullDisplay(
             image,
             selection: rect,
-            screenFrame: screen.frame
+            screenFrame: screen.frame,
+            scale: scale
         )
     }
 
@@ -78,26 +104,6 @@ public final class ScreenCaptureKitRegionCapturer: RegionScreenCapturing, @unche
             lhs.frame.intersection(rect).width * lhs.frame.intersection(rect).height
                 < rhs.frame.intersection(rect).width * rhs.frame.intersection(rect).height
         })
-    }
-
-    private func croppedIfFullDisplay(
-        _ image: CGImage,
-        selection: CGRect,
-        screenFrame: CGRect
-    ) -> CGImage {
-        let expectedWidth = RegionCaptureGeometry.displayLocalSourceRect(
-            selection: selection,
-            screenFrame: screenFrame
-        ).width
-        let looksLikeFullDisplay = CGFloat(image.width) > expectedWidth * 1.5
-            && CGFloat(image.width) >= screenFrame.width * 0.8
-        guard looksLikeFullDisplay else { return image }
-        let crop = RegionCaptureGeometry.imageCropRect(
-            selection: selection,
-            screenFrame: screenFrame,
-            imageSize: CGSize(width: image.width, height: image.height)
-        )
-        return CGImageUtilities.crop(image, rectInLowerLeftPixels: crop) ?? image
     }
 
     private func captureImage(

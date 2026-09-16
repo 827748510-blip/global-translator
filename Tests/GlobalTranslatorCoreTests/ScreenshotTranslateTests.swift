@@ -87,6 +87,82 @@ struct ScreenshotTranslateCoreTests {
     }
 
     @Test
+    func retinaHalfScreenDoesNotLookLikeFullDisplayBuffer() {
+        let screen = CGRect(x: 0, y: 0, width: 1_000, height: 800)
+        let half = CGRect(x: 0, y: 0, width: 500, height: 800)
+        let scale: CGFloat = 2
+        let expectedWidth = RegionCaptureGeometry.displayLocalSourceRect(
+            selection: half,
+            screenFrame: screen
+        ).width
+        let regionPixels = CGSize(width: 1_000, height: 1_600)
+
+        // Pre-fix mixed units: pixels vs points. Half-screen Retina satisfies both.
+        #expect(regionPixels.width > expectedWidth * 1.5)
+        #expect(regionPixels.width >= screen.width * 0.8)
+
+        #expect(!RegionCaptureGeometry.looksLikeFullDisplayBuffer(
+            imageSize: regionPixels,
+            selection: half,
+            screenFrame: screen,
+            scale: scale
+        ))
+    }
+
+    @Test
+    func retinaFullDisplayBufferStillLooksLikeFullDisplay() {
+        let screen = CGRect(x: 0, y: 0, width: 1_000, height: 800)
+        let half = CGRect(x: 0, y: 0, width: 500, height: 800)
+        #expect(RegionCaptureGeometry.looksLikeFullDisplayBuffer(
+            imageSize: CGSize(width: 2_000, height: 1_600),
+            selection: half,
+            screenFrame: screen,
+            scale: 2
+        ))
+    }
+
+    @Test
+    func oneXFullDisplayFallbackStillTriggers() {
+        let screen = CGRect(x: 0, y: 0, width: 1_000, height: 800)
+        let half = CGRect(x: 0, y: 0, width: 500, height: 800)
+        #expect(!RegionCaptureGeometry.looksLikeFullDisplayBuffer(
+            imageSize: CGSize(width: 500, height: 800),
+            selection: half,
+            screenFrame: screen,
+            scale: 1
+        ))
+        #expect(RegionCaptureGeometry.looksLikeFullDisplayBuffer(
+            imageSize: CGSize(width: 1_000, height: 800),
+            selection: half,
+            screenFrame: screen,
+            scale: 1
+        ))
+    }
+
+    @Test
+    func fullScreenSelectionDoesNotCropOnRetina() {
+        let screen = CGRect(x: 1920, y: 0, width: 1_000, height: 800)
+        #expect(!RegionCaptureGeometry.looksLikeFullDisplayBuffer(
+            imageSize: CGSize(width: 2_000, height: 1_600),
+            selection: screen,
+            screenFrame: screen,
+            scale: 2
+        ))
+    }
+
+    @Test
+    func imageCropRectMapsSelectionOntoRetinaFullBuffer() {
+        let screen = CGRect(x: 0, y: 0, width: 1_000, height: 800)
+        let selection = CGRect(x: 100, y: 200, width: 80, height: 40)
+        let crop = RegionCaptureGeometry.imageCropRect(
+            selection: selection,
+            screenFrame: screen,
+            imageSize: CGSize(width: 2_000, height: 1_600)
+        )
+        #expect(crop == CGRect(x: 200, y: 400, width: 160, height: 80))
+    }
+
+    @Test
     func screenshotFailureCopyIsExplicit() {
         #expect(ScreenshotTranslateSupport.message(for: .missingScreenCapture)
                 == ScreenshotTranslateSupport.missingScreenCaptureCopy)
