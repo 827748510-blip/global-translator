@@ -1,6 +1,6 @@
 # Global Translator
 
-macOS 14+ 的全局翻译工具，提供可双击的 `Global Translator.app`、独立设置窗口、菜单栏图标及命令行入口。启动后处理当前活动窗口，通过 Accessibility 优先提取文本，必要时使用 Vision OCR，并用鼠标穿透的透明覆盖层显示简体中文。划选文字（滑词翻译）可在任意 App 的选区附近弹出译文，并可一键按场景优化提示词（默认沟通润色）；默认开启、可在设置中关闭。授予屏幕录制权限且自动翻译开启时，ScreenCaptureKit 对当前窗口持续进行最高 4 帧/秒、256×256 的本地变化检测，包括 Accessibility 能读取文字的窗口；检测帧不保存、不上传。
+macOS 14+ 的全局翻译工具，提供可双击的 `Global Translator.app`、独立设置窗口、菜单栏图标及命令行入口。启动后处理当前活动窗口，通过 Accessibility 优先提取文本，必要时使用 Vision OCR，并用鼠标穿透的透明覆盖层显示简体中文。划选文字（滑词翻译）可在任意 App 的选区附近弹出译文，并可一键按场景优化提示词（默认沟通润色）；默认开启、可在设置中关闭。授予屏幕录制权限且自动翻译开启时，ScreenCaptureKit 对当前窗口持续进行最高 4 帧/秒、256×256 的本地变化检测，包括 Accessibility 能读取文字的窗口；检测帧不保存、不上传。**截图翻译**：默认快捷键 ⌃⇧T 拖选区域，本机 Vision OCR（中/英）后走当前翻译后端，浮窗显示原文与译文并可拷贝；自动复制默认关闭。详见 [截图翻译](docs/screenshot-translate.md)。
 
 ## 环境要求
 
@@ -75,6 +75,7 @@ global-translator run --foreground
 - API Key 不进入配置、参数、环境、日志或翻译缓存
 - 截图、原文、译文和翻译缓存均不持久化
 - 滑词翻译仅监听鼠标左键抬起以读取 Accessibility 选区；不注入键盘。AX 读不到字时，仅在真实拖选后（或 AX 报告有选区范围却无字符串）、且剪贴板能完整备份时才临时 ⌘C 并立即恢复；单击不拖选不发 ⌘C。备份不全、密码框、本应用窗口则跳过。弹层提供翻译与「优化提示词」（沟通润色 / 任务指令 / 用词修正，默认沟通润色；拷贝成功显示「已拷贝」）
+- 截图翻译只在用户按下快捷键并拖选区域后截一次屏，用本机 Vision 识别中/英文，不把截图发给本地或云端模型；译文可拷贝，自动复制默认关
 - 不修改第三方 App 中的文本（扩展桥 / CDP 入页翻译除外）
 - Chrome 扩展「视频翻译」只叠加中文，不改网页视频文件或字幕文件；开关在菜单栏设置与「滑词翻译」同一行，默认关闭；有字幕走 B1，无外语字幕走本机系统/窗口音频 + Whisper.cpp（B2），详见 [视频翻译](docs/video-translate.md)
 
@@ -94,7 +95,7 @@ swift test -Xswiftc -warnings-as-errors
 swift build -c release -Xswiftc -warnings-as-errors
 ```
 
-已使用真实 DeepSeek 和本机 Ollama 验证翻译链路。跨 App 交互证据及尚未达到的性能目标见 [当前真实验收记录](docs/real-acceptance-current.md)，本机启动方式见 [本地模型配置](docs/local-model-setup.md)。新版应用的构建和实机结果见 [桌面应用验收记录](docs/desktop-app-2026-09-07.md)。滑词翻译的开关、权限与验证步骤见 [滑词翻译](docs/selection-translate.md)。应用不捆绑模型权重。
+已使用真实 DeepSeek 和本机 Ollama 验证翻译链路。跨 App 交互证据及尚未达到的性能目标见 [当前真实验收记录](docs/real-acceptance-current.md)，本机启动方式见 [本地模型配置](docs/local-model-setup.md)。新版应用的构建和实机结果见 [桌面应用验收记录](docs/desktop-app-2026-09-07.md)。滑词翻译的开关、权限与验证步骤见 [滑词翻译](docs/selection-translate.md)。截图翻译（区域拖选 + 本机 Vision OCR）见 [截图翻译](docs/screenshot-translate.md)。应用不捆绑模型权重。
 
 ## 本轮可用性修复
 

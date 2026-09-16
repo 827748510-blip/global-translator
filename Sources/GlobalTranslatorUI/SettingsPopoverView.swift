@@ -23,6 +23,9 @@ public struct SettingsPopoverView: View {
                     SettingsHeaderSection(viewModel: viewModel)
                 }
                 GTSettingsCard {
+                    ScreenshotTranslateSection(viewModel: viewModel)
+                }
+                GTSettingsCard {
                     TranslatedApplicationsSection(viewModel: viewModel)
                 }
                 GTSettingsCard {

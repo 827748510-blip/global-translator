@@ -361,6 +361,10 @@ public typealias OverlayFactory = @MainActor () -> any OverlayControlling
 public typealias SelectionPopoverFactory = @MainActor () -> any SelectionPopoverControlling
 public typealias SelectedTextReaderFactory = @MainActor () -> any SelectedTextReading
 public typealias SelectionPointerMonitorFactory = @MainActor () -> any SelectionPointerMonitoring
+public typealias RegionSelectorFactory = @MainActor () -> any RegionSelectionPresenting
+public typealias RegionCapturerFactory = @MainActor () -> any RegionScreenCapturing
+public typealias RegionOCRFactory = @MainActor () -> any RegionTextRecognizing
+public typealias HotkeyRegistrarFactory = @MainActor () -> any HotkeyRegistering
 public typealias CoordinatorFactory = @Sendable ([any TranslationBackend], EngineEventSink?) -> any TranslationCoordinating
 public typealias SchedulerFactory = @MainActor (
     TranslationCoordinating,
@@ -381,6 +385,11 @@ public struct ApplicationControllerComponents {
     public let selectedTextReaderFactory: SelectedTextReaderFactory
     public let selectionPopoverFactory: SelectionPopoverFactory
     public let selectionPointerMonitorFactory: SelectionPointerMonitorFactory
+    public let regionSelectorFactory: RegionSelectorFactory
+    public let regionCapturerFactory: RegionCapturerFactory
+    public let regionOCRFactory: RegionOCRFactory
+    public let hotkeyRegistrarFactory: HotkeyRegistrarFactory
+    public let screenshotPopoverFactory: SelectionPopoverFactory
     public let coordinatorFactory: CoordinatorFactory
     public let schedulerFactory: SchedulerFactory
     public let logger: any AppRuntimeLogger
@@ -399,6 +408,11 @@ public struct ApplicationControllerComponents {
         selectedTextReaderFactory: @escaping SelectedTextReaderFactory = { NullSelectedTextReader() },
         selectionPopoverFactory: @escaping SelectionPopoverFactory = { NullSelectionPopover() },
         selectionPointerMonitorFactory: @escaping SelectionPointerMonitorFactory = { NullSelectionPointerMonitor() },
+        regionSelectorFactory: @escaping RegionSelectorFactory = { NullRegionSelector() },
+        regionCapturerFactory: @escaping RegionCapturerFactory = { NullRegionCapturer() },
+        regionOCRFactory: @escaping RegionOCRFactory = { NullRegionOCR() },
+        hotkeyRegistrarFactory: @escaping HotkeyRegistrarFactory = { NullHotkeyRegistrar() },
+        screenshotPopoverFactory: @escaping SelectionPopoverFactory = { NullSelectionPopover() },
         coordinatorFactory: @escaping CoordinatorFactory,
         schedulerFactory: @escaping SchedulerFactory,
         logger: any AppRuntimeLogger,
@@ -415,6 +429,11 @@ public struct ApplicationControllerComponents {
         self.selectedTextReaderFactory = selectedTextReaderFactory
         self.selectionPopoverFactory = selectionPopoverFactory
         self.selectionPointerMonitorFactory = selectionPointerMonitorFactory
+        self.regionSelectorFactory = regionSelectorFactory
+        self.regionCapturerFactory = regionCapturerFactory
+        self.regionOCRFactory = regionOCRFactory
+        self.hotkeyRegistrarFactory = hotkeyRegistrarFactory
+        self.screenshotPopoverFactory = screenshotPopoverFactory
         self.coordinatorFactory = coordinatorFactory
         self.schedulerFactory = schedulerFactory
         self.logger = logger

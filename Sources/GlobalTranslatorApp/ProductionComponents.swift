@@ -39,6 +39,11 @@ extension ApplicationControllerComponents {
             selectedTextReaderFactory: { AXSelectedTextReader() },
             selectionPopoverFactory: { SelectionTranslatePanelController() },
             selectionPointerMonitorFactory: { SystemSelectionPointerMonitor() },
+            regionSelectorFactory: { RegionSelectionOverlayController() },
+            regionCapturerFactory: { ScreenCaptureKitRegionCapturer() },
+            regionOCRFactory: { RegionVisionOCRService() },
+            hotkeyRegistrarFactory: { CarbonHotkeyRegistrar() },
+            screenshotPopoverFactory: { SelectionTranslatePanelController() },
             coordinatorFactory: { backends, eventSink in
                 TranslationCoordinator(backends: backends, eventSink: eventSink)
             },

@@ -303,6 +303,10 @@ public struct SelectionPopoverContent: Equatable, Sendable {
     public var screenFrame: CGRect
     /// Hard-cap leftover after chunking: show a Chinese note, never pretend the cut was the full text.
     public var sourceWasTruncated: Bool
+    /// Screenshot translate reuses this popover but does not offer 优化提示词.
+    public var allowsPromptOptimize: Bool
+    /// Screenshot MVP only needs copy; 翻译 retry stays on 滑词.
+    public var allowsRetranslate: Bool
 
     public init(
         original: String,
@@ -310,7 +314,9 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         translation: String,
         status: SelectionPopoverStatus,
         screenFrame: CGRect,
-        sourceWasTruncated: Bool = false
+        sourceWasTruncated: Bool = false,
+        allowsPromptOptimize: Bool = true,
+        allowsRetranslate: Bool = true
     ) {
         self.original = original
         self.originalPreview = originalPreview
@@ -318,6 +324,8 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         self.status = status
         self.screenFrame = screenFrame
         self.sourceWasTruncated = sourceWasTruncated
+        self.allowsPromptOptimize = allowsPromptOptimize
+        self.allowsRetranslate = allowsRetranslate
     }
 
     public var displayTranslation: String {
@@ -358,11 +366,18 @@ public struct SelectionPopoverContent: Equatable, Sendable {
     }
 
     public var showsTranslateAction: Bool {
-        !original.isEmpty && status != .unavailable
+        allowsRetranslate && !original.isEmpty && status != .unavailable
     }
 
     public var showsOptimizeAction: Bool {
-        !original.isEmpty && status != .unavailable
+        allowsPromptOptimize && !original.isEmpty && status != .unavailable
+    }
+
+    public func asScreenshotResult() -> SelectionPopoverContent {
+        var copy = self
+        copy.allowsPromptOptimize = false
+        copy.allowsRetranslate = false
+        return copy
     }
 
     public var showsActionButtons: Bool {

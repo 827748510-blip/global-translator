@@ -657,6 +657,68 @@ final class FakeSelectionPopover: SelectionPopoverControlling {
     }
 }
 
+@MainActor
+final class FakeRegionSelector: RegionSelectionPresenting {
+    var result: CGRect? = CGRect(x: 40, y: 80, width: 200, height: 60)
+    var selectCount = 0
+    var cancelCount = 0
+    var isSelecting = false
+
+    func selectRegion() async -> CGRect? {
+        selectCount += 1
+        return result
+    }
+
+    func cancel() {
+        cancelCount += 1
+    }
+}
+
+final class FakeRegionCapturer: RegionScreenCapturing, @unchecked Sendable {
+    var image: CGImage?
+    var error: Error?
+    private(set) var rects: [CGRect] = []
+
+    init(image: CGImage? = makeSolidTestImage()) {
+        self.image = image
+    }
+
+    func capture(rect: CGRect) async throws -> CGImage {
+        rects.append(rect)
+        if let error { throw error }
+        guard let image else { throw CaptureError.captureFailed }
+        return image
+    }
+}
+
+final class FakeRegionOCR: RegionTextRecognizing, @unchecked Sendable {
+    var text = "Hello world"
+    var error: Error?
+    private(set) var callCount = 0
+
+    func recognizeJoinedText(image: CGImage) async throws -> String {
+        callCount += 1
+        if let error { throw error }
+        return text
+    }
+}
+
+func makeSolidTestImage(width: Int = 32, height: Int = 16) -> CGImage? {
+    let colorSpace = CGColorSpaceCreateDeviceGray()
+    guard let context = CGContext(
+        data: nil,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: width,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.none.rawValue
+    ) else { return nil }
+    context.setFillColor(gray: 0.8, alpha: 1)
+    context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    return context.makeImage()
+}
+
 final class FakeSelectedTextReader: SelectedTextReading, @unchecked Sendable {
     private let lock = NSLock()
     private var result: SelectedTextReadResult

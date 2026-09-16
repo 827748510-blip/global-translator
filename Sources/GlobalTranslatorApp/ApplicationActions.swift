@@ -133,6 +133,59 @@ extension ApplicationController {
         queueSave()
     }
 
+    public func setAutoCopyScreenshotTranslation(_ enabled: Bool) {
+        configuration.autoCopyScreenshotTranslation = enabled
+        viewModel.autoCopyScreenshotTranslation = enabled
+        screenshotTranslate?.setAutoCopy(enabled)
+        queueSave()
+    }
+
+    public func setScreenshotTranslateHotkey(_ spec: KeyboardShortcutSpec) {
+        let resolved = spec.isValid ? spec : .screenshotTranslateDefault
+        configuration.screenshotTranslateHotkey = resolved
+        viewModel.screenshotTranslateHotkey = resolved
+        screenshotTranslate?.updateHotkey(resolved)
+        viewModel.screenshotHotkeyConflictMessage = screenshotTranslate?.lastHotkeyError ?? spec.conflictWarning
+        queueSave()
+    }
+
+    public func beginScreenshotHotkeyRecording() {
+        cancelScreenshotHotkeyRecording()
+        viewModel.isRecordingScreenshotHotkey = true
+        viewModel.screenshotHotkeyConflictMessage = nil
+        screenshotTranslate?.setHotkeySuspended(true)
+        hotkeyRecordingMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.handleScreenshotHotkeyRecording(event)
+            return nil
+        }
+    }
+
+    public func cancelScreenshotHotkeyRecording() {
+        let wasRecording = hotkeyRecordingMonitor != nil || viewModel.isRecordingScreenshotHotkey
+        if let hotkeyRecordingMonitor {
+            NSEvent.removeMonitor(hotkeyRecordingMonitor)
+            self.hotkeyRecordingMonitor = nil
+        }
+        viewModel.isRecordingScreenshotHotkey = false
+        if wasRecording {
+            screenshotTranslate?.setHotkeySuspended(false)
+        }
+    }
+
+    func handleScreenshotHotkeyRecording(_ event: NSEvent) {
+        if event.keyCode == KeyboardShortcutSpec.KeyCode.escape {
+            cancelScreenshotHotkeyRecording()
+            return
+        }
+        let spec = KeyboardShortcutSpec(keyCode: event.keyCode, modifierFlags: event.modifierFlags)
+        guard spec.isValid else {
+            viewModel.screenshotHotkeyConflictMessage = KeyboardShortcutSupport.invalidCopy
+            return
+        }
+        cancelScreenshotHotkeyRecording()
+        setScreenshotTranslateHotkey(spec)
+    }
+
     public func selectBackend(_ kind: BackendKind) {
         guard configuration.backend != kind else { return }
         backendHealthToken &+= 1
@@ -147,6 +200,7 @@ extension ApplicationController {
         viewModel.availableModels = []
         viewModel.keyConfigured = configuration.deepSeekAPIKeyConfigured
         selectionTranslate?.setBackend(kind)
+        screenshotTranslate?.setBackend(kind)
         Task { await previousSession?.clearCache() }
         rebuildSession()
         queueSave()

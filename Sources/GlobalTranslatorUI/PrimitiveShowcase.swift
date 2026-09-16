@@ -151,6 +151,10 @@ private final class ShowcaseActions: SettingsActions {
     func setSelectionTranslate(_ enabled: Bool) {}
     func setVideoTranslate(_ enabled: Bool) {}
     func setPromptOptimizeMode(_ mode: PromptOptimizeMode) {}
+    func setAutoCopyScreenshotTranslation(_ enabled: Bool) {}
+    func setScreenshotTranslateHotkey(_ spec: KeyboardShortcutSpec) {}
+    func beginScreenshotHotkeyRecording() {}
+    func cancelScreenshotHotkeyRecording() {}
     func selectBackend(_ kind: BackendKind) {}
     func saveAPIKey(_ draft: String) async throws {}
     func deleteAPIKey() async throws {}

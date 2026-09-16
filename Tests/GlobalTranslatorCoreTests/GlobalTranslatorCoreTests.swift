@@ -17,6 +17,8 @@ struct GlobalTranslatorCoreTests {
         #expect(configuration.selectionTranslateEnabled)
         #expect(!configuration.videoTranslateEnabled)
         #expect(configuration.promptOptimizeMode == .communicationPolish)
+        #expect(configuration.screenshotTranslateHotkey == .screenshotTranslateDefault)
+        #expect(!configuration.autoCopyScreenshotTranslation)
 
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = ConfigStore(url: path)
@@ -38,6 +40,8 @@ struct GlobalTranslatorCoreTests {
         #expect(decoded.promptOptimizeMode == .communicationPolish)
         #expect(decoded.deepSeekModel == "deepseek-chat")
         #expect(!decoded.deepSeekAPIKeyConfigured)
+        #expect(decoded.screenshotTranslateHotkey == .screenshotTranslateDefault)
+        #expect(!decoded.autoCopyScreenshotTranslation)
 
         let allowJSON = Data(#"{"translatedBundleIDs":["com.google.Chrome"]}"#.utf8)
         let allow = try JSONDecoder().decode(AppConfiguration.self, from: allowJSON)
