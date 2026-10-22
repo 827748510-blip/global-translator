@@ -103,10 +103,37 @@
 | `GT_LIVE_OLLAMA=1 swift test --filter LiveOllamaSelectionSmokeTests` | 2/2 通过：真实 Ollama 结构化调用对 `Figma` 抛「copied the source」；纯文本补答对 `Figma` / `Spotify` / `Python` 均给出非回声结果 |
 | 定向回归 | `SelectionTranslateControllerTests` 40、`SelectedTextReaderTests`+`ClipboardRestoreTests` 19、`CopiedSourceDetectorTests`+`SelectionFallbackInstructionsTests` 8 全绿 |
 
+## 安装与真机验收（2026-10-22）
+
+安装：
+
+- `scripts/package-app.sh` 产出 `.build/desktop/Global Translator.app`，用 `ditto` 覆盖 `/Applications` 与 `~/Applications` 两份；三处二进制 md5 均为 `6eeb4d275c3300fc5c4a53fe4f843844`。
+- 替换前旧版备份在 `.build/desktop/backup-20261022-151100/`（gitignored，可回滚）。
+- 运行进程为 `/Applications/Global Translator.app/Contents/MacOS/global-translator`（验收期间多次重启），日志有 `worker_started` + `bridge_listening port=9233`；`global-translator doctor` 显示辅助功能已授权。
+
+能力限制：本机终端 / peekaboo / cliclick 没有辅助功能与屏幕录制 TCC，系统拒绝截图和 System Events，因此本轮验收用 **真实鼠标拖选（cliclick 事件可注入）+ App 运行日志 + 可控 mock 后端请求记录** 取证，没有视觉截图。
+
+1. **普通文本（真实 Ollama 本地后端）**：TextEdit 拖选英文句子
+   - `selection_gesture verdict=textSelection`；
+   - `engine_snapshot revision=1` → `engine_batch` → `engine_completed status=success translated_count=1 duration_ms=1382`；
+   - 剪贴板哨兵 `GT-SENTINEL-20261022-KEEP-ME` 保持不变（AX 路径未借用剪贴板）。
+2. **品牌词回声（真实 Ollama 本地后端，安装版）**：TextEdit 拖选 `Kubernetes`
+   - `engine_failed status=invalidResponse`（结构化请求回声）；
+   - `selection_plain_fallback reason=copied_source status=success`（纯文本兜底成功）；
+   - **没有** `selection_translate_failed`；剪贴板哨兵 `GT-SENTINEL-FINAL-KEEP-ME` 保持不变。
+3. **可控 mock 端到端复核**：临时把 `localBaseURL` 指向本机 mock（`127.0.0.1:11435`），mock 对结构化请求回原文回声、对纯文本回「…（兜底译文）」：
+   - mock 连续两次记录 `STRUCTURED source='tadog' -> '0：tadog'` 与 `PLAIN source='tadog' -> 'tadog（兜底译文）'`；
+   - App 日志对应 `engine_failed invalidResponse` + `selection_plain_fallback reason=copied_source status=success`；
+   - 验收脚本带 `trap`，结束后已恢复 `localBaseURL=http://127.0.0.1:11434/v1`、重启 App，并用 `curl /v1/models` 确认真实 Ollama 恢复；mock 端口已关闭。
+   - 说明：拖选起点比文字左边界偏左 2 个字符，实际选中 `tadog`；不影响回声 → 兜底链路验证。
+
+未覆盖：Electron / 飞书类 App 的真实 ⌘C 兜底（本机未安装飞书 / Lark）；覆盖层、优化提示词、截图翻译未在本轮重测。
+
 ## 残余风险 / 未验证
 
 - **DeepSeek 云端真实往返未验证**：本机未配置云端 Key；兜底同样适用于云端 `invalidResponse`，每次失败最多多一次短请求（仅 ≤600 字块）。
-- **GUI 实机未重装验证**：本次只跑自动化与真实 Ollama 冒烟；把新构建替换本机安装版需要单独执行 `scripts/package-app.sh` + 重装，未自动执行。
+- **Electron 类 App 的剪贴板兜底未真机覆盖**：本机无飞书 / Lark；取消竞态、200ms 等待与串行 gate 由单元/回归测试覆盖，真实 Electron 页面仍需后续人工验收。
+- **视觉/截图未取证**：终端与自动化工具缺 TCC，本轮以日志 + mock 请求取证，未做截图或屏幕元素级验证。
 - **双击选词**在 Electron 类 App 中仍不触发剪贴板兜底（只认拖选手势），属于既有产品约束，本次未改。
 - **长块（>600 字）**不做纯文本兜底，仍可能显示失败，需要用户点「翻译」重试。
 - 回声判定复用 `TextFilter.shouldTranslate`：已判为「专有名词，无需翻译」的选区（`Mac Studio` 等）平时不请求模型；用户强制点「翻译」时若模型回声，沿用后端既有口径保留原文，不再触发兜底。
@@ -117,6 +144,7 @@
 
 ## 回滚
 
-- 分支：`dsh/fix-selection-translate-resilience`（基于 `main` `6ec55ae`）。
-- 未提交、未推送、未改动本机运行中的安装版。
-- 回滚方式：切回 `main` 即可；本次没有数据库、配置或网络协议变更（`invalidResponse` 语义未变）。
+- 分支：`dsh/fix-selection-translate-resilience`，提交 `e62dd10`，已推送并开 PR #26。
+- 本机已安装新构建（两份 App）；回滚用 `.build/desktop/backup-20261022-151100/` 覆盖回 `/Applications` 与 `~/Applications`，再 `global-translator stop` / 重启。
+- 验收用的 mock 配置已恢复：`localBaseURL=http://127.0.0.1:11434/v1`，11435 端口未监听，无配置残留。
+- 代码回滚直接切回 `main` 即可；本次没有数据库或网络协议变更（`invalidResponse` 语义未变）。
