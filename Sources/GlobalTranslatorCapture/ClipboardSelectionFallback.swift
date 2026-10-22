@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import os
 
 public struct PasteboardItemSnapshot: Equatable, Sendable {
     public let types: [String]
@@ -31,22 +32,86 @@ public protocol CopyKeystrokeIssuing: Sendable {
     func issueCopyKeystroke()
 }
 
+/// Serializes steal-and-restore windows. Two overlapping reads (fast
+/// consecutive drags) must not let the second call snapshot the first call's
+/// temporary selection text as the "user clipboard".
+private final class ClipboardBorrowGate: @unchecked Sendable {
+    private struct State {
+        var busy = false
+        var waiters: [CheckedContinuation<Void, Never>] = []
+    }
+
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    func acquire() async {
+        let takenImmediately: Bool = state.withLock { current in
+            if current.busy { return false }
+            current.busy = true
+            return true
+        }
+        guard !takenImmediately else { return }
+        await withCheckedContinuation { continuation in
+            let resumedImmediately: Bool = state.withLock { current in
+                if current.busy {
+                    current.waiters.append(continuation)
+                    return false
+                }
+                current.busy = true
+                return true
+            }
+            if resumedImmediately { continuation.resume() }
+        }
+    }
+
+    func release() {
+        let next: CheckedContinuation<Void, Never>? = state.withLock { current in
+            guard !current.waiters.isEmpty else {
+                current.busy = false
+                return nil
+            }
+            return current.waiters.removeFirst()
+        }
+        next?.resume()
+    }
+}
+
 /// Saves the general pasteboard, posts ⌘C, reads the new string, then
 /// restores the previous contents. Used when AX selectedText is empty after
 /// a real drag, or when AX reports a non-empty range but no string.
+///
+/// MainActor because every AppKit call here (`NSPasteboard`, `NSEvent`
+/// coordinates) is AppKit-facing. The wait is async, so the main thread is
+/// free while a slow Electron page services ⌘C.
+@MainActor
 public struct RestoringClipboardSelectionFallback: ClipboardSelectionFallingBack, @unchecked Sendable {
+    /// How long to wait for the target app to service ⌘C. The keystroke is
+    /// delivered asynchronously and the app handles it on its main thread;
+    /// 50 ms used to be the whole budget and Electron / webview pages under
+    /// load regularly missed it, which looked like 「划词没反应」. The await does
+    /// not block the main thread, so a larger ceiling is safe.
+    public nonisolated static let maximumWaitAttempts = 40
+    public nonisolated static let waitIntervalMilliseconds = 5
+
     private let pasteboard: any PasteboardSnapshotting
     private let keystroke: any CopyKeystrokeIssuing
-    private let wait: @Sendable () -> Void
+    /// Must **ignore cancellation**. Once ⌘C is posted, the target app writes
+    /// the pasteboard later; if the wait aborts early, the restore runs first
+    /// and the late copy overwrites it, leaving the user's clipboard holding
+    /// the selected text. Cancellation only decides the return value.
+    private let wait: @Sendable () async -> Void
+    private let gate = ClipboardBorrowGate()
 
     public init(
         pasteboard: any PasteboardSnapshotting = SystemPasteboardAccess(),
         keystroke: any CopyKeystrokeIssuing = HIDCopyKeystrokeIssuer(),
-        // Deliberately short: this runs synchronously on the main actor while a
-        // selection gesture settles, so the worst-case stall is bounded at
-        // attempts × delay (10 × 5 ms = 50 ms) rather than a flat 120 ms.
-        wait: @escaping @Sendable () -> Void = {
-            Thread.sleep(forTimeInterval: 0.005)
+        wait: @escaping @Sendable () async -> Void = {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + .milliseconds(Self.waitIntervalMilliseconds)
+                ) {
+                    continuation.resume()
+                }
+            }
         }
     ) {
         self.pasteboard = pasteboard
@@ -54,15 +119,27 @@ public struct RestoringClipboardSelectionFallback: ClipboardSelectionFallingBack
         self.wait = wait
     }
 
-    public func copySelectedTextRestoringClipboard() -> String? {
+    public func copySelectedTextRestoringClipboard() async -> String? {
+        guard !Task.isCancelled else { return nil }
+        await gate.acquire()
+        guard !Task.isCancelled else {
+            gate.release()
+            return nil
+        }
+        let result = await borrowAndRestore()
+        gate.release()
+        return result
+    }
+
+    private func borrowAndRestore() async -> String? {
         let backup = pasteboard.capture()
         guard backup != .incomplete else { return nil }
         let before = pasteboard.changeCount
         keystroke.issueCopyKeystroke()
         var changed = pasteboard.changeCount != before
         if !changed {
-            for _ in 0..<10 {
-                wait()
+            for _ in 0..<Self.maximumWaitAttempts {
+                await wait()
                 if pasteboard.changeCount != before {
                     changed = true
                     break
@@ -70,6 +147,8 @@ public struct RestoringClipboardSelectionFallback: ClipboardSelectionFallingBack
             }
         }
         let copied = pasteboard.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Restore after the target app had its full window: a cancelled settle
+        // must never leave the user's clipboard holding the selection text.
         switch backup {
         case .complete(let items):
             pasteboard.restore(items)

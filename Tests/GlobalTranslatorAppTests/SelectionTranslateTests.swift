@@ -25,14 +25,15 @@ struct SelectionTranslateControllerTests {
         translator: StubSelectionTranslator,
         permission: FakePermissionController = FakePermissionController(snapshot: .allGranted),
         isCloudKeyConfigured: @escaping () -> Bool = { true },
-        frontmostBundleIdentifier: @escaping () -> String = { "com.apple.TextEdit" }
+        frontmostBundleIdentifier: @escaping () -> String = { "com.apple.TextEdit" },
+        logger: RecordingLogger = RecordingLogger()
     ) -> SelectionTranslateController {
         SelectionTranslateController(
             reader: reader,
             popover: popover,
             monitor: NullSelectionPointerMonitor(),
             permissions: permission,
-            logger: RecordingLogger(),
+            logger: logger,
             translator: { translator },
             isCloudKeyConfigured: isCloudKeyConfigured,
             ownBundleIdentifiers: ["com.maodashu.global-translator"],
@@ -709,19 +710,28 @@ struct SelectionTranslateControllerTests {
         let reader = FakeSelectedTextReader(result: .unavailable)
         let popover = FakeSelectionPopover()
         let translator = StubSelectionTranslator()
+        let logger = RecordingLogger()
         var clock: TimeInterval = 0
         let controller = makeClockController(
             reader: reader,
             popover: popover,
             translator: translator,
+            logger: logger,
             clock: { clock }
         )
         controller.setEnabled(true)
         for index in 0..<4 {
             clock = TimeInterval(index)
             dragSelect(controller)
-            let expected = index + 1
-            try await waitUntil { reader.readCount >= expected }
+            switch index {
+            case 0, 1:
+                let expected = index + 1
+                try await waitUntil { popover.shown.filter { $0.status == .unavailable }.count >= expected }
+            case 2:
+                try await waitUntil { logger.records.contains { $0.0 == "selection_degraded" } }
+            default:
+                try await waitUntil { reader.readCount >= 4 }
+            }
         }
         let surfaces = popover.shown.filter { $0.status == .unavailable }.count
         #expect(surfaces == SelectionReadingDegradeState.failureThreshold - 1)
@@ -732,19 +742,28 @@ struct SelectionTranslateControllerTests {
         let reader = FakeSelectedTextReader(result: .unavailable)
         let popover = FakeSelectionPopover()
         let translator = StubSelectionTranslator()
+        let logger = RecordingLogger()
         var clock: TimeInterval = 0
         let controller = makeClockController(
             reader: reader,
             popover: popover,
             translator: translator,
+            logger: logger,
             clock: { clock }
         )
         controller.setEnabled(true)
         for index in 0..<SelectionReadingDegradeState.failureThreshold {
             clock = TimeInterval(index)
             dragSelect(controller)
-            let expected = index + 1
-            try await waitUntil { reader.readCount >= expected }
+            if index < SelectionReadingDegradeState.failureThreshold - 1 {
+                // Wait for the surfaced popover, not just the read count: the
+                // reader now returns asynchronously, so a fast next drag can
+                // legitimately invalidate the previous result's token.
+                let expected = index + 1
+                try await waitUntil { popover.shown.filter { $0.status == .unavailable }.count >= expected }
+            } else {
+                try await waitUntil { logger.records.contains { $0.0 == "selection_degraded" } }
+            }
         }
         clock = TimeInterval(SelectionReadingDegradeState.failureThreshold)
         reader.setResult(.empty)
@@ -781,10 +800,114 @@ struct SelectionTranslateControllerTests {
         try await waitUntil { popover.shown.contains { $0.status == .unavailable } }
     }
 
+    @Test
+    func noTranslationNeededErrorShowsSoftCopyInsteadOfFailure() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Figma")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.error = SelectionTranslateError.noTranslationNeeded
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .noTranslationNeeded }
+        #expect(popover.currentContent?.displayTranslation == "专有名词，无需翻译")
+        #expect(popover.currentContent?.status != .failed)
+        #expect(popover.currentContent?.allowsCopy == true)
+        #expect(popover.currentContent?.showsOptimizeAction == true)
+    }
+
+    @Test
+    func dragThatReadsNothingIsLoggedForDiagnostics() async throws {
+        let reader = FakeSelectedTextReader(result: .empty)
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        let logger = RecordingLogger()
+        let controller = makeController(
+            reader: reader,
+            popover: popover,
+            translator: translator,
+            logger: logger
+        )
+        controller.setEnabled(true)
+        dragSelect(controller)
+        try await waitUntil { logger.records.contains { $0.0 == "selection_unreadable" } }
+        let record = try #require(logger.records.first { $0.0 == "selection_unreadable" })
+        #expect(record.1["verdict"] == "textSelection")
+        #expect(record.1["clipboardAllowed"] == "true")
+        #expect(popover.currentContent == nil)
+        #expect(translator.texts.isEmpty)
+    }
+
+    @Test
+    func skippedSelectionClearsSuppressedTextSoItCanSurfaceAgain() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Hello world")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "你好，世界"
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .translated }
+        popover.simulateUserDismiss()
+        #expect(popover.currentContent == nil)
+
+        // A URL selection is deliberately skipped. It must clear the previous
+        // suppression; otherwise selecting the original sentence again would
+        // stay silently hidden forever.
+        reader.setResult(.snapshot(snapshot("https://example.com/path")))
+        select(controller)
+        // Mouse-down dismisses the (already dismissed) popover; the settle then
+        // runs the .skip branch and dismisses once more. Wait for that second
+        // dismissal instead of a fixed sleep so the reader result is not swapped
+        // before the URL settle actually reads it.
+        let dismissesAfterSelect = popover.dismissCount
+        try await waitUntil { popover.dismissCount > dismissesAfterSelect }
+        #expect(popover.currentContent == nil)
+
+        reader.setResult(.snapshot(snapshot("Hello world")))
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .translated }
+        #expect(popover.currentContent?.original == "Hello world")
+    }
+
+    @Test
+    func staleSelectionReadResultCannotPopOverANewerGesture() async throws {
+        let reader = GatedSelectedTextReader()
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "你好"
+        let controller = SelectionTranslateController(
+            reader: reader,
+            popover: popover,
+            monitor: NullSelectionPointerMonitor(),
+            permissions: FakePermissionController(snapshot: .allGranted),
+            logger: RecordingLogger(),
+            translator: { translator },
+            ownBundleIdentifiers: ["com.maodashu.global-translator"],
+            frontmostBundleIdentifier: { "com.apple.TextEdit" },
+            settleDelay: .milliseconds(5),
+            unavailableDismissDelay: .milliseconds(30)
+        )
+        controller.setEnabled(true)
+        dragSelect(controller)
+        try await waitUntil { reader.readCount == 1 }
+        // A newer gesture invalidates the first read's settle token while its
+        // AX read is still in flight.
+        dragSelect(controller)
+        try await waitUntil { reader.readCount == 2 }
+        reader.release(.snapshot(snapshot("First")))
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(popover.currentContent == nil)
+        reader.release(.snapshot(snapshot("Second")))
+        try await waitUntil { popover.currentContent?.original == "Second" }
+        #expect(popover.currentContent?.status == .translated)
+    }
+
     private func makeClockController(
         reader: FakeSelectedTextReader,
         popover: FakeSelectionPopover,
         translator: StubSelectionTranslator,
+        logger: RecordingLogger = RecordingLogger(),
         clock: @escaping () -> TimeInterval
     ) -> SelectionTranslateController {
         SelectionTranslateController(
@@ -792,7 +915,7 @@ struct SelectionTranslateControllerTests {
             popover: popover,
             monitor: NullSelectionPointerMonitor(),
             permissions: FakePermissionController(snapshot: .allGranted),
-            logger: RecordingLogger(),
+            logger: logger,
             translator: { translator },
             ownBundleIdentifiers: ["com.maodashu.global-translator"],
             frontmostBundleIdentifier: { "com.apple.TextEdit" },
@@ -957,6 +1080,162 @@ extension ApplicationControllerTests {
         )
         #expect(try await session.optimizePrompt("一个女孩站在雨里") == "优化 一个女孩站在雨里")
         #expect(try await session.optimizePrompt("Swift 6 + SwiftUI + ScreenCaptureKit") == "优化 Swift 6 + SwiftUI + ScreenCaptureKit")
+        await controller.stop()
+    }
+
+    @Test
+    func selectionStructuredFailureFallsBackToPlainCompletion() async throws {
+        let coordinator = RecoveringSelectionCoordinator()
+        await coordinator.setPlainResult("Figma（设计工具）")
+        let logger = RecordingLogger()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: false, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, coordinator: coordinator, logger: logger)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        let outcome = try await session.translateSelection("Figma")
+        #expect(outcome.text == "Figma（设计工具）")
+        let calls = await coordinator.plainCalls
+        #expect(calls.count == 1)
+        #expect(calls.first?.user == "Figma")
+        #expect(calls.first?.system.contains("proper noun") == true)
+        #expect(logger.records.contains { $0.0 == "selection_plain_fallback" && $0.1["status"] == "success" })
+        await controller.stop()
+    }
+
+    @Test
+    func selectionPlainFallbackEchoBecomesProprietaryNameNotice() async throws {
+        let coordinator = RecoveringSelectionCoordinator()
+        await coordinator.setPlainResult("figma")
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: false, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, coordinator: coordinator)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        await #expect(throws: SelectionTranslateError.noTranslationNeeded) {
+            _ = try await session.translateSelection("Figma")
+        }
+        await controller.stop()
+    }
+
+    @Test
+    func selectionNetworkFailureIsNotReplayedAsPlainCompletion() async throws {
+        let coordinator = RecoveringSelectionCoordinator()
+        await coordinator.setStructuredError(TranslationError.networkFailure)
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: false, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, coordinator: coordinator)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        await #expect(throws: TranslationError.networkFailure) {
+            _ = try await session.translateSelection("Hello there")
+        }
+        #expect(await coordinator.plainCalls.isEmpty)
+        await controller.stop()
+    }
+
+    @Test
+    func selectionPlainFallbackSkipsChunksLongerThanItsBudget() async throws {
+        let coordinator = RecoveringSelectionCoordinator()
+        let logger = RecordingLogger()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: false, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, coordinator: coordinator, logger: logger)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        let source = String(
+            repeating: "A long paragraph that is still one selection chunk. ",
+            count: 20
+        )
+        #expect(source.count > SelectionTranslateSupport.plainFallbackMaxCharacters)
+        #expect(SelectionTranslateSupport.prepareSource(source).chunks.count == 1)
+        await #expect(throws: SelectionTranslateError.emptyResult) {
+            _ = try await session.translateSelection(source)
+        }
+        #expect(await coordinator.plainCalls.isEmpty)
+        #expect(logger.records.contains {
+            $0.0 == "selection_plain_fallback"
+                && $0.1["status"] == "skipped"
+                && $0.1["reason"] == "too_long"
+        })
+        await controller.stop()
+    }
+
+    @Test
+    func selectionPlainFallbackFailureBecomesTranslateFailure() async throws {
+        let coordinator = RecoveringSelectionCoordinator()
+        await coordinator.setPlainError(TranslationError.networkFailure)
+        let logger = RecordingLogger()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: false, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, coordinator: coordinator, logger: logger)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        await #expect(throws: SelectionTranslateError.emptyResult) {
+            _ = try await session.translateSelection("Figma")
+        }
+        #expect(logger.records.contains {
+            $0.0 == "selection_plain_fallback" && $0.1["status"] == "failed"
+        })
+        await controller.stop()
+    }
+
+    @Test
+    func selectionPlainFallbackEchoedSentenceStaysAnHonestFailure() async throws {
+        let coordinator = RecoveringSelectionCoordinator()
+        await coordinator.setPlainResult("Please review the pull request")
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: false, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, coordinator: coordinator)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        await #expect(throws: SelectionTranslateError.emptyResult) {
+            _ = try await session.translateSelection("Please review the pull request")
+        }
+        await controller.stop()
+    }
+
+    @Test
+    func echoedTrailingBrandChunkDoesNotSoftSkipTheWholeSelection() async throws {
+        let coordinator = EchoingTrailingChunkCoordinator()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: false, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, coordinator: coordinator)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        let source = Self.longEnglish(characters: 1_800) + "\n\nFigma"
+        #expect(SelectionTranslateSupport.prepareSource(source).chunks.count > 1)
+        await #expect(throws: SelectionTranslateError.emptyResult) {
+            _ = try await session.translateSelection(source)
+        }
         await controller.stop()
     }
 

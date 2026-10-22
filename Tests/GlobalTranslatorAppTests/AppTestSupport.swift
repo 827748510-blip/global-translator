@@ -737,7 +737,11 @@ final class FakeSelectedTextReader: SelectedTextReading, @unchecked Sendable {
         lock.unlock()
     }
 
-    func readSelection(mouseLocation: CGPoint, allowClipboardFallback: Bool) -> SelectedTextReadResult {
+    func readSelection(mouseLocation: CGPoint, allowClipboardFallback: Bool) async -> SelectedTextReadResult {
+        nextResult(allowClipboardFallback: allowClipboardFallback)
+    }
+
+    private func nextResult(allowClipboardFallback: Bool) -> SelectedTextReadResult {
         lock.lock()
         defer { lock.unlock() }
         readCount += 1
@@ -752,6 +756,105 @@ final class FakeSelectedTextReader: SelectedTextReading, @unchecked Sendable {
             }
             return result
         }
+    }
+}
+
+@MainActor
+final class GatedSelectedTextReader: SelectedTextReading {
+    private var continuations: [CheckedContinuation<SelectedTextReadResult, Never>] = []
+    private(set) var readCount = 0
+
+    func readSelection(mouseLocation: CGPoint, allowClipboardFallback: Bool) async -> SelectedTextReadResult {
+        readCount += 1
+        return await withCheckedContinuation { continuations.append($0) }
+    }
+
+    func release(_ result: SelectedTextReadResult) {
+        guard !continuations.isEmpty else { return }
+        continuations.removeFirst().resume(returning: result)
+    }
+}
+
+/// Drives the 滑词 structured→plain fallback path: structured translation can
+/// fail with a chosen error while the plain completion returns text or throws.
+actor RecoveringSelectionCoordinator: TranslationCoordinating {
+    private(set) var structuredCalls = 0
+    private(set) var plainCalls: [(system: String, user: String, backend: BackendKind)] = []
+
+    var structuredError: Error = TranslationError.invalidResponse("translation copied the source")
+    var structuredResult: String?
+    var plainResult = "Figma（设计工具）"
+    var plainError: Error?
+
+    func setPlainResult(_ value: String) { plainResult = value }
+    func setPlainError(_ error: Error) { plainError = error }
+    func setStructuredError(_ error: Error) { structuredError = error }
+
+    func selectBackend(kind: BackendKind, modelIdentifier: String) async {}
+    func clearCache() async {}
+    func cancelPendingRequests() async {}
+
+    func translate(
+        snapshot: CaptureSnapshot,
+        backend: BackendKind,
+        modelIdentifier: String,
+        visionFallbackEnabled: Bool
+    ) async throws -> EngineOutput {
+        structuredCalls += 1
+        if let structuredResult {
+            let translations = snapshot.regions.map {
+                RenderedTranslation(region: $0, text: structuredResult)
+            }
+            return EngineOutput(
+                windowRevision: snapshot.descriptor.revision,
+                translations: translations,
+                metrics: EngineMetrics(inputRegionCount: translations.count, eligibleRegionCount: translations.count,
+                    cacheHitCount: 0, batchCount: 1, translatedRegionCount: translations.count,
+                    durationMilliseconds: 1, status: .success)
+            )
+        }
+        throw structuredError
+    }
+
+    func completePlain(system: String, user: String, backend: BackendKind) async throws -> String {
+        plainCalls.append((system, user, backend))
+        if let plainError { throw plainError }
+        return plainResult
+    }
+}
+
+/// Structured call succeeds for the first chunk and fails on the second, while
+/// the plain fallback echoes the source. Exercises the multi-chunk guard that
+/// must not label a whole long selection 「专有名词，无需翻译」.
+actor EchoingTrailingChunkCoordinator: TranslationCoordinating {
+    private var calls = 0
+
+    func selectBackend(kind: BackendKind, modelIdentifier: String) async {}
+    func clearCache() async {}
+    func cancelPendingRequests() async {}
+
+    func translate(
+        snapshot: CaptureSnapshot,
+        backend: BackendKind,
+        modelIdentifier: String,
+        visionFallbackEnabled: Bool
+    ) async throws -> EngineOutput {
+        calls += 1
+        if calls >= 2 {
+            throw TranslationError.invalidResponse("translation copied the source")
+        }
+        let translations = snapshot.regions.map { RenderedTranslation(region: $0, text: "你好 " + $0.sourceText) }
+        return EngineOutput(
+            windowRevision: snapshot.descriptor.revision,
+            translations: translations,
+            metrics: EngineMetrics(inputRegionCount: translations.count, eligibleRegionCount: translations.count,
+                cacheHitCount: 0, batchCount: 1, translatedRegionCount: translations.count,
+                durationMilliseconds: 1, status: .success)
+        )
+    }
+
+    func completePlain(system _: String, user: String, backend _: BackendKind) async throws -> String {
+        user
     }
 }
 

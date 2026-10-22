@@ -293,12 +293,19 @@ public final class TranslationSession {
         parts.reserveCapacity(plan.chunks.count)
         for chunk in plan.chunks {
             try Task.checkCancellation()
-            let translated = try await translateOneSelectionChunk(
-                chunk,
-                coordinator: coordinator,
-                revision: nextSelectionRevision()
-            )
-            parts.append(translated)
+            do {
+                let translated = try await translateOneSelectionChunk(
+                    chunk,
+                    coordinator: coordinator,
+                    revision: nextSelectionRevision()
+                )
+                parts.append(translated)
+            } catch let error as SelectionTranslateError
+                where error == .noTranslationNeeded && plan.chunks.count > 1 {
+                // One short brand-name chunk inside a longer selection must not
+                // turn the whole translation into 「专有名词，无需翻译」.
+                throw SelectionTranslateError.emptyResult
+            }
         }
         let joined = SelectionTranslateSupport.joinTranslatedChunks(parts)
         guard !joined.isEmpty else { throw SelectionTranslateError.emptyResult }
@@ -306,6 +313,29 @@ public final class TranslationSession {
     }
 
     private func translateOneSelectionChunk(
+        _ text: String,
+        coordinator: any TranslationCoordinating,
+        revision: UInt64
+    ) async throws -> String {
+        do {
+            return try await structuredSelectionChunk(text, coordinator: coordinator, revision: revision)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as TranslationError {
+            guard Self.isRecoverableSelectionFailure(error) else {
+                throw Self.selectionError(from: error)
+            }
+            return try await plainSelectionFallback(
+                text,
+                coordinator: coordinator,
+                reason: Self.fallbackReason(for: error)
+            )
+        } catch let error as SelectionTranslateError where error == .emptyResult {
+            return try await plainSelectionFallback(text, coordinator: coordinator, reason: "empty")
+        }
+    }
+
+    private func structuredSelectionChunk(
         _ text: String,
         coordinator: any TranslationCoordinating,
         revision: UInt64
@@ -340,12 +370,76 @@ public final class TranslationSession {
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as TranslationError {
-            throw Self.selectionError(from: error)
+            throw error
         }
         let translated = output.translations.first(where: { !$0.text.isEmpty })?.text
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let translated, !translated.isEmpty else { throw SelectionTranslateError.emptyResult }
         return translated
+    }
+
+    /// Format / quality failures are worth one plain-text retry: local models
+    /// return brand names verbatim ("Figma", "Python", "npm") and occasionally
+    /// emit truncated JSON, both of which surfaced as 「翻译失败」. Network,
+    /// credential, and timeout failures are *not* replayed.
+    private static func isRecoverableSelectionFailure(_ error: TranslationError) -> Bool {
+        if case .invalidResponse = error { return true }
+        return false
+    }
+
+    private static func fallbackReason(for error: TranslationError) -> String {
+        if case .invalidResponse(let message) = error, message.contains("copied the source") {
+            return "copied_source"
+        }
+        return "invalid_response"
+    }
+
+    /// Plain completion for 滑词. A proper-noun echo becomes
+    /// 「专有名词，无需翻译」 instead of a red failure; a genuine translation is
+    /// returned as-is. Long chunks stay on the structured path because the
+    /// plain completion budget could silently truncate them.
+    private func plainSelectionFallback(
+        _ text: String,
+        coordinator: any TranslationCoordinating,
+        reason: String
+    ) async throws -> String {
+        guard text.count <= SelectionTranslateSupport.plainFallbackMaxCharacters else {
+            logger.event("selection_plain_fallback", fields: ["status": "skipped", "reason": "too_long"])
+            throw SelectionTranslateError.emptyResult
+        }
+        let raw: String
+        do {
+            raw = try await coordinator.completePlain(
+                system: SelectionFallbackInstructions.system,
+                user: SelectionFallbackInstructions.userContent(for: text),
+                backend: backend
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            logger.event("selection_plain_fallback", fields: ["status": "failed", "reason": reason])
+            throw SelectionTranslateError.emptyResult
+        }
+        let cleaned = SelectionTranslateSupport.cleanPlainFallback(raw)
+        guard !cleaned.isEmpty else {
+            logger.event("selection_plain_fallback", fields: ["status": "failed", "reason": reason])
+            throw SelectionTranslateError.emptyResult
+        }
+        if CopiedSourceDetector.translationCopiesSource(cleaned, source: text) {
+            // A brand / product name is a soft skip. An echoed sentence means
+            // the retry failed too, so keep it an honest failure.
+            let properNoun = SelectionTranslateSupport.isProperNounPhrase(text)
+            logger.event(
+                "selection_plain_fallback",
+                fields: ["status": properNoun ? "copied_source" : "failed", "reason": reason]
+            )
+            if properNoun {
+                throw SelectionTranslateError.noTranslationNeeded
+            }
+            throw SelectionTranslateError.emptyResult
+        }
+        logger.event("selection_plain_fallback", fields: ["status": "success", "reason": reason])
+        return cleaned
     }
 
     private func nextSelectionRevision() -> UInt64 {
