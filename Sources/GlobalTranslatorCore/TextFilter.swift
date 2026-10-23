@@ -11,11 +11,21 @@ public enum CopiedSourceDetector {
         let translation = translated.trimmingCharacters(in: .whitespacesAndNewlines)
         let original = source.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !translation.isEmpty, !original.isEmpty else { return false }
+        // 中文源（zh→en 方向）的回声：原文与「英文译文」逐字相同，说明根本没翻。
+        if translation == original, original.unicodeScalars.contains(where: Self.isCJK) {
+            return true
+        }
         guard TextFilter.shouldTranslate(original) else { return false }
         guard original.unicodeScalars.contains(where: {
             CharacterSet.letters.contains($0) && $0.isASCII
         }) else { return false }
         return translation.caseInsensitiveCompare(original) == .orderedSame
+    }
+
+    private static func isCJK(_ scalar: Unicode.Scalar) -> Bool {
+        (0x3400...0x4DBF).contains(scalar.value)
+            || (0x4E00...0x9FFF).contains(scalar.value)
+            || (0xF900...0xFAFF).contains(scalar.value)
     }
 }
 

@@ -322,7 +322,8 @@ struct ScreenshotTranslateControllerTests {
 
     @Test
     func savesAndCopiesScreenshotWhenEnabled() async throws {
-        let directory = URL(fileURLWithPath: "/tmp/gt-shots", isDirectory: true)
+        let directory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Pictures/gt-shots", isDirectory: true)
         var savedTo: [URL] = []
         var copiedImages = 0
         let ocr = FakeRegionOCR()
@@ -348,13 +349,14 @@ struct ScreenshotTranslateControllerTests {
         )
         controller.setSaveImage(true)
         controller.setCopyImage(true)
-        controller.setSaveDirectory("/tmp/gt-shots")
+        controller.setSaveDirectory(directory.path)
         controller.handleHotkey()
         try await waitUntil { popover.currentContent?.status == .translated }
         #expect(savedTo == [directory])
         #expect(copiedImages == 1)
-        #expect(popover.currentContent?.savedImagePath == "/tmp/gt-shots/shot.png")
-        #expect(popover.currentContent?.savedImageHint == "已保存到 /tmp/gt-shots/shot.png")
+        // 落盘路径存原始绝对路径，弹层提示用 ~ 缩写。
+        #expect(popover.currentContent?.savedImagePath == directory.path + "/shot.png")
+        #expect(popover.currentContent?.savedImageHint == "已保存到 ~/Pictures/gt-shots/shot.png")
     }
 
     @Test

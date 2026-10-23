@@ -161,7 +161,7 @@ struct ScreenshotTranslateSection: View {
                     )
                 )
                 .toggleStyle(.switch)
-                .accessibilityHint("翻译完成后把截图区域存成 PNG 文件，默认关闭")
+                .accessibilityHint("截图后把拖选区域存成 PNG 文件，默认关闭")
 
                 Spacer(minLength: GTSpacing.small)
 
@@ -173,7 +173,7 @@ struct ScreenshotTranslateSection: View {
                     )
                 )
                 .toggleStyle(.switch)
-                .accessibilityHint("翻译完成后把截图区域复制到剪贴板，默认关闭")
+                .accessibilityHint("截图后把拖选区域复制到剪贴板，默认关闭")
             }
             .frame(minHeight: GTPopoverMetrics.minRowHitHeight)
 

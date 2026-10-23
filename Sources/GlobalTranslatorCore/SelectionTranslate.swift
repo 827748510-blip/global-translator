@@ -392,10 +392,11 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         status == .alreadyChinese || status == .noTranslationNeeded ? original : translation
     }
 
-    /// 保存截图后的路径提示（仅截图翻译；滑词没有）。已是 ~ 缩写后的展示串。
+    /// 保存截图后的路径提示（仅截图翻译；滑词没有）。home 缩写为 ~。
     public var savedImageHint: String? {
         guard let savedImagePath, !savedImagePath.isEmpty else { return nil }
-        return SelectionTranslateSupport.savedImageCopyPrefix + savedImagePath
+        return SelectionTranslateSupport.savedImageCopyPrefix
+            + SelectionTranslateSupport.displayPath(savedImagePath)
     }
 
     public static func loading(original: String, screenFrame: CGRect) -> SelectionPopoverContent {

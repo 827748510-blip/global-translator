@@ -22,7 +22,7 @@
 ### 截图保存 / 复制
 
 - 配置：`saveScreenshotImage`、`copyScreenshotImage`（默认均关）、`screenshotSaveDirectory`（默认 `~/Pictures/Global Translator 截图`，可改，缺失/空白时回退默认）。旧 config 无这三个键也能解码。
-- 保存 / 复制发生在 **OCR 之前**：即使识别不到文字或翻译失败，截图也已按开关保留。
+- 保存 / 复制发生在 **OCR 之前**（图片先写入剪贴板；若「自动复制译文」也开，译文随后会覆盖剪贴板，剪贴板终态是译文文本）：即使识别不到文字或翻译失败，截图也已按开关保留。
 - `ScreenshotImageIO`（App 层）：PNG 写入、目录自动创建、文件名 `截图翻译-YYYYMMDD-HHMMSS-xxxx.png`（秒级 + 短后缀防覆盖）、剪贴板写 PNG。注入点分离，便于测试。
 - 保存成功后弹层在译文下方显示 **已保存到 <路径>**（`~` 缩写、中间截断、可选中复制）。保存失败只记日志（`screenshot_save_failed`），不阻断翻译。
 - 设置页新增「保存截图」「复制截图」两个开关和「保存位置」行（显示当前目录 + 选择…按钮）。
@@ -40,7 +40,7 @@
 
 | 项目 | 结果 |
 | --- | --- |
-| `swift test -Xswiftc -warnings-as-errors` | 全绿：544 tests / 48 suites（新增方向检测、双后端 prompt 方向、协调器贯通、缓存分离、截图保存/复制/失败、配置 Codable、ViewModel 开关） |
+| `swift test -Xswiftc -warnings-as-errors` | 全绿：544 tests / 52 suites（新增方向检测、双后端 prompt 方向、协调器贯通、缓存分离、截图保存/复制/失败、配置 Codable、ViewModel 开关） |
 | `swift build -c release -Xswiftc -warnings-as-errors` | 通过（15.6s） |
 | `cd extension && node --test` | 6/6（扩展未改动） |
 | 真实 Ollama prompt 冒烟 | `Translate to English:` + 英文 system prompt 下，「你好世界 / 一个女孩站在雨里 / 请在合并之前审查该拉取请求 / 请在周四前把报告发给我」均得到正确英文 |
