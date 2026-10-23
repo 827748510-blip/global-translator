@@ -140,6 +140,55 @@ extension ApplicationController {
         queueSave()
     }
 
+    public func setSaveScreenshotImage(_ enabled: Bool) {
+        configuration.saveScreenshotImage = enabled
+        viewModel.saveScreenshotImage = enabled
+        screenshotTranslate?.setSaveImage(enabled)
+        queueSave()
+    }
+
+    public func setCopyScreenshotImage(_ enabled: Bool) {
+        configuration.copyScreenshotImage = enabled
+        viewModel.copyScreenshotImage = enabled
+        screenshotTranslate?.setCopyImage(enabled)
+        queueSave()
+    }
+
+    public func chooseScreenshotSaveDirectory() {
+        guard started, screenshotDirectoryPicker == nil else { return }
+        let panel = NSOpenPanel()
+        panel.title = "选择截图保存位置"
+        panel.message = "截图翻译保存的图片会放到这个文件夹；不存在时会自动创建。"
+        panel.prompt = "选择文件夹"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        let current = URL(fileURLWithPath: configuration.screenshotSaveDirectory, isDirectory: true)
+        panel.directoryURL = FileManager.default.fileExists(atPath: current.path) ? current : current.deletingLastPathComponent()
+        screenshotDirectoryPicker = panel
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self, panel] response in
+            guard let self else { return }
+            self.screenshotDirectoryPicker = nil
+            guard self.started, response == .OK, let url = panel.urls.first else { return }
+            self.setScreenshotSaveDirectory(url.path)
+        }
+        if let window = NSApplication.shared.keyWindow {
+            panel.beginSheetModal(for: window, completionHandler: completion)
+        } else {
+            panel.begin(completionHandler: completion)
+        }
+    }
+
+    public func setScreenshotSaveDirectory(_ path: String) {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolved = trimmed.isEmpty ? AppConfiguration.defaultScreenshotSaveDirectory : trimmed
+        configuration.screenshotSaveDirectory = resolved
+        viewModel.screenshotSaveDirectory = resolved
+        screenshotTranslate?.setSaveDirectory(resolved)
+        queueSave()
+    }
+
     public func setScreenshotTranslateHotkey(_ spec: KeyboardShortcutSpec) {
         let resolved = spec.isValid ? spec : .screenshotTranslateDefault
         configuration.screenshotTranslateHotkey = resolved

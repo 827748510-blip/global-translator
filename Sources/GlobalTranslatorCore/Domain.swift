@@ -148,15 +148,21 @@ public struct TranslationRequest: Codable, Equatable, Sendable {
     public let windowRevision: UInt64
     public let items: [TranslationItem]
     public let copiedSourcePolicy: CopiedSourcePolicy
+    /// Overrides the target language for this request. Nil keeps the default
+    /// (Simplified Chinese), so the overlay and the extension bridge are
+    /// unchanged. The 划词 / 截图 path sets it to `en` for Chinese sources.
+    public let targetLanguage: String?
 
     public init(
         windowRevision: UInt64,
         items: [TranslationItem],
-        copiedSourcePolicy: CopiedSourcePolicy = .reject
+        copiedSourcePolicy: CopiedSourcePolicy = .reject,
+        targetLanguage: String? = nil
     ) {
         self.windowRevision = windowRevision
         self.items = items
         self.copiedSourcePolicy = copiedSourcePolicy
+        self.targetLanguage = targetLanguage
     }
 
     public init(from decoder: Decoder) throws {
@@ -164,6 +170,7 @@ public struct TranslationRequest: Codable, Equatable, Sendable {
         windowRevision = try container.decode(UInt64.self, forKey: .windowRevision)
         items = try container.decode([TranslationItem].self, forKey: .items)
         copiedSourcePolicy = try container.decodeIfPresent(CopiedSourcePolicy.self, forKey: .copiedSourcePolicy) ?? .reject
+        targetLanguage = try container.decodeIfPresent(String.self, forKey: .targetLanguage)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -171,10 +178,11 @@ public struct TranslationRequest: Codable, Equatable, Sendable {
         try container.encode(windowRevision, forKey: .windowRevision)
         try container.encode(items, forKey: .items)
         try container.encode(copiedSourcePolicy, forKey: .copiedSourcePolicy)
+        try container.encodeIfPresent(targetLanguage, forKey: .targetLanguage)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case windowRevision, items, copiedSourcePolicy
+        case windowRevision, items, copiedSourcePolicy, targetLanguage
     }
 }
 

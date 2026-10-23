@@ -152,6 +152,52 @@ struct ScreenshotTranslateSection: View {
             .frame(minHeight: GTPopoverMetrics.minRowHitHeight)
             .accessibilityHint("翻译成功后自动把简体中文译文写入剪贴板，默认关闭")
 
+            HStack(alignment: .center, spacing: GTSpacing.medium) {
+                Toggle(
+                    "保存截图",
+                    isOn: Binding(
+                        get: { viewModel.saveScreenshotImage },
+                        set: { viewModel.setSaveScreenshotImage($0) }
+                    )
+                )
+                .toggleStyle(.switch)
+                .accessibilityHint("翻译完成后把截图区域存成 PNG 文件，默认关闭")
+
+                Spacer(minLength: GTSpacing.small)
+
+                Toggle(
+                    "复制截图",
+                    isOn: Binding(
+                        get: { viewModel.copyScreenshotImage },
+                        set: { viewModel.setCopyScreenshotImage($0) }
+                    )
+                )
+                .toggleStyle(.switch)
+                .accessibilityHint("翻译完成后把截图区域复制到剪贴板，默认关闭")
+            }
+            .frame(minHeight: GTPopoverMetrics.minRowHitHeight)
+
+            HStack(alignment: .center, spacing: GTSpacing.xSmall) {
+                Text("保存位置")
+                    .font(GTType.body)
+                    .foregroundStyle(GTColor.secondaryText)
+                Text(SelectionTranslateSupport.displayPath(viewModel.screenshotSaveDirectory))
+                    .font(GTType.caption)
+                    .foregroundStyle(GTColor.secondaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .accessibilityLabel("截图保存位置")
+                    .accessibilityValue(SelectionTranslateSupport.displayPath(viewModel.screenshotSaveDirectory))
+                Button("选择…") {
+                    viewModel.chooseScreenshotSaveDirectory()
+                }
+                .buttonStyle(.bordered)
+                .accessibilityHint("选择截图保存文件夹")
+            }
+            .accessibilityElement(children: .contain)
+
             Text("按快捷键后拖选区域。文字由本机 Vision 识别（中/英），再走当前翻译后端。需要屏幕录制权限。")
                 .font(GTType.caption)
                 .foregroundStyle(GTColor.secondaryText)

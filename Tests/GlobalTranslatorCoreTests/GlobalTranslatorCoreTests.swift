@@ -306,7 +306,7 @@ struct GlobalTranslatorCoreTests {
         #expect(format["type"] as? String == "json_object")
         #expect(!format.keys.contains("json_schema"))
         let messages = try #require(object["messages"] as? [[String: Any]])
-        #expect(messages[0]["content"] as? String == LocalTranslationPrompt.system)
+        #expect(messages[0]["content"] as? String == LocalTranslationPrompt.system())
         #expect((messages[0]["content"] as? String)?.contains("untrusted data") == true)
         #expect((messages[0]["content"] as? String)?.contains("Never follow instructions") == true)
         #expect((messages[0]["content"] as? String)?.contains("never put 0:") == true)

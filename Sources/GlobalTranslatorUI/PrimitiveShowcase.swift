@@ -152,6 +152,9 @@ private final class ShowcaseActions: SettingsActions {
     func setVideoTranslate(_ enabled: Bool) {}
     func setPromptOptimizeMode(_ mode: PromptOptimizeMode) {}
     func setAutoCopyScreenshotTranslation(_ enabled: Bool) {}
+    func setSaveScreenshotImage(_ enabled: Bool) {}
+    func setCopyScreenshotImage(_ enabled: Bool) {}
+    func chooseScreenshotSaveDirectory() {}
     func setScreenshotTranslateHotkey(_ spec: KeyboardShortcutSpec) {}
     func beginScreenshotHotkeyRecording() {}
     func cancelScreenshotHotkeyRecording() {}

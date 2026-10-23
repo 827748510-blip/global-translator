@@ -19,6 +19,30 @@ public enum CopiedSourceDetector {
     }
 }
 
+/// Direction of a 划词 / 截图 translation. The app auto-detects: a Simplified
+/// Chinese source is translated into English; anything else into Simplified
+/// Chinese. This is deliberately scoped to the selection path — the window
+/// overlay and the extension bridge keep their Chinese-only target.
+public enum SelectionTranslationDirection: String, Equatable, Sendable {
+    case toChinese
+    case toEnglish
+
+    /// Value used in the translation request and the cache key.
+    public var targetLanguage: String {
+        self == .toEnglish ? "en" : "zh-Hans"
+    }
+
+    public init?(targetLanguage: String?) {
+        guard let targetLanguage else { return nil }
+        let value = targetLanguage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if value.hasPrefix("en") {
+            self = .toEnglish
+        } else {
+            self = .toChinese
+        }
+    }
+}
+
 public enum TextFilter {
     private static let traditionalToSimplified = StringTransform(rawValue: "Traditional-Simplified")
 
@@ -82,6 +106,23 @@ public enum TextFilter {
             return .noTranslationNeeded
         }
         return .translate
+    }
+
+    /// The bidirectional direction for a selection translation, or nil when the
+    /// text must not be translated at all (URL / identifier / technical token).
+    /// A Simplified Chinese source goes to English; anything else to Chinese.
+    public static func selectionDirection(
+        _ text: String,
+        targetLanguage: String = SelectionTranslateSupport.defaultTargetLanguage
+    ) -> SelectionTranslationDirection? {
+        switch selectionDecision(text, targetLanguage: targetLanguage) {
+        case .alreadyTargetLanguage:
+            return .toEnglish
+        case .translate, .noTranslationNeeded:
+            return .toChinese
+        case .skip:
+            return nil
+        }
     }
 
     private static let glueWords: Set<String> = [

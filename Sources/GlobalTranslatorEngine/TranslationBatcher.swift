@@ -21,13 +21,15 @@ public struct TranslationBatch: Equatable, Sendable {
     public init(
         entries: [TranslationBatchEntry],
         windowRevision: UInt64,
-        copiedSourcePolicy: CopiedSourcePolicy = .reject
+        copiedSourcePolicy: CopiedSourcePolicy = .reject,
+        targetLanguage: String? = nil
     ) {
         self.entries = entries
         request = TranslationRequest(
             windowRevision: windowRevision,
             items: entries.map(\.item),
-            copiedSourcePolicy: copiedSourcePolicy
+            copiedSourcePolicy: copiedSourcePolicy,
+            targetLanguage: targetLanguage
         )
         sourceCharacterCount = entries.reduce(into: 0) { result, entry in
             result += entry.sourceText.count
@@ -102,7 +104,8 @@ public struct TranslationBatcher: Sendable {
     public func makeBatches(
         from entries: [TranslationBatchEntry],
         windowRevision: UInt64,
-        copiedSourcePolicy: CopiedSourcePolicy = .reject
+        copiedSourcePolicy: CopiedSourcePolicy = .reject,
+        targetLanguage: String? = nil
     ) -> [TranslationBatch] {
         var batches: [TranslationBatch] = []
         var current: [TranslationBatchEntry] = []
@@ -115,7 +118,8 @@ public struct TranslationBatcher: Sendable {
                 batches.append(TranslationBatch(
                     entries: current,
                     windowRevision: windowRevision,
-                    copiedSourcePolicy: copiedSourcePolicy
+                    copiedSourcePolicy: copiedSourcePolicy,
+                    targetLanguage: targetLanguage
                 ))
                 current.removeAll(keepingCapacity: true)
                 currentCharacters = 0
@@ -127,7 +131,8 @@ public struct TranslationBatcher: Sendable {
             batches.append(TranslationBatch(
                 entries: current,
                 windowRevision: windowRevision,
-                copiedSourcePolicy: copiedSourcePolicy
+                copiedSourcePolicy: copiedSourcePolicy,
+                targetLanguage: targetLanguage
             ))
         }
         return batches
@@ -136,13 +141,15 @@ public struct TranslationBatcher: Sendable {
     public func makeBatches(
         from regions: [TextRegion],
         windowRevision: UInt64,
-        copiedSourcePolicy: CopiedSourcePolicy = .reject
+        copiedSourcePolicy: CopiedSourcePolicy = .reject,
+        targetLanguage: String? = nil
     ) -> [TranslationBatch] {
         let plan = plan(regions: regions)
         return makeBatches(
             from: plan.entries,
             windowRevision: windowRevision,
-            copiedSourcePolicy: copiedSourcePolicy
+            copiedSourcePolicy: copiedSourcePolicy,
+            targetLanguage: targetLanguage
         )
     }
 

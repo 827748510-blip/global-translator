@@ -307,6 +307,8 @@ public struct SelectionPopoverContent: Equatable, Sendable {
     public var allowsPromptOptimize: Bool
     /// Screenshot MVP only needs copy; 翻译 retry stays on 滑词.
     public var allowsRetranslate: Bool
+    /// 截图翻译把区域图保存到文件后，弹层展示的路径提示（~ 缩写）。滑词没有。
+    public var savedImagePath: String?
 
     public init(
         original: String,
@@ -316,7 +318,8 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         screenFrame: CGRect,
         sourceWasTruncated: Bool = false,
         allowsPromptOptimize: Bool = true,
-        allowsRetranslate: Bool = true
+        allowsRetranslate: Bool = true,
+        savedImagePath: String? = nil
     ) {
         self.original = original
         self.originalPreview = originalPreview
@@ -326,6 +329,7 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         self.sourceWasTruncated = sourceWasTruncated
         self.allowsPromptOptimize = allowsPromptOptimize
         self.allowsRetranslate = allowsRetranslate
+        self.savedImagePath = savedImagePath
     }
 
     public var displayTranslation: String {
@@ -386,6 +390,12 @@ public struct SelectionPopoverContent: Equatable, Sendable {
 
     public var copyText: String {
         status == .alreadyChinese || status == .noTranslationNeeded ? original : translation
+    }
+
+    /// 保存截图后的路径提示（仅截图翻译；滑词没有）。已是 ~ 缩写后的展示串。
+    public var savedImageHint: String? {
+        guard let savedImagePath, !savedImagePath.isEmpty else { return nil }
+        return SelectionTranslateSupport.savedImageCopyPrefix + savedImagePath
     }
 
     public static func loading(original: String, screenFrame: CGRect) -> SelectionPopoverContent {
@@ -499,6 +509,17 @@ public enum SelectionTranslateSupport {
     public static let missingDeepSeekKeyCopy = "请到设置填写 DeepSeek API Key 并测试连接"
     public static let copyFeedbackMilliseconds = 1_500
     public static let chunkJoinSeparator = "\n\n"
+    public static let savedImageCopyPrefix = "已保存到 "
+
+    /// Abbreviates a path for display: home becomes ~. Pure string + home dir,
+    /// shared by the settings caption and the popover hint.
+    public static func displayPath(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path.hasPrefix(home) {
+            return "~" + path.dropFirst(home.count)
+        }
+        return path
+    }
 
     public static func truncatedOriginal(_ text: String, limit: Int = originalPreviewLimit) -> String {
         let compact = text.split(whereSeparator: { $0.isNewline }).joined(separator: " ")

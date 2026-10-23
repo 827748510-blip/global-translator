@@ -44,6 +44,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
     /// health check; retry for a few minutes before giving up.
     static let maxBackendRetryAttempts = 30
     var applicationPicker: NSOpenPanel?
+    var screenshotDirectoryPicker: NSOpenPanel?
     var bridgeServer: ExtensionBridgeServer?
     var videoASR: VideoAudioASRController?
 
@@ -111,6 +112,8 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         settingsRequested = false
         applicationPicker?.cancel(nil)
         applicationPicker = nil
+        screenshotDirectoryPicker?.cancel(nil)
+        screenshotDirectoryPicker = nil
         backendHealthToken &+= 1
         automaticRequestToken &+= 1
         permissionRefreshToken &+= 1
@@ -163,6 +166,9 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         viewModel.isVideoTranslateEnabled = configuration.videoTranslateEnabled
         viewModel.promptOptimizeMode = configuration.promptOptimizeMode
         viewModel.autoCopyScreenshotTranslation = configuration.autoCopyScreenshotTranslation
+        viewModel.saveScreenshotImage = configuration.saveScreenshotImage
+        viewModel.copyScreenshotImage = configuration.copyScreenshotImage
+        viewModel.screenshotSaveDirectory = configuration.screenshotSaveDirectory
         viewModel.screenshotTranslateHotkey = configuration.screenshotTranslateHotkey
         viewModel.deepSeekModel = AppConfiguration.resolvedDeepSeekModel(configuration.deepSeekModel)
         viewModel.permissionSnapshot = components.permissionController.snapshot
@@ -297,6 +303,9 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         screenshotTranslate = controller
         controller.setBackend(configuration.backend)
         controller.setAutoCopy(configuration.autoCopyScreenshotTranslation)
+        controller.setSaveImage(configuration.saveScreenshotImage)
+        controller.setCopyImage(configuration.copyScreenshotImage)
+        controller.setSaveDirectory(configuration.screenshotSaveDirectory)
         controller.startHotkey()
         if let message = controller.lastHotkeyError, !message.isEmpty {
             viewModel.screenshotHotkeyConflictMessage = message

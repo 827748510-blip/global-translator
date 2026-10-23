@@ -176,6 +176,10 @@ public protocol SettingsActions: AnyObject {
     func setVideoTranslate(_ enabled: Bool)
     func setPromptOptimizeMode(_ mode: PromptOptimizeMode)
     func setAutoCopyScreenshotTranslation(_ enabled: Bool)
+    func setSaveScreenshotImage(_ enabled: Bool)
+    func setCopyScreenshotImage(_ enabled: Bool)
+    /// Opens a native folder picker and persists the screenshot save directory.
+    func chooseScreenshotSaveDirectory()
     func setScreenshotTranslateHotkey(_ spec: KeyboardShortcutSpec)
     func beginScreenshotHotkeyRecording()
     func cancelScreenshotHotkeyRecording()

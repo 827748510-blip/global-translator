@@ -30,7 +30,7 @@ struct CopiedSourceDetectorTests {
 struct SelectionFallbackInstructionsTests {
     @Test
     func systemPromptKeepsProperNounGuidanceAndUntrustedDataGuard() {
-        let system = SelectionFallbackInstructions.system
+        let system = SelectionFallbackInstructions.system()
         #expect(system.contains("proper noun"))
         #expect(system.contains("untrusted data"))
         #expect(system.contains("Simplified Chinese"))

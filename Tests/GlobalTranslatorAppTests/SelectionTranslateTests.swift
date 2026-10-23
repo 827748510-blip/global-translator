@@ -152,19 +152,20 @@ struct SelectionTranslateControllerTests {
     }
 
     @Test
-    func simplifiedChineseShowsAlreadyChineseWithoutCallingBackend() async throws {
+    func simplifiedChineseSelectionTranslatesToEnglish() async throws {
+        // 双向互译：简体中文选区直接翻译成英文，仍可「优化提示词」。
         let reader = FakeSelectedTextReader(result: .snapshot(snapshot("你好世界")))
         let popover = FakeSelectionPopover()
         let translator = StubSelectionTranslator()
+        translator.result = "Hello world"
         let controller = makeController(reader: reader, popover: popover, translator: translator)
         controller.setEnabled(true)
         select(controller)
-        try await waitUntil { popover.currentContent?.status == .alreadyChinese }
-        #expect(translator.texts.isEmpty)
-        #expect(popover.currentContent?.displayTranslation == "已是中文")
+        try await waitUntil { popover.currentContent?.status == .translated }
+        #expect(translator.texts == ["你好世界"])
+        #expect(popover.currentContent?.displayTranslation == "Hello world")
         #expect(popover.currentContent?.showsOptimizeAction == true)
-        try await Task.sleep(for: .milliseconds(40))
-        #expect(popover.currentContent?.status == .alreadyChinese)
+        #expect(popover.currentContent?.allowsCopy == true)
     }
 
     @Test
@@ -429,18 +430,20 @@ struct SelectionTranslateControllerTests {
     }
 
     @Test
-    func dragWithEmptyAXChineseClipboardShowsAlreadyChinese() async throws {
+    func dragWithEmptyAXChineseClipboardTranslatesToEnglish() async throws {
+        // 双向互译：飞书等 Electron App 里拖选中文经剪贴板兜底，同样译成英文。
         let reader = FakeSelectedTextReader(result: .empty)
         reader.clipboardFallbackSnapshot = snapshot("一个女孩站在雨里", bundle: "com.electron.lark")
         let popover = FakeSelectionPopover()
         let translator = StubSelectionTranslator()
+        translator.result = "A girl standing in the rain"
         let controller = makeController(reader: reader, popover: popover, translator: translator)
         controller.setEnabled(true)
         dragSelect(controller)
-        try await waitUntil { popover.currentContent?.status == .alreadyChinese }
+        try await waitUntil { popover.currentContent?.status == .translated }
         #expect(reader.clipboardFallbackUseCount == 1)
-        #expect(translator.texts.isEmpty)
-        #expect(popover.currentContent?.displayTranslation == "已是中文")
+        #expect(translator.texts == ["一个女孩站在雨里"])
+        #expect(popover.currentContent?.displayTranslation == "A girl standing in the rain")
         #expect(popover.currentContent?.showsOptimizeAction == true)
     }
 
@@ -486,18 +489,20 @@ struct SelectionTranslateControllerTests {
     }
 
     @Test
-    func optimizeButtonRewritesChineseDraftWithoutTranslating() async throws {
+    func optimizeButtonRewritesChineseDraftAfterTranslation() async throws {
+        // 中文草稿先被译成英文，「优化提示词」仍作用于中文原文。
         let reader = FakeSelectedTextReader(result: .snapshot(snapshot("一个女孩站在雨里")))
         let popover = FakeSelectionPopover()
         let translator = StubSelectionTranslator()
+        translator.result = "A girl standing in the rain"
         translator.optimizeResult = "主体：一位女孩站在雨中街道，电影感布光，中景，约束：写实、无字幕。"
         let controller = makeController(reader: reader, popover: popover, translator: translator)
         controller.setEnabled(true)
         select(controller)
-        try await waitUntil { popover.currentContent?.status == .alreadyChinese }
+        try await waitUntil { popover.currentContent?.status == .translated }
+        #expect(translator.texts == ["一个女孩站在雨里"])
         popover.simulateOptimize()
         try await waitUntil { popover.currentContent?.status == .optimized }
-        #expect(translator.texts.isEmpty)
         #expect(translator.optimizedTexts == ["一个女孩站在雨里"])
         #expect(translator.optimizedModes == [.communicationPolish])
         #expect(popover.currentContent?.displayTranslation == translator.optimizeResult)
@@ -515,7 +520,7 @@ struct SelectionTranslateControllerTests {
         controller.setEnabled(true)
         controller.setOptimizeMode(.taskInstruction)
         select(controller)
-        try await waitUntil { popover.currentContent?.status == .alreadyChinese }
+        try await waitUntil { popover.currentContent?.status == .translated }
         popover.simulateOptimize()
         try await waitUntil { popover.currentContent?.status == .optimized }
         #expect(translator.optimizedModes == [.taskInstruction])
@@ -570,25 +575,24 @@ struct SelectionTranslateControllerTests {
     }
 
     @Test
-    func translateDuringChineseOptimizeKeepsAlreadyChineseAndDropsLateOptimize() async throws {
+    func delayedTranslateDoesNotOverwriteChineseOptimize() async throws {
+        // 中文选区自动译成英文；翻译在途时点了「优化提示词」，晚到的译文不得覆盖优化结果。
         let reader = FakeSelectedTextReader(result: .snapshot(snapshot("一个女孩站在雨里")))
         let popover = FakeSelectionPopover()
         let translator = StubSelectionTranslator()
         translator.delay = .milliseconds(250)
+        translator.result = "A girl standing in the rain"
         translator.optimizeResult = "主体：一位女孩站在雨中街道，电影感布光。"
         let controller = makeController(reader: reader, popover: popover, translator: translator)
         controller.setEnabled(true)
         select(controller)
-        try await waitUntil { popover.currentContent?.status == .alreadyChinese }
+        try await waitUntil { popover.currentContent?.status == .loading }
         popover.simulateOptimize()
-        try await waitUntil { popover.currentContent?.status == .optimizing }
-        popover.simulateTranslate()
-        #expect(popover.currentContent?.status == .alreadyChinese)
-        #expect(popover.currentContent?.displayTranslation == "已是中文")
+        try await waitUntil { popover.currentContent?.status == .optimized }
         try await Task.sleep(for: .milliseconds(300))
-        #expect(popover.currentContent?.status == .alreadyChinese)
-        #expect(popover.currentContent?.displayTranslation == "已是中文")
-        #expect(!popover.shown.contains(where: { $0.status == .optimized }))
+        #expect(popover.currentContent?.status == .optimized)
+        #expect(popover.currentContent?.displayTranslation == translator.optimizeResult)
+        #expect(!popover.shown.suffix(2).contains(where: { $0.status == .translated }))
     }
 
     @Test

@@ -32,7 +32,7 @@ struct LiveOllamaSelectionSmokeTests {
         )
         for source in ["Figma", "Spotify", "Python"] {
             let raw = try await backend.completePlain(
-                system: SelectionFallbackInstructions.system,
+                system: SelectionFallbackInstructions.system(),
                 user: SelectionFallbackInstructions.userContent(for: source)
             )
             let cleaned = SelectionTranslateSupport.cleanPlainFallback(raw)

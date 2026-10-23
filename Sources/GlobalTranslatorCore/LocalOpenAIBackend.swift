@@ -172,11 +172,15 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
     }
 
     private func makePayload(for request: TranslationRequest) throws -> Data {
+        let direction = SelectionTranslationDirection(targetLanguage: request.targetLanguage) ?? .toChinese
         let payload = ChatPayload(
             model: model,
             messages: [
-                ChatPrompt(role: "system", content: LocalTranslationPrompt.system),
-                ChatPrompt(role: "user", content: LocalTranslationPrompt.userContent(for: request.items))
+                ChatPrompt(role: "system", content: LocalTranslationPrompt.system(for: direction)),
+                ChatPrompt(role: "user", content: LocalTranslationPrompt.userContent(
+                    for: request.items,
+                    direction: direction
+                ))
             ],
             maxTokens: Self.maxTokens(
                 itemCount: request.items.count,

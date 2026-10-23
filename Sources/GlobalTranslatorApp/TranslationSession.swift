@@ -281,12 +281,17 @@ public final class TranslationSession {
     public func translateSelection(_ text: String) async throws -> SelectionTranslationOutcome {
         guard let coordinator = selectionCoordinator else { throw SelectionTranslateError.translatorUnavailable }
         let plan = SelectionTranslateSupport.prepareSource(text)
+        // 双向互译：简体中文源 → 英文；其余可翻译文本 → 简体中文。标识符 / URL
+        // 仍然不弹层。
         switch TextFilter.selectionDecision(SelectionTranslateSupport.limitSelectionSource(text).text) {
-        case .translate, .noTranslationNeeded:
+        case .translate, .noTranslationNeeded, .alreadyTargetLanguage:
             break
-        case .skip, .alreadyTargetLanguage:
+        case .skip:
             throw SelectionTranslateError.emptyResult
         }
+        let direction = TextFilter.selectionDirection(
+            SelectionTranslateSupport.limitSelectionSource(text).text
+        ) ?? .toChinese
         guard !plan.chunks.isEmpty else { throw SelectionTranslateError.emptyResult }
         await coordinator.selectBackend(kind: backend, modelIdentifier: model)
         var parts: [String] = []
@@ -297,7 +302,8 @@ public final class TranslationSession {
                 let translated = try await translateOneSelectionChunk(
                     chunk,
                     coordinator: coordinator,
-                    revision: nextSelectionRevision()
+                    revision: nextSelectionRevision(),
+                    direction: direction
                 )
                 parts.append(translated)
             } catch let error as SelectionTranslateError
@@ -315,10 +321,16 @@ public final class TranslationSession {
     private func translateOneSelectionChunk(
         _ text: String,
         coordinator: any TranslationCoordinating,
-        revision: UInt64
+        revision: UInt64,
+        direction: SelectionTranslationDirection
     ) async throws -> String {
         do {
-            return try await structuredSelectionChunk(text, coordinator: coordinator, revision: revision)
+            return try await structuredSelectionChunk(
+                text,
+                coordinator: coordinator,
+                revision: revision,
+                direction: direction
+            )
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as TranslationError {
@@ -328,17 +340,24 @@ public final class TranslationSession {
             return try await plainSelectionFallback(
                 text,
                 coordinator: coordinator,
-                reason: Self.fallbackReason(for: error)
+                reason: Self.fallbackReason(for: error),
+                direction: direction
             )
         } catch let error as SelectionTranslateError where error == .emptyResult {
-            return try await plainSelectionFallback(text, coordinator: coordinator, reason: "empty")
+            return try await plainSelectionFallback(
+                text,
+                coordinator: coordinator,
+                reason: "empty",
+                direction: direction
+            )
         }
     }
 
     private func structuredSelectionChunk(
         _ text: String,
         coordinator: any TranslationCoordinating,
-        revision: UInt64
+        revision: UInt64,
+        direction: SelectionTranslationDirection
     ) async throws -> String {
         let region = TextRegion(
             id: UUID(),
@@ -365,7 +384,8 @@ public final class TranslationSession {
                 coordinator,
                 snapshot: snapshot,
                 backend: backend,
-                model: model
+                model: model,
+                targetLanguage: direction.targetLanguage
             )
         } catch is CancellationError {
             throw CancellationError()
@@ -401,7 +421,8 @@ public final class TranslationSession {
     private func plainSelectionFallback(
         _ text: String,
         coordinator: any TranslationCoordinating,
-        reason: String
+        reason: String,
+        direction: SelectionTranslationDirection
     ) async throws -> String {
         guard text.count <= SelectionTranslateSupport.plainFallbackMaxCharacters else {
             logger.event("selection_plain_fallback", fields: ["status": "skipped", "reason": "too_long"])
@@ -410,7 +431,7 @@ public final class TranslationSession {
         let raw: String
         do {
             raw = try await coordinator.completePlain(
-                system: SelectionFallbackInstructions.system,
+                system: SelectionFallbackInstructions.system(for: direction),
                 user: SelectionFallbackInstructions.userContent(for: text),
                 backend: backend
             )
@@ -451,7 +472,8 @@ public final class TranslationSession {
         _ coordinator: any TranslationCoordinating,
         snapshot: CaptureSnapshot,
         backend: BackendKind,
-        model: String
+        model: String,
+        targetLanguage: String
     ) async throws -> EngineOutput {
         if let live = coordinator as? TranslationCoordinator {
             return try await live.translate(
@@ -459,7 +481,8 @@ public final class TranslationSession {
                 backend: backend,
                 modelIdentifier: model,
                 visionFallbackEnabled: false,
-                includeIneligibleText: true
+                includeIneligibleText: true,
+                targetLanguage: targetLanguage
             )
         }
         return try await coordinator.translate(
