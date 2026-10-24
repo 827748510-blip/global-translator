@@ -20,6 +20,8 @@ public final class ScreenshotTranslateController {
     private let pasteboardWriter: (String) throws -> Void
     private let mouseLocation: () -> CGPoint
     private let requestScreenCapture: () -> Void
+    private let imageSaver: (CGImage, URL) throws -> URL
+    private let imageCopier: (CGImage) -> Void
 
     private var shortcut: KeyboardShortcutSpec
     private var autoCopy = false
@@ -27,6 +29,12 @@ public final class ScreenshotTranslateController {
     private var hotkeyEnabled = false
     private var runTask: Task<Void, Never>?
     private var presentationGeneration: UInt64 = 0
+    /// 保存截图 / 复制截图开关与目录（设置页可改）。
+    private var saveImageEnabled = false
+    private var copyImageEnabled = false
+    private var saveDirectoryPath = AppConfiguration.defaultScreenshotSaveDirectory
+    /// 最近一次成功落盘的截图路径；弹层用它显示「已保存到 …」。新一轮会清空。
+    private var lastSavedImagePath: String?
 
     public var lastHotkeyError: String?
 
@@ -49,7 +57,11 @@ public final class ScreenshotTranslateController {
         },
         mouseLocation: @escaping () -> CGPoint = { NSEvent.mouseLocation },
         requestScreenCapture: @escaping () -> Void = {},
-        shortcut: KeyboardShortcutSpec = .screenshotTranslateDefault
+        shortcut: KeyboardShortcutSpec = .screenshotTranslateDefault,
+        imageSaver: @escaping (CGImage, URL) throws -> URL = { image, directory in
+            try ScreenshotImageIO.save(image, to: directory)
+        },
+        imageCopier: @escaping (CGImage) -> Void = { ScreenshotImageIO.copyToClipboard($0) }
     ) {
         self.selector = selector
         self.capturer = capturer
@@ -64,6 +76,8 @@ public final class ScreenshotTranslateController {
         self.mouseLocation = mouseLocation
         self.requestScreenCapture = requestScreenCapture
         self.shortcut = shortcut
+        self.imageSaver = imageSaver
+        self.imageCopier = imageCopier
         popover.onUserDismiss = { [weak self] in
             self?.cancelPresentation()
         }
@@ -78,6 +92,19 @@ public final class ScreenshotTranslateController {
 
     public func setAutoCopy(_ enabled: Bool) {
         autoCopy = enabled
+    }
+
+    public func setSaveImage(_ enabled: Bool) {
+        saveImageEnabled = enabled
+    }
+
+    public func setCopyImage(_ enabled: Bool) {
+        copyImageEnabled = enabled
+    }
+
+    public func setSaveDirectory(_ path: String) {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        saveDirectoryPath = trimmed.isEmpty ? AppConfiguration.defaultScreenshotSaveDirectory : trimmed
     }
 
     public func startHotkey() {
@@ -146,6 +173,7 @@ public final class ScreenshotTranslateController {
     }
 
     private func runCaptureTranslate() async {
+        lastSavedImagePath = nil
         if !permissions.snapshot.screenCaptureAuthorized {
             requestScreenCapture()
             guard permissions.snapshot.screenCaptureAuthorized else {
@@ -196,6 +224,8 @@ public final class ScreenshotTranslateController {
             )
             return
         }
+        // 保存 / 复制截图发生在 OCR 之前：即使识别不到文字，用户要的截图也已保留。
+        handleImageArtifacts(image)
         let recognized: String
         do {
             recognized = try await ocr.recognizeJoinedText(image: image)
@@ -229,16 +259,13 @@ public final class ScreenshotTranslateController {
                 screenFrame: rect
             )
         case .alreadyTargetLanguage:
-            popover.show(
-                SelectionPopoverContent.alreadyChinese(original: text, screenFrame: rect)
-                    .asScreenshotResult()
-            )
-            autoCopyIfNeeded(text)
+            // 双向互译：截图识别出的简体中文也翻译成英文，不再只提示「已是中文」。
+            presentTranslation(original: text, screenFrame: rect)
         case .noTranslationNeeded:
-            popover.show(
+            popover.show(withSavedPath(
                 SelectionPopoverContent.noTranslationNeeded(original: text, screenFrame: rect)
                     .asScreenshotResult()
-            )
+            ))
         case .translate:
             presentTranslation(original: text, screenFrame: rect)
         }
@@ -265,10 +292,10 @@ public final class ScreenshotTranslateController {
         case .ready:
             break
         }
-        popover.show(
+        popover.show(withSavedPath(
             SelectionPopoverContent.loading(original: original, screenFrame: screenFrame)
                 .asScreenshotResult()
-        )
+        ))
         guard let translator = translator() else {
             presentFailure(
                 original: original,
@@ -290,14 +317,14 @@ public final class ScreenshotTranslateController {
                     )
                     return
                 }
-                self.popover.show(
+                self.popover.show(self.withSavedPath(
                     SelectionPopoverContent.translated(
                         original: original,
                         translation: text,
                         screenFrame: screenFrame,
                         sourceWasTruncated: outcome.sourceWasTruncated
                     ).asScreenshotResult()
-                )
+                ))
                 self.autoCopyIfNeeded(text)
             } catch is CancellationError {
                 return
@@ -315,13 +342,13 @@ public final class ScreenshotTranslateController {
 
     private func presentFailure(original: String, message: String, screenFrame: CGRect? = nil) {
         let frame = screenFrame ?? SelectionTranslateSupport.fallbackFrame(at: mouseLocation())
-        popover.show(
+        popover.show(withSavedPath(
             SelectionPopoverContent.failed(
                 original: original,
                 message: message,
                 screenFrame: frame
             ).asScreenshotResult()
-        )
+        ))
     }
 
     private func autoCopyIfNeeded(_ text: String) {
@@ -329,6 +356,31 @@ public final class ScreenshotTranslateController {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         try? pasteboardWriter(trimmed)
+    }
+
+    /// 保存 / 复制截图（按开关）。失败只记日志，不阻断翻译流程。
+    private func handleImageArtifacts(_ image: CGImage) {
+        lastSavedImagePath = nil
+        if saveImageEnabled {
+            do {
+                let directory = URL(fileURLWithPath: saveDirectoryPath, isDirectory: true)
+                lastSavedImagePath = try imageSaver(image, directory).path
+                logger.event("screenshot_saved", fields: [:])
+            } catch {
+                logger.event("screenshot_save_failed", fields: ["status": "error"])
+            }
+        }
+        if copyImageEnabled {
+            imageCopier(image)
+            logger.event("screenshot_copied", fields: [:])
+        }
+    }
+
+    /// 弹层内容带上「已保存到 …」路径提示。
+    private func withSavedPath(_ content: SelectionPopoverContent) -> SelectionPopoverContent {
+        var copy = content
+        copy.savedImagePath = lastSavedImagePath
+        return copy
     }
 
     private func cancelPresentation() {

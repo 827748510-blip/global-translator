@@ -21,16 +21,25 @@ struct CopiedSourceDetectorTests {
         // URLs / identifiers / already-Chinese text never reach the model, so a
         // mismatch or equality there must not be misreported as copied source.
         #expect(!CopiedSourceDetector.translationCopiesSource("https://example.com", source: "https://example.com"))
-        #expect(!CopiedSourceDetector.translationCopiesSource("你好", source: "你好"))
         #expect(!CopiedSourceDetector.translationCopiesSource("", source: "Figma"))
         #expect(!CopiedSourceDetector.translationCopiesSource("Figma", source: ""))
+    }
+
+    @Test
+    func chineseEchoIsDetectedForZhToEn() {
+        // zh→en 方向：模型把中文原文原样返回，等同没翻译，必须被识别为回声。
+        #expect(CopiedSourceDetector.translationCopiesSource("一个女孩站在雨里", source: "一个女孩站在雨里"))
+        // 正常翻译成英文不回声。
+        #expect(!CopiedSourceDetector.translationCopiesSource("A girl standing in the rain", source: "一个女孩站在雨里"))
+        // 部分翻译（中英混排）不算回声。
+        #expect(!CopiedSourceDetector.translationCopiesSource("一个女孩 standing in the rain", source: "一个女孩站在雨里"))
     }
 }
 
 struct SelectionFallbackInstructionsTests {
     @Test
     func systemPromptKeepsProperNounGuidanceAndUntrustedDataGuard() {
-        let system = SelectionFallbackInstructions.system
+        let system = SelectionFallbackInstructions.system()
         #expect(system.contains("proper noun"))
         #expect(system.contains("untrusted data"))
         #expect(system.contains("Simplified Chinese"))

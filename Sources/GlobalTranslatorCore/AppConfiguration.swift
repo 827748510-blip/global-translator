@@ -22,6 +22,12 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     public var screenshotTranslateHotkey: KeyboardShortcutSpec
     /// Copy screenshot-translate result automatically. Default off.
     public var autoCopyScreenshotTranslation: Bool
+    /// Save the captured region as a PNG file after a screenshot translate. Default off.
+    public var saveScreenshotImage: Bool
+    /// Copy the captured region image to the clipboard after a screenshot translate. Default off.
+    public var copyScreenshotImage: Bool
+    /// Directory that receives saved screenshot PNGs. Shown in Settings; user-editable.
+    public var screenshotSaveDirectory: String
 
     public init(
         autoTranslateEnabled: Bool = false,
@@ -36,7 +42,10 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         videoTranslateEnabled: Bool = false,
         promptOptimizeMode: PromptOptimizeMode = .communicationPolish,
         screenshotTranslateHotkey: KeyboardShortcutSpec = .screenshotTranslateDefault,
-        autoCopyScreenshotTranslation: Bool = false
+        autoCopyScreenshotTranslation: Bool = false,
+        saveScreenshotImage: Bool = false,
+        copyScreenshotImage: Bool = false,
+        screenshotSaveDirectory: String = Self.defaultScreenshotSaveDirectory
     ) {
         self.autoTranslateEnabled = autoTranslateEnabled
         self.backend = backend
@@ -53,10 +62,21 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
             ? screenshotTranslateHotkey
             : .screenshotTranslateDefault
         self.autoCopyScreenshotTranslation = autoCopyScreenshotTranslation
+        self.saveScreenshotImage = saveScreenshotImage
+        self.copyScreenshotImage = copyScreenshotImage
+        let trimmedDirectory = screenshotSaveDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.screenshotSaveDirectory = trimmedDirectory.isEmpty ? Self.defaultScreenshotSaveDirectory : trimmedDirectory
     }
 
     public static let defaultLocalBaseURL = URL(string: "http://127.0.0.1:11434/v1")!
     public static let defaultDeepSeekModel = "deepseek-chat"
+
+    /// 截图翻译的默认保存目录（「图片」下的独立子目录）。用户可在设置里改。
+    public static var defaultScreenshotSaveDirectory: String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Pictures/Global Translator 截图", isDirectory: true)
+            .path
+    }
 
     public static func resolvedDeepSeekModel(_ model: String) -> String {
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -84,6 +104,9 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         case promptOptimizeMode
         case screenshotTranslateHotkey
         case autoCopyScreenshotTranslation
+        case saveScreenshotImage
+        case copyScreenshotImage
+        case screenshotSaveDirectory
     }
 
     public init(from decoder: Decoder) throws {
@@ -109,6 +132,11 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
             screenshotTranslateHotkey = .screenshotTranslateDefault
         }
         autoCopyScreenshotTranslation = try container.decodeIfPresent(Bool.self, forKey: .autoCopyScreenshotTranslation) ?? false
+        saveScreenshotImage = try container.decodeIfPresent(Bool.self, forKey: .saveScreenshotImage) ?? false
+        copyScreenshotImage = try container.decodeIfPresent(Bool.self, forKey: .copyScreenshotImage) ?? false
+        let savedDirectory = try container.decodeIfPresent(String.self, forKey: .screenshotSaveDirectory) ?? Self.defaultScreenshotSaveDirectory
+        let trimmedDirectory = savedDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        screenshotSaveDirectory = trimmedDirectory.isEmpty ? Self.defaultScreenshotSaveDirectory : trimmedDirectory
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -126,5 +154,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         try container.encode(promptOptimizeMode, forKey: .promptOptimizeMode)
         try container.encode(screenshotTranslateHotkey, forKey: .screenshotTranslateHotkey)
         try container.encode(autoCopyScreenshotTranslation, forKey: .autoCopyScreenshotTranslation)
+        try container.encode(saveScreenshotImage, forKey: .saveScreenshotImage)
+        try container.encode(copyScreenshotImage, forKey: .copyScreenshotImage)
+        try container.encode(screenshotSaveDirectory, forKey: .screenshotSaveDirectory)
     }
 }

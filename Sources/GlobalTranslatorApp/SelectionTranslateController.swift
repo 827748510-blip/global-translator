@@ -355,9 +355,10 @@ public final class SelectionTranslateController {
                 suppressedSource = nil
                 popover.dismiss()
             case .alreadyTargetLanguage:
+                // 简体中文选区不再提示「已是中文」，双向互译把它译成英文。
                 guard snapshot.text != suppressedSource else { return }
                 suppressedSource = nil
-                presentAlreadyChinese(snapshot)
+                presentTranslation(snapshot)
             case .noTranslationNeeded:
                 guard snapshot.text != suppressedSource else { return }
                 suppressedSource = nil
@@ -375,9 +376,8 @@ public final class SelectionTranslateController {
         switch TextFilter.selectionDecision(content.original, targetLanguage: targetLanguage) {
         case .skip:
             return
-        case .alreadyTargetLanguage:
-            presentAlreadyChinese(snapshot(from: content))
-        case .noTranslationNeeded, .translate:
+        case .alreadyTargetLanguage, .noTranslationNeeded, .translate:
+            // 中文 → 英文，其余可翻译文本 → 简体中文；方向由后端按内容判定。
             presentTranslation(snapshot(from: content), force: true)
         }
     }
@@ -411,15 +411,6 @@ public final class SelectionTranslateController {
             source: .accessibility,
             bundleIdentifier: ""
         )
-    }
-
-    private func presentAlreadyChinese(_ snapshot: SelectedTextSnapshot) {
-        if popover.currentContent?.original == snapshot.text,
-           popover.currentContent?.status == .alreadyChinese {
-            return
-        }
-        cancelPresentation()
-        popover.show(.alreadyChinese(original: snapshot.text, screenFrame: snapshot.screenFrame))
     }
 
     private func presentNoTranslationNeeded(_ snapshot: SelectedTextSnapshot) {

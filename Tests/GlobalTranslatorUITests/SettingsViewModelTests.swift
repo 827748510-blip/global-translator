@@ -17,6 +17,9 @@ private final class SpyActions: SettingsActions {
     var videoTranslateValues: [Bool] = []
     var promptOptimizeModes: [PromptOptimizeMode] = []
     var autoCopyScreenshotValues: [Bool] = []
+    var saveScreenshotImageValues: [Bool] = []
+    var copyScreenshotImageValues: [Bool] = []
+    var chooseScreenshotSaveDirectoryCount = 0
     var screenshotHotkeys: [KeyboardShortcutSpec] = []
     var beginHotkeyRecordingCount = 0
     var cancelHotkeyRecordingCount = 0
@@ -59,6 +62,18 @@ private final class SpyActions: SettingsActions {
 
     func setAutoCopyScreenshotTranslation(_ enabled: Bool) {
         autoCopyScreenshotValues.append(enabled)
+    }
+
+    func setSaveScreenshotImage(_ enabled: Bool) {
+        saveScreenshotImageValues.append(enabled)
+    }
+
+    func setCopyScreenshotImage(_ enabled: Bool) {
+        copyScreenshotImageValues.append(enabled)
+    }
+
+    func chooseScreenshotSaveDirectory() {
+        chooseScreenshotSaveDirectoryCount += 1
     }
 
     func setScreenshotTranslateHotkey(_ spec: KeyboardShortcutSpec) {
@@ -331,6 +346,22 @@ struct SettingsViewModelTests {
         viewModel.setAutoCopyScreenshotTranslation(false)
         #expect(!viewModel.autoCopyScreenshotTranslation)
         #expect(actions.autoCopyScreenshotValues == [true, false])
+    }
+
+    @Test
+    func screenshotSaveAndCopyTogglesForwardAndDefaultDirectory() {
+        let (viewModel, actions) = makeViewModel()
+        #expect(!viewModel.saveScreenshotImage)
+        #expect(!viewModel.copyScreenshotImage)
+        #expect(!viewModel.screenshotSaveDirectory.isEmpty)
+        viewModel.setSaveScreenshotImage(true)
+        #expect(viewModel.saveScreenshotImage)
+        #expect(actions.saveScreenshotImageValues == [true])
+        viewModel.setCopyScreenshotImage(true)
+        #expect(viewModel.copyScreenshotImage)
+        #expect(actions.copyScreenshotImageValues == [true])
+        viewModel.chooseScreenshotSaveDirectory()
+        #expect(actions.chooseScreenshotSaveDirectoryCount == 1)
     }
 
     @Test

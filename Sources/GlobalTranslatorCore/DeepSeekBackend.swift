@@ -188,11 +188,12 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
     }
 
     private func makePayload(for request: TranslationRequest) throws -> Data {
+        let direction = SelectionTranslationDirection(targetLanguage: request.targetLanguage) ?? .toChinese
         let userContent = try TranslationInstructions.userContent(for: request.items)
         let payload = ResponsesPayload(
             model: model,
             input: [
-                ResponseInputMessage(role: "system", content: TranslationInstructions.system),
+                ResponseInputMessage(role: "system", content: TranslationInstructions.system(for: direction)),
                 ResponseInputMessage(role: "user", content: userContent)
             ],
             text: ResponsesText(format: JSONSchemaFormat(schema: TranslationSchema.object))
@@ -255,6 +256,7 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         for request: TranslationRequest,
         images: [VisionTranslationImage]
     ) throws -> Data {
+        let direction = SelectionTranslationDirection(targetLanguage: request.targetLanguage) ?? .toChinese
         let userText = try TranslationInstructions.userContent(for: request.items)
         var userContent: [VisionContentPart] = [.inputText(userText)]
         for image in images {
@@ -267,7 +269,7 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         let payload = VisionResponsesPayload(
             model: model,
             input: [
-                VisionResponseInputMessage(role: "system", content: [.inputText(TranslationInstructions.system)]),
+                VisionResponseInputMessage(role: "system", content: [.inputText(TranslationInstructions.system(for: direction))]),
                 VisionResponseInputMessage(role: "user", content: userContent)
             ],
             text: ResponsesText(format: JSONSchemaFormat(schema: TranslationSchema.object))

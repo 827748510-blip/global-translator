@@ -294,11 +294,13 @@ struct ScreenshotTranslateControllerTests {
     }
 
     @Test
-    func alreadyChineseOCRDoesNotCallTranslator() async throws {
+    func chineseOCRTranslatesToEnglish() async throws {
+        // 双向互译：截图识别出的简体中文不再停在「已是中文」，而是译成英文。
         let ocr = FakeRegionOCR()
         ocr.text = "你好世界"
         let popover = FakeSelectionPopover()
         let translator = StubSelectionTranslator()
+        translator.result = "Hello world"
         let controller = ScreenshotTranslateController(
             selector: FakeRegionSelector(),
             capturer: FakeRegionCapturer(),
@@ -311,10 +313,108 @@ struct ScreenshotTranslateControllerTests {
             backendReadiness: { .ready }
         )
         controller.handleHotkey()
-        try await waitUntil { popover.currentContent?.status == .alreadyChinese }
-        #expect(translator.texts.isEmpty)
+        try await waitUntil { popover.currentContent?.status == .translated }
+        #expect(translator.texts == ["你好世界"])
+        #expect(popover.currentContent?.displayTranslation == "Hello world")
         #expect(popover.currentContent?.showsOptimizeAction == false)
         #expect(popover.currentContent?.showsTranslateAction == false)
+    }
+
+    @Test
+    func savesAndCopiesScreenshotWhenEnabled() async throws {
+        let directory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Pictures/gt-shots", isDirectory: true)
+        var savedTo: [URL] = []
+        var copiedImages = 0
+        let ocr = FakeRegionOCR()
+        ocr.text = "Hello world"
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "你好，世界"
+        let controller = ScreenshotTranslateController(
+            selector: FakeRegionSelector(),
+            capturer: FakeRegionCapturer(),
+            ocr: ocr,
+            popover: popover,
+            permissions: FakePermissionController(snapshot: .allGranted),
+            logger: RecordingLogger(),
+            registrar: RecordingHotkeyRegistrar(),
+            translator: { translator },
+            backendReadiness: { .ready },
+            imageSaver: { _, dir in
+                savedTo.append(dir)
+                return dir.appendingPathComponent("shot.png")
+            },
+            imageCopier: { _ in copiedImages += 1 }
+        )
+        controller.setSaveImage(true)
+        controller.setCopyImage(true)
+        controller.setSaveDirectory(directory.path)
+        controller.handleHotkey()
+        try await waitUntil { popover.currentContent?.status == .translated }
+        #expect(savedTo == [directory])
+        #expect(copiedImages == 1)
+        // 落盘路径存原始绝对路径，弹层提示用 ~ 缩写。
+        #expect(popover.currentContent?.savedImagePath == directory.path + "/shot.png")
+        #expect(popover.currentContent?.savedImageHint == "已保存到 ~/Pictures/gt-shots/shot.png")
+    }
+
+    @Test
+    func doesNotSaveOrCopyByDefault() async throws {
+        var savedTo: [URL] = []
+        var copiedImages = 0
+        let ocr = FakeRegionOCR()
+        ocr.text = "Hello world"
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "你好，世界"
+        let controller = ScreenshotTranslateController(
+            selector: FakeRegionSelector(),
+            capturer: FakeRegionCapturer(),
+            ocr: ocr,
+            popover: popover,
+            permissions: FakePermissionController(snapshot: .allGranted),
+            logger: RecordingLogger(),
+            registrar: RecordingHotkeyRegistrar(),
+            translator: { translator },
+            backendReadiness: { .ready },
+            imageSaver: { _, dir in savedTo.append(dir); return dir.appendingPathComponent("shot.png") },
+            imageCopier: { _ in copiedImages += 1 }
+        )
+        controller.handleHotkey()
+        try await waitUntil { popover.currentContent?.status == .translated }
+        #expect(savedTo.isEmpty)
+        #expect(copiedImages == 0)
+        #expect(popover.currentContent?.savedImagePath == nil)
+    }
+
+    @Test
+    func saveFailureDoesNotBlockTranslation() async throws {
+        let ocr = FakeRegionOCR()
+        ocr.text = "Hello world"
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "你好，世界"
+        let logger = RecordingLogger()
+        let controller = ScreenshotTranslateController(
+            selector: FakeRegionSelector(),
+            capturer: FakeRegionCapturer(),
+            ocr: ocr,
+            popover: popover,
+            permissions: FakePermissionController(snapshot: .allGranted),
+            logger: logger,
+            registrar: RecordingHotkeyRegistrar(),
+            translator: { translator },
+            backendReadiness: { .ready },
+            imageSaver: { _, _ in throw ScreenshotImageIO.SaveError.pngEncodingFailed },
+            imageCopier: { _ in }
+        )
+        controller.setSaveImage(true)
+        controller.handleHotkey()
+        try await waitUntil { popover.currentContent?.status == .translated }
+        #expect(popover.currentContent?.displayTranslation == "你好，世界")
+        #expect(popover.currentContent?.savedImagePath == nil)
+        #expect(logger.records.contains { $0.0 == "screenshot_save_failed" })
     }
 
     @Test

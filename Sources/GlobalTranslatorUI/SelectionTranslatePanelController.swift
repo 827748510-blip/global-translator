@@ -376,6 +376,15 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
             maxLines: GTSelectionMetrics.maxTranslationLines,
             font: SelectionPopoverLayout.resultMeasuringFont(for: content.status)
         ).height
+        if let savedHint = content.savedImageHint, !savedHint.isEmpty {
+            height += GTSelectionMetrics.textBlockSpacing
+            height += OverlayLayout.estimatedTextSize(
+                for: savedHint,
+                maxWidth: textWidth,
+                maxLines: 2,
+                font: NSFont.preferredFont(forTextStyle: .caption1)
+            ).height
+        }
         let hasActions = content.showsOptimizeAction || content.showsActionButtons
         if hasActions {
             height += GTSelectionMetrics.sectionSpacing

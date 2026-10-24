@@ -19,6 +19,9 @@ public final class SettingsViewModel: ObservableObject {
     @Published public var isVideoTranslateEnabled = false
     @Published public var promptOptimizeMode: PromptOptimizeMode = .communicationPolish
     @Published public var autoCopyScreenshotTranslation = false
+    @Published public var saveScreenshotImage = false
+    @Published public var copyScreenshotImage = false
+    @Published public var screenshotSaveDirectory = AppConfiguration.defaultScreenshotSaveDirectory
     @Published public var screenshotTranslateHotkey = KeyboardShortcutSpec.screenshotTranslateDefault
     @Published public var isRecordingScreenshotHotkey = false
     @Published public var screenshotHotkeyConflictMessage: String?
@@ -187,6 +190,22 @@ public final class SettingsViewModel: ObservableObject {
         guard autoCopyScreenshotTranslation != enabled else { return }
         autoCopyScreenshotTranslation = enabled
         actions.setAutoCopyScreenshotTranslation(enabled)
+    }
+
+    public func setSaveScreenshotImage(_ enabled: Bool) {
+        guard saveScreenshotImage != enabled else { return }
+        saveScreenshotImage = enabled
+        actions.setSaveScreenshotImage(enabled)
+    }
+
+    public func setCopyScreenshotImage(_ enabled: Bool) {
+        guard copyScreenshotImage != enabled else { return }
+        copyScreenshotImage = enabled
+        actions.setCopyScreenshotImage(enabled)
+    }
+
+    public func chooseScreenshotSaveDirectory() {
+        actions.chooseScreenshotSaveDirectory()
     }
 
     public func beginRecordingScreenshotHotkey() {

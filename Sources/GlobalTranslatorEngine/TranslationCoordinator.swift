@@ -125,8 +125,10 @@ public actor TranslationCoordinator {
         backend kind: BackendKind,
         modelIdentifier: String,
         visionFallbackEnabled: Bool,
-        includeIneligibleText: Bool
+        includeIneligibleText: Bool,
+        targetLanguage: String? = nil
     ) async throws -> EngineOutput {
+        let effectiveTargetLanguage = targetLanguage ?? self.targetLanguage
         try Task.checkCancellation()
         try validateCapturePermission(snapshot)
         let model = modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -173,7 +175,7 @@ public actor TranslationCoordinator {
                 source: entry.sourceText,
                 backend: kind,
                 model: model,
-                targetLanguage: targetLanguage
+                targetLanguage: effectiveTargetLanguage
             )
             if let cached = await cache.value(for: key) {
                 try ensureCurrent(revision: revision, generation: generation)
@@ -201,7 +203,10 @@ public actor TranslationCoordinator {
         let batches = requestBatcher.makeBatches(
             from: pendingEntries,
             windowRevision: revision,
-            copiedSourcePolicy: Self.copiedSourcePolicy(for: snapshot)
+            copiedSourcePolicy: Self.copiedSourcePolicy(for: snapshot),
+            // 只有显式覆盖（划词中文→英文）才把 targetLanguage 写进请求；默认
+            // 请求保持 nil，让后端走原本的简体中文 prompt。
+            targetLanguage: targetLanguage
         )
         let vision = makeVisionImages(
             snapshot: snapshot,
@@ -272,7 +277,7 @@ public actor TranslationCoordinator {
                     source: entry.sourceText,
                     backend: kind,
                     model: model,
-                    targetLanguage: targetLanguage
+                    targetLanguage: effectiveTargetLanguage
                 )
                 try ensureCurrent(revision: revision, generation: generation)
                 await cache.insert(translated, for: key)
