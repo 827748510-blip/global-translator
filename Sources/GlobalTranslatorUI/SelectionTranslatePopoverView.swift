@@ -46,6 +46,29 @@ public struct SelectionTranslatePopoverView: View {
     }
 
     public var body: some View {
+        if #available(macOS 26.0, *) {
+            contentLayout
+                .glassEffect(
+                    .regular.interactive(),
+                    in: RoundedRectangle(cornerRadius: GTRadius.overlay, style: .continuous)
+                )
+                .accessibilityElement(children: .contain)
+        } else {
+            contentLayout
+                .background(background)
+                .clipShape(RoundedRectangle(cornerRadius: GTRadius.overlay, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: GTRadius.overlay, style: .continuous)
+                        .strokeBorder(
+                            GTGlassOptics.refractionStroke,
+                            lineWidth: GTControlMetrics.fieldStrokeWidth
+                        )
+                }
+                .accessibilityElement(children: .contain)
+        }
+    }
+
+    private var contentLayout: some View {
         VStack(alignment: .leading, spacing: GTSelectionMetrics.sectionSpacing) {
             textBlock
             if let savedHint = content.savedImageHint {
@@ -66,16 +89,6 @@ public struct SelectionTranslatePopoverView: View {
         .padding(.horizontal, GTSelectionMetrics.horizontalPadding)
         .padding(.vertical, GTSelectionMetrics.verticalPadding)
         .frame(width: GTSelectionMetrics.width, alignment: .leading)
-        .background(background)
-        .clipShape(RoundedRectangle(cornerRadius: GTRadius.overlay, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: GTRadius.overlay, style: .continuous)
-                .strokeBorder(
-                    GTGlassOptics.refractionStroke,
-                    lineWidth: GTControlMetrics.fieldStrokeWidth
-                )
-        }
-        .accessibilityElement(children: .contain)
     }
 
     private var textBlock: some View {

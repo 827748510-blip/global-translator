@@ -73,22 +73,31 @@ struct GTSettingsPanelChrome: ViewModifier {
     let cornerRadius: CGFloat
 
     func body(content: Content) -> some View {
-        content
-            .background {
-                GTGlassBackground(
-                    material: GTGlassOptics.panelMaterial,
-                    transmission: GTGlassOptics.panelTransmission
+        if #available(macOS 26.0, *) {
+            // macOS 26+ 原生 Liquid Glass；交互、折射和透光由系统负责。
+            content
+                .glassEffect(
+                    .regular.interactive(),
+                    in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 )
-                GTRefractionSheen()
-            }
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(
-                        GTGlassOptics.refractionStroke,
-                        lineWidth: GTControlMetrics.fieldStrokeWidth
+        } else {
+            content
+                .background {
+                    GTGlassBackground(
+                        material: GTGlassOptics.panelMaterial,
+                        transmission: GTGlassOptics.panelTransmission
                     )
-            }
+                    GTRefractionSheen()
+                }
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(
+                            GTGlassOptics.refractionStroke,
+                            lineWidth: GTControlMetrics.fieldStrokeWidth
+                        )
+                }
+        }
     }
 }
 
@@ -99,35 +108,47 @@ struct GTSettingsCard<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: GTSpacing.small) {
-            content()
-        }
-        .padding(GTSpacing.small)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            GTGlassBackground(
-                material: GTGlassOptics.cardMaterial,
-                fallback: GTColor.sectionFill,
-                transmission: GTGlassOptics.cardTransmission
+        if #available(macOS 26.0, *) {
+            VStack(alignment: .leading, spacing: GTSpacing.small) {
+                content()
+            }
+            .padding(GTSpacing.small)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .glassEffect(
+                .regular.interactive(),
+                in: RoundedRectangle(cornerRadius: GTRadius.card, style: .continuous)
             )
-        }
-        .clipShape(RoundedRectangle(cornerRadius: GTRadius.card, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: GTRadius.card, style: .continuous)
-                .strokeBorder(
-                    GTGlassOptics.refractionStroke,
-                    lineWidth: GTControlMetrics.fieldStrokeWidth
+        } else {
+            VStack(alignment: .leading, spacing: GTSpacing.small) {
+                content()
+            }
+            .padding(GTSpacing.small)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                GTGlassBackground(
+                    material: GTGlassOptics.cardMaterial,
+                    fallback: GTColor.sectionFill,
+                    transmission: GTGlassOptics.cardTransmission
                 )
+            }
+            .clipShape(RoundedRectangle(cornerRadius: GTRadius.card, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: GTRadius.card, style: .continuous)
+                    .strokeBorder(
+                        GTGlassOptics.refractionStroke,
+                        lineWidth: GTControlMetrics.fieldStrokeWidth
+                    )
+            }
+            .shadow(
+                color: Color.black.opacity(isHovered ? 0.16 : 0.08),
+                radius: isHovered ? 12 : 7,
+                x: 0,
+                y: isHovered ? 6 : 3
+            )
+            .offset(y: reduceMotion || !isHovered ? 0 : -1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: isHovered)
+            .onHover { isHovered = $0 }
         }
-        .shadow(
-            color: Color.black.opacity(isHovered ? 0.16 : 0.08),
-            radius: isHovered ? 12 : 7,
-            x: 0,
-            y: isHovered ? 6 : 3
-        )
-        .offset(y: reduceMotion || !isHovered ? 0 : -1)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: isHovered)
-        .onHover { isHovered = $0 }
     }
 }
 
