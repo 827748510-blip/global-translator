@@ -46,6 +46,15 @@ public struct SelectionTranslatePopoverView: View {
     }
 
     public var body: some View {
+        contentLayout
+            .glassEffect(
+                .regular.interactive(),
+                in: RoundedRectangle(cornerRadius: GTRadius.overlay, style: .continuous)
+            )
+            .accessibilityElement(children: .contain)
+    }
+
+    private var contentLayout: some View {
         VStack(alignment: .leading, spacing: GTSelectionMetrics.sectionSpacing) {
             textBlock
             if let savedHint = content.savedImageHint {
@@ -66,9 +75,6 @@ public struct SelectionTranslatePopoverView: View {
         .padding(.horizontal, GTSelectionMetrics.horizontalPadding)
         .padding(.vertical, GTSelectionMetrics.verticalPadding)
         .frame(width: GTSelectionMetrics.width, alignment: .leading)
-        .background(background)
-        .clipShape(RoundedRectangle(cornerRadius: GTRadius.overlay, style: .continuous))
-        .accessibilityElement(children: .contain)
     }
 
     private var textBlock: some View {
@@ -107,16 +113,22 @@ public struct SelectionTranslatePopoverView: View {
                 )
             }
             if content.showsActionButtons {
-                GTEqualWidthHStack(spacing: GTSpacing.xSmall) {
+                HStack(spacing: GTSpacing.xSmall) {
                     if content.showsTranslateAction {
                         Button("翻译", action: onTranslate)
-                            .buttonStyle(GTEqualFillButtonStyle())
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
                             .disabled(content.status == .loading)
-                            .accessibilityHint("把选区译成简体中文")
+                            .accessibilityHint("按内容自动翻译选区：中文译成英文，其他译成简体中文")
                     }
                     if content.showsOptimizeAction {
                         Button("优化提示词", action: onOptimize)
-                            .buttonStyle(GTEqualFillButtonStyle())
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
                             .disabled(content.status == .optimizing)
                             .accessibilityHint(chrome.optimizeMode.optimizeAccessibilityHint)
                     }
@@ -129,14 +141,19 @@ public struct SelectionTranslatePopoverView: View {
                                 }
                                 Text(chrome.copyFeedback.title)
                             }
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
                         }
-                        .buttonStyle(GTEqualFillButtonStyle())
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
                         .accessibilityLabel(chrome.copyFeedback.title)
                         .accessibilityHint(chrome.copyFeedback == .idle ? "将结果复制到剪贴板" : chrome.copyFeedback.title)
                     }
                 }
-                .frame(height: GTSelectionMetrics.actionRowHeight)
-                .frame(maxWidth: .infinity)
+                .frame(
+                    width: GTSelectionMetrics.width - GTSelectionMetrics.horizontalPadding * 2,
+                    height: GTSelectionMetrics.actionRowHeight
+                )
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -171,9 +188,6 @@ public struct SelectionTranslatePopoverView: View {
         }
     }
 
-    private var background: some View {
-        GTColor.panelBackground
-    }
 }
 
 enum SelectionPopoverLayout {

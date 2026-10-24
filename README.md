@@ -1,13 +1,13 @@
 # Global Translator
 
-macOS 14+ 的全局翻译工具，提供可双击的 `Global Translator.app`、独立设置窗口、菜单栏图标及命令行入口。启动后处理当前活动窗口，通过 Accessibility 优先提取文本，必要时使用 Vision OCR，并用鼠标穿透的透明覆盖层显示简体中文。划选文字（滑词翻译）可在任意 App 的选区附近弹出译文（双向互译：英文等→简体中文，简体中文→英文），并可一键按场景优化提示词（默认沟通润色）；默认开启、可在设置中关闭。授予屏幕录制权限且自动翻译开启时，ScreenCaptureKit 对当前窗口持续进行最高 4 帧/秒、256×256 的本地变化检测，包括 Accessibility 能读取文字的窗口；检测帧不保存、不上传。**截图翻译**：默认快捷键 ⌃⇧T 拖选区域，本机 Vision OCR（中/英）后走当前翻译后端（中文识别结果译成英文，其余译成简体中文），浮窗显示原文与译文并可拷贝；自动复制默认关闭；可选把截图保存为 PNG 到本机目录（默认 `~/Pictures/Global Translator 截图`，可改并展示路径）或复制到剪贴板。详见 [截图翻译](docs/screenshot-translate.md)。
+macOS 27+ 的全局翻译工具，提供可双击的 `Global Translator.app`、独立设置窗口、菜单栏图标及命令行入口。启动后处理当前活动窗口，通过 Accessibility 优先提取文本，必要时使用 Vision OCR，并用鼠标穿透的透明覆盖层显示简体中文。设置页与划词/截图弹层使用系统原生 Liquid Glass 与 `glass` 按钮样式。划选文字（滑词翻译）可在任意 App 的选区附近弹出译文（双向互译：英文等→简体中文，简体中文→英文），并可一键按场景优化提示词（默认沟通润色）；默认开启、可在设置中关闭。授予屏幕录制权限且自动翻译开启时，ScreenCaptureKit 对当前窗口持续进行最高 4 帧/秒、256×256 的本地变化检测，包括 Accessibility 能读取文字的窗口；检测帧不保存、不上传。**截图翻译**：默认快捷键 ⌃⇧T 拖选区域，本机 Vision OCR（中/英）后走当前翻译后端（中文识别结果译成英文，其余译成简体中文），浮窗显示原文与译文并可拷贝；自动复制默认关闭；可选把截图保存为 PNG 到本机目录（默认 `~/Pictures/Global Translator 截图`，可改并展示路径）或复制到剪贴板。详见 [截图翻译](docs/screenshot-translate.md)。
 
 ## 环境要求
 
 - Apple Silicon Mac
-- macOS 14 或更高版本
+- macOS 27 或更高版本
 - 建议至少 16 GB 内存
-- Swift 6 工具链
+- Swift 6.4 工具链（SwiftPM `swift-tools-version: 6.4`）
 - 辅助功能或屏幕录制权限至少一项；建议两项均授权，以支持完整的 AX/OCR 回退与滚动变化检测
 
 ## 构建与安装
@@ -95,7 +95,7 @@ swift test -Xswiftc -warnings-as-errors
 swift build -c release -Xswiftc -warnings-as-errors
 ```
 
-已使用真实 DeepSeek 和本机 Ollama 验证翻译链路。跨 App 交互证据及尚未达到的性能目标见 [当前真实验收记录](docs/real-acceptance-current.md)，本机启动方式见 [本地模型配置](docs/local-model-setup.md)。新版应用的构建和实机结果见 [桌面应用验收记录](docs/desktop-app-2026-09-07.md)。滑词翻译的双向互译、开关、权限与验证步骤见 [滑词翻译](docs/selection-translate.md)；中英双向互译 + 截图保存/复制的实现与验收见 [多语言互译与截图增强记录](docs/multilingual-and-screenshot-save-2026-10-23.md)；2026-10 的失灵根因（品牌词回声、剪贴板等待过短）与修复验证见 [滑词翻译失灵修复记录](docs/selection-translate-resilience-2026-10-22.md)。截图翻译（区域拖选 + 本机 Vision OCR）见 [截图翻译](docs/screenshot-translate.md)。应用不捆绑模型权重。
+已使用真实 DeepSeek 和本机 Ollama 验证翻译链路。跨 App 交互证据及尚未达到的性能目标见 [当前真实验收记录](docs/real-acceptance-current.md)，本机启动方式见 [本地模型配置](docs/local-model-setup.md)。新版应用的构建和实机结果见 [桌面应用验收记录](docs/desktop-app-2026-09-07.md)。设置页与划词/截图弹层采用毛玻璃卡片风格（Reduce Transparency 实色降级），实现与预览验证见 [毛玻璃 UI 改造](docs/glass-ui-2026-10-24.md)；PR #26/#27 合并后的真机验收见 [合并后验收记录](docs/merged-acceptance-2026-10-24.md)。滑词翻译的双向互译、开关、权限与验证步骤见 [滑词翻译](docs/selection-translate.md)；中英双向互译 + 截图保存/复制的实现与验收见 [多语言互译与截图增强记录](docs/multilingual-and-screenshot-save-2026-10-23.md)；2026-10 的失灵根因（品牌词回声、剪贴板等待过短）与修复验证见 [滑词翻译失灵修复记录](docs/selection-translate-resilience-2026-10-22.md)。截图翻译（区域拖选 + 本机 Vision OCR）见 [截图翻译](docs/screenshot-translate.md)。应用不捆绑模型权重。
 
 ## 本轮可用性修复
 

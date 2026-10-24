@@ -521,7 +521,7 @@ struct SettingsViewModelTests {
     }
 
     @Test
-    func targetLanguageIsFixedSimplifiedChinese() {
+    func overlayAndBridgeTargetLanguageStaysSimplifiedChinese() {
         let viewModel = SettingsViewModel(actions: SpyActions())
         #expect(viewModel.targetLanguageDisplayName == "简体中文")
     }

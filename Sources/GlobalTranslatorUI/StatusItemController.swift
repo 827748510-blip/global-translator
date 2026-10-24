@@ -174,15 +174,9 @@ public final class StatusItemController: NSObject {
     }
 
     private func makeDropdownRoot(maxHeight: CGFloat) -> some View {
-        let cornerRadius = GTRadius.card
-        return SettingsPopoverView(viewModel: viewModel, maxHeight: maxHeight)
+        SettingsPopoverView(viewModel: viewModel, maxHeight: maxHeight)
             .frame(width: GTPopoverMetrics.width)
-            .background(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).fill(GTColor.panelBackground))
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
-            )
+            .modifier(GTSettingsPanelChrome(cornerRadius: GTRadius.card))
     }
 
     @objc

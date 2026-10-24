@@ -1,6 +1,21 @@
 import SwiftUI
 import GlobalTranslatorCore
 
+/// The production settings-panel chrome, shared with render tests so previews
+/// exercise the exact same material/gradient/stroke composition as the app.
+struct GTSettingsPanelChrome: ViewModifier {
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        // macOS 27+ 原生 Liquid Glass；交互、折射和透光由系统负责。
+        content
+            .glassEffect(
+                .regular.interactive(),
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
+    }
+}
+
 /// Grouped settings block: fill, radius, and inner padding from DesignTokens.
 struct GTSettingsCard<Content: View>: View {
     @ViewBuilder var content: () -> Content
@@ -11,8 +26,10 @@ struct GTSettingsCard<Content: View>: View {
         }
         .padding(GTSpacing.small)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(GTColor.sectionFill)
-        .clipShape(RoundedRectangle(cornerRadius: GTRadius.card, style: .continuous))
+        .glassEffect(
+            .regular.interactive(),
+            in: RoundedRectangle(cornerRadius: GTRadius.card, style: .continuous)
+        )
     }
 }
 
@@ -244,26 +261,6 @@ struct GTEqualWidthHStack: Layout {
             )
             x += itemWidth + spacing
         }
-    }
-}
-
-/// Bordered action that fills the width proposed by `GTEqualWidthHStack`.
-struct GTEqualFillButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(GTType.body)
-            .lineLimit(1)
-            .minimumScaleFactor(0.75)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .foregroundStyle(GTColor.primaryText)
-            .background(GTColor.fieldFill)
-            .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous)
-                    .strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
-            )
-            .opacity(configuration.isPressed ? 0.82 : 1)
     }
 }
 

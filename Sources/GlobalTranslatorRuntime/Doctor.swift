@@ -139,10 +139,10 @@ public struct Doctor: Sendable {
         var checks = [DoctorCheck]()
         checks.append(DoctorCheck(
             name: "macOS 版本",
-            level: inputs.operatingSystemMajor >= 14 ? .pass : .fail,
-            detail: inputs.operatingSystemMajor >= 14
-                ? "版本满足 macOS 14+"
-                : "需要 macOS 14 或更高版本"
+            level: inputs.operatingSystemMajor >= 27 ? .pass : .fail,
+            detail: inputs.operatingSystemMajor >= 27
+                ? "版本满足 macOS 27+"
+                : "需要 macOS 27 或更高版本"
         ))
         checks.append(DoctorCheck(
             name: "处理器架构",

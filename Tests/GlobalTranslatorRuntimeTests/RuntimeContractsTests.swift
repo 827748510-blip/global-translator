@@ -260,7 +260,7 @@ struct RuntimeContractsTests {
                 "message": "Bearer super-secret-\(index) api_key=very-secret-value"
             ])
         }
-        let content = try String(contentsOf: logURL)
+        let content = try String(contentsOf: logURL, encoding: .utf8)
         #expect(!content.contains("super-secret"))
         #expect(!content.contains("very-secret-value"))
         #expect(content.contains("[REDACTED]"))
@@ -272,7 +272,7 @@ struct RuntimeContractsTests {
     @Test
     func doctorClassifiesInjectedReadinessWithoutSecrets() {
         let inputs = DoctorInputs(
-            operatingSystemMajor: 13,
+            operatingSystemMajor: 26,
             architecture: "x86_64",
             physicalMemoryGiB: 8,
             accessibilityTrusted: false,
@@ -286,7 +286,7 @@ struct RuntimeContractsTests {
         #expect(report.renderChinese().contains("FAIL"))
         #expect(!report.renderChinese().contains("api_key"))
         let whisperMissing = DoctorInputs(
-            operatingSystemMajor: 14,
+            operatingSystemMajor: 27,
             architecture: "arm64",
             physicalMemoryGiB: 16,
             accessibilityTrusted: true,
