@@ -90,18 +90,31 @@ struct GlassUIRenderTests {
     }
 
     @Test
-    func backendSectionsRenderWithNativeButtons() throws {
-        let cloud = CloudBackendSection(viewModel: SettingsViewModel(actions: RenderActions()))
-        let cloudImage = try Self.renderHostingView(cloud)
-        #expect(cloudImage.size.width > 0)
-        #expect(cloudImage.size.height > 0)
-        try Self.writeIfRequested(cloudImage, named: "gt-glass-cloud-backend.png")
+    func nativeGlassButtonHonorsExplicitWidth() {
+        let button = Button("拷贝") {}
+            .frame(width: 284, height: 28)
+            .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+        let size = NSHostingView(rootView: button).fittingSize
+        #expect(size.width == 284)
+        #expect(size.height == 28)
+    }
 
-        let local = LocalBackendSection(viewModel: SettingsViewModel(actions: RenderActions()))
-        let localImage = try Self.renderHostingView(local)
-        #expect(localImage.size.width > 0)
-        #expect(localImage.size.height > 0)
-        try Self.writeIfRequested(localImage, named: "gt-glass-local-backend.png")
+    @Test
+    func nativeGlassButtonLayoutUsesFullWidth() {
+        let row = HStack {
+            Button("拷贝") {}
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+        }
+        .frame(width: 284, height: 28)
+        let hosting = NSHostingView(rootView: row)
+        hosting.layoutSubtreeIfNeeded()
+        let widths = Self.subviewWidths(hosting)
+        #expect(widths.max() == 284, "subview widths: \(widths)")
+    }
+
+    private static func subviewWidths(_ view: NSView) -> [CGFloat] {
+        [view.frame.width] + view.subviews.flatMap(subviewWidths)
     }
 
     @Test
@@ -159,9 +172,7 @@ struct GlassUIRenderTests {
             content: content,
             chrome: SelectionPopoverChrome()
         )
-        let renderer = ImageRenderer(content: view)
-        renderer.scale = 2
-        let image = try #require(renderer.nsImage)
+        let image = try Self.renderHostingView(view)
         let expected = SelectionTranslatePanelController.contentSize(for: content)
         #expect(image.size.width == expected.width)
         let fittingHeight = NSHostingView(rootView: view).fittingSize.height

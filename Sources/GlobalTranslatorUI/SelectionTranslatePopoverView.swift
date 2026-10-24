@@ -113,16 +113,22 @@ public struct SelectionTranslatePopoverView: View {
                 )
             }
             if content.showsActionButtons {
-                GTEqualWidthHStack(spacing: GTSpacing.xSmall) {
+                HStack(spacing: GTSpacing.xSmall) {
                     if content.showsTranslateAction {
                         Button("翻译", action: onTranslate)
-                            .buttonStyle(.glass)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                            .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .disabled(content.status == .loading)
                             .accessibilityHint("按内容自动翻译选区：中文译成英文，其他译成简体中文")
                     }
                     if content.showsOptimizeAction {
                         Button("优化提示词", action: onOptimize)
-                            .buttonStyle(.glass)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                            .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .disabled(content.status == .optimizing)
                             .accessibilityHint(chrome.optimizeMode.optimizeAccessibilityHint)
                     }
@@ -135,14 +141,19 @@ public struct SelectionTranslatePopoverView: View {
                                 }
                                 Text(chrome.copyFeedback.title)
                             }
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
                         }
-                        .buttonStyle(.glass)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
                         .accessibilityLabel(chrome.copyFeedback.title)
                         .accessibilityHint(chrome.copyFeedback == .idle ? "将结果复制到剪贴板" : chrome.copyFeedback.title)
                     }
                 }
-                .frame(height: GTSelectionMetrics.actionRowHeight)
-                .frame(maxWidth: .infinity)
+                .frame(
+                    width: GTSelectionMetrics.width - GTSelectionMetrics.horizontalPadding * 2,
+                    height: GTSelectionMetrics.actionRowHeight
+                )
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
