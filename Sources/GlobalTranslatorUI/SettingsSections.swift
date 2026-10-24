@@ -127,7 +127,7 @@ struct ScreenshotTranslateSection: View {
                             viewModel.beginRecordingScreenshotHotkey()
                         }
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.glass)
                     .accessibilityHint("录制新的截图翻译快捷键，按下带修饰键的组合即可保存")
                 }
             }
@@ -193,7 +193,7 @@ struct ScreenshotTranslateSection: View {
                 Button("选择…") {
                     viewModel.chooseScreenshotSaveDirectory()
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.glass)
                 .accessibilityHint("选择截图保存文件夹")
             }
             .accessibilityElement(children: .contain)
@@ -273,7 +273,7 @@ struct CloudBackendSection: View {
                             Text("保存密钥")
                         }
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.glass)
                     .frame(maxWidth: .infinity)
                     .disabled(!viewModel.canSaveKey)
                     .accessibilityHint("保存后输入框将清空，密钥只写入钥匙串")
@@ -282,7 +282,7 @@ struct CloudBackendSection: View {
                         Button("取消") {
                             viewModel.cancelReplaceKey()
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.glass)
                         .frame(maxWidth: .infinity)
                         .disabled(viewModel.isKeyOperationInProgress)
                     }
@@ -290,7 +290,7 @@ struct CloudBackendSection: View {
                     Button("替换密钥") {
                         viewModel.beginReplaceKey()
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.glass)
                     .frame(maxWidth: .infinity)
                     .disabled(viewModel.isKeyOperationInProgress)
                     .accessibilityHint("仅在替换时显示输入框，已保存的密钥不会回填")
@@ -300,7 +300,7 @@ struct CloudBackendSection: View {
                     Button("删除密钥", role: .destructive) {
                         viewModel.requestDeleteKey()
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.glass)
                     .frame(maxWidth: .infinity)
                     .disabled(viewModel.isKeyOperationInProgress)
                 }
@@ -385,14 +385,14 @@ struct LocalBackendSection: View {
                         Text("测试连接")
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glass)
                 .disabled(!viewModel.canTestConnection)
                 .accessibilityHint(ConnectionTestRow.testHint(for: viewModel))
             } secondary: {
                 Button("应用设置") {
                     viewModel.commitLocalConfiguration()
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.glass)
                 .disabled(viewModel.localBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
@@ -422,7 +422,7 @@ struct ConnectionTestRow: View {
                     Text("测试连接")
                 }
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.glass)
             .frame(maxWidth: fillsWidth ? .infinity : nil)
             .disabled(!viewModel.canTestConnection)
             .accessibilityHint(Self.testHint(for: viewModel))
@@ -521,11 +521,11 @@ private struct PermissionRow: View {
                 Button("授权") {
                     viewModel.requestPermission(kind)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.glass)
                 Button("打开系统设置") {
                     viewModel.openSystemSettings(kind)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.glass)
             }
         }
         .frame(minHeight: GTPopoverMetrics.minRowHitHeight)
@@ -548,7 +548,7 @@ struct TranslatedApplicationsSection: View {
                 Button("选择应用…") {
                     viewModel.chooseTranslatedApplications()
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.glass)
                 .controlSize(.regular)
                 .accessibilityHint("选择一个或多个要翻译的应用，可按住 Command 多选")
             }
@@ -623,20 +623,20 @@ struct SettingsFooterSection: View {
             Button("清除缓存") {
                 viewModel.requestClearCache()
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.glass)
             .accessibilityHint("删除本地翻译缓存，需确认")
 
             Button("打开日志") {
                 viewModel.openLogs()
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.glass)
 
             Spacer()
 
             Button("退出 Global Translator") {
                 viewModel.quit()
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.glass)
             .foregroundStyle(GTColor.destructive)
             .accessibilityHint("停止翻译并退出程序")
         }

@@ -1,154 +1,35 @@
 import SwiftUI
 import GlobalTranslatorCore
 
-/// Shared frosted-glass surface with an opaque fallback for Reduce Transparency.
-/// Kept separate from layout so cards can change material without changing size.
-struct GTGlassBackground: View {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    var material: Material = .regularMaterial
-    var fallback: Color = GTColor.panelBackground
-    /// Alpha applied to the material itself, not to the text. Lower values let
-    /// more of the desktop show through the panel.
-    var transmission: Double = 1.0
-
-    static func usesMaterial(reduceTransparency: Bool) -> Bool {
-        !reduceTransparency
-    }
-
-    var body: some View {
-        if Self.usesMaterial(reduceTransparency: reduceTransparency) {
-            Rectangle().fill(material).opacity(transmission)
-        } else {
-            fallback
-        }
-    }
-}
-
-/// Optical tuning for the glass surfaces. Thinner materials let the desktop
-/// show through; a diagonal highlight suggests light bending at the edge.
-enum GTGlassOptics {
-    static let panelMaterial: Material = .ultraThinMaterial
-    static let cardMaterial: Material = .ultraThinMaterial
-    static let selectionMaterial: Material = .ultraThinMaterial
-    static let panelTransmission = 0.72
-    static let cardTransmission = 0.84
-    static let selectionTransmission = 0.78
-
-    static let refractionStroke = LinearGradient(
-        stops: [
-            .init(color: Color.white.opacity(0.55), location: 0),
-            .init(color: Color.white.opacity(0.12), location: 0.24),
-            .init(color: GTColor.accent.opacity(0.08), location: 0.60),
-            .init(color: GTColor.hairline, location: 1)
-        ],
-        startPoint: .topLeading,
-        endPoint: .bottomTrailing
-    )
-}
-
-/// A very light diagonal sheen. It is decorative only and removed when the
-/// user asks for reduced transparency.
-struct GTRefractionSheen: View {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
-    var body: some View {
-        if !reduceTransparency {
-            LinearGradient(
-                colors: [
-                    Color.white.opacity(0.16),
-                    Color.clear,
-                    GTColor.accent.opacity(0.035)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .allowsHitTesting(false)
-        }
-    }
-}
-
 /// The production settings-panel chrome, shared with render tests so previews
 /// exercise the exact same material/gradient/stroke composition as the app.
 struct GTSettingsPanelChrome: ViewModifier {
     let cornerRadius: CGFloat
 
     func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
-            // macOS 26+ 原生 Liquid Glass；交互、折射和透光由系统负责。
-            content
-                .glassEffect(
-                    .regular.interactive(),
-                    in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                )
-        } else {
-            content
-                .background {
-                    GTGlassBackground(
-                        material: GTGlassOptics.panelMaterial,
-                        transmission: GTGlassOptics.panelTransmission
-                    )
-                    GTRefractionSheen()
-                }
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .strokeBorder(
-                            GTGlassOptics.refractionStroke,
-                            lineWidth: GTControlMetrics.fieldStrokeWidth
-                        )
-                }
-        }
+        // macOS 27+ 原生 Liquid Glass；交互、折射和透光由系统负责。
+        content
+            .glassEffect(
+                .regular.interactive(),
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
     }
 }
 
 /// Grouped settings block: fill, radius, and inner padding from DesignTokens.
 struct GTSettingsCard<Content: View>: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isHovered = false
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        if #available(macOS 26.0, *) {
-            VStack(alignment: .leading, spacing: GTSpacing.small) {
-                content()
-            }
-            .padding(GTSpacing.small)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .glassEffect(
-                .regular.interactive(),
-                in: RoundedRectangle(cornerRadius: GTRadius.card, style: .continuous)
-            )
-        } else {
-            VStack(alignment: .leading, spacing: GTSpacing.small) {
-                content()
-            }
-            .padding(GTSpacing.small)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background {
-                GTGlassBackground(
-                    material: GTGlassOptics.cardMaterial,
-                    fallback: GTColor.sectionFill,
-                    transmission: GTGlassOptics.cardTransmission
-                )
-            }
-            .clipShape(RoundedRectangle(cornerRadius: GTRadius.card, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: GTRadius.card, style: .continuous)
-                    .strokeBorder(
-                        GTGlassOptics.refractionStroke,
-                        lineWidth: GTControlMetrics.fieldStrokeWidth
-                    )
-            }
-            .shadow(
-                color: Color.black.opacity(isHovered ? 0.16 : 0.08),
-                radius: isHovered ? 12 : 7,
-                x: 0,
-                y: isHovered ? 6 : 3
-            )
-            .offset(y: reduceMotion || !isHovered ? 0 : -1)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: isHovered)
-            .onHover { isHovered = $0 }
+        VStack(alignment: .leading, spacing: GTSpacing.small) {
+            content()
         }
+        .padding(GTSpacing.small)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(
+            .regular.interactive(),
+            in: RoundedRectangle(cornerRadius: GTRadius.card, style: .continuous)
+        )
     }
 }
 
@@ -380,26 +261,6 @@ struct GTEqualWidthHStack: Layout {
             )
             x += itemWidth + spacing
         }
-    }
-}
-
-/// Bordered action that fills the width proposed by `GTEqualWidthHStack`.
-struct GTEqualFillButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(GTType.body)
-            .lineLimit(1)
-            .minimumScaleFactor(0.75)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .foregroundStyle(GTColor.primaryText)
-            .background(GTColor.fieldFill)
-            .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous)
-                    .strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
-            )
-            .opacity(configuration.isPressed ? 0.82 : 1)
     }
 }
 

@@ -260,7 +260,7 @@ struct RuntimeContractsTests {
                 "message": "Bearer super-secret-\(index) api_key=very-secret-value"
             ])
         }
-        let content = try String(contentsOf: logURL)
+        let content = try String(contentsOf: logURL, encoding: .utf8)
         #expect(!content.contains("super-secret"))
         #expect(!content.contains("very-secret-value"))
         #expect(content.contains("[REDACTED]"))

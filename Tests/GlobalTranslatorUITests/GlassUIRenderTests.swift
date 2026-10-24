@@ -90,6 +90,21 @@ struct GlassUIRenderTests {
     }
 
     @Test
+    func backendSectionsRenderWithNativeButtons() throws {
+        let cloud = CloudBackendSection(viewModel: SettingsViewModel(actions: RenderActions()))
+        let cloudImage = try Self.renderHostingView(cloud)
+        #expect(cloudImage.size.width > 0)
+        #expect(cloudImage.size.height > 0)
+        try Self.writeIfRequested(cloudImage, named: "gt-glass-cloud-backend.png")
+
+        let local = LocalBackendSection(viewModel: SettingsViewModel(actions: RenderActions()))
+        let localImage = try Self.renderHostingView(local)
+        #expect(localImage.size.width > 0)
+        #expect(localImage.size.height > 0)
+        try Self.writeIfRequested(localImage, named: "gt-glass-local-backend.png")
+    }
+
+    @Test
     func selectionPopoverTransmitsBackdrop() throws {
         let content = SelectionPopoverContent.translated(
             original: "Hello world",
@@ -161,12 +176,6 @@ struct GlassUIRenderTests {
         #expect(controller.panelFrame?.size == expected)
         #expect(content.savedImageHint == "已保存到 /tmp/gt-shots/shot.png")
         try Self.writeIfRequested(image, named: "gt-glass-selection.png")
-    }
-
-    @Test
-    func glassBackgroundHonorsReduceTransparencyFlag() {
-        #expect(GTGlassBackground.usesMaterial(reduceTransparency: false))
-        #expect(!GTGlassBackground.usesMaterial(reduceTransparency: true))
     }
 
     private static func renderHostingView<V: View>(_ view: V) throws -> NSImage {

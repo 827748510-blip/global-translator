@@ -46,26 +46,12 @@ public struct SelectionTranslatePopoverView: View {
     }
 
     public var body: some View {
-        if #available(macOS 26.0, *) {
-            contentLayout
-                .glassEffect(
-                    .regular.interactive(),
-                    in: RoundedRectangle(cornerRadius: GTRadius.overlay, style: .continuous)
-                )
-                .accessibilityElement(children: .contain)
-        } else {
-            contentLayout
-                .background(background)
-                .clipShape(RoundedRectangle(cornerRadius: GTRadius.overlay, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: GTRadius.overlay, style: .continuous)
-                        .strokeBorder(
-                            GTGlassOptics.refractionStroke,
-                            lineWidth: GTControlMetrics.fieldStrokeWidth
-                        )
-                }
-                .accessibilityElement(children: .contain)
-        }
+        contentLayout
+            .glassEffect(
+                .regular.interactive(),
+                in: RoundedRectangle(cornerRadius: GTRadius.overlay, style: .continuous)
+            )
+            .accessibilityElement(children: .contain)
     }
 
     private var contentLayout: some View {
@@ -130,13 +116,13 @@ public struct SelectionTranslatePopoverView: View {
                 GTEqualWidthHStack(spacing: GTSpacing.xSmall) {
                     if content.showsTranslateAction {
                         Button("翻译", action: onTranslate)
-                            .buttonStyle(GTEqualFillButtonStyle())
+                            .buttonStyle(.glass)
                             .disabled(content.status == .loading)
                             .accessibilityHint("按内容自动翻译选区：中文译成英文，其他译成简体中文")
                     }
                     if content.showsOptimizeAction {
                         Button("优化提示词", action: onOptimize)
-                            .buttonStyle(GTEqualFillButtonStyle())
+                            .buttonStyle(.glass)
                             .disabled(content.status == .optimizing)
                             .accessibilityHint(chrome.optimizeMode.optimizeAccessibilityHint)
                     }
@@ -150,7 +136,7 @@ public struct SelectionTranslatePopoverView: View {
                                 Text(chrome.copyFeedback.title)
                             }
                         }
-                        .buttonStyle(GTEqualFillButtonStyle())
+                        .buttonStyle(.glass)
                         .accessibilityLabel(chrome.copyFeedback.title)
                         .accessibilityHint(chrome.copyFeedback == .idle ? "将结果复制到剪贴板" : chrome.copyFeedback.title)
                     }
@@ -191,16 +177,6 @@ public struct SelectionTranslatePopoverView: View {
         }
     }
 
-    private var background: some View {
-        ZStack {
-            GTGlassBackground(
-                material: GTGlassOptics.selectionMaterial,
-                fallback: GTColor.overlaySolidFallback,
-                transmission: GTGlassOptics.selectionTransmission
-            )
-            GTRefractionSheen()
-        }
-    }
 }
 
 enum SelectionPopoverLayout {
