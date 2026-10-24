@@ -45,25 +45,35 @@ public enum SelectedTextReadResult: Equatable, Sendable {
     case unavailable
 }
 
+/// MainActor because AX (`AXUIElement`), `NSScreen`, `NSWorkspace` and the
+/// clipboard fallback are AppKit-facing. The `await` in the requirements is
+/// what keeps the main thread responsive while ⌘C is serviced.
+@MainActor
 public protocol SelectedTextReading: Sendable {
-    func readSelection(mouseLocation: CGPoint, allowClipboardFallback: Bool) -> SelectedTextReadResult
+    func readSelection(mouseLocation: CGPoint, allowClipboardFallback: Bool) async -> SelectedTextReadResult
 }
 
+@MainActor
 public extension SelectedTextReading {
-    func readSelection(mouseLocation: CGPoint) -> SelectedTextReadResult {
-        readSelection(mouseLocation: mouseLocation, allowClipboardFallback: false)
+    func readSelection(mouseLocation: CGPoint) async -> SelectedTextReadResult {
+        await readSelection(mouseLocation: mouseLocation, allowClipboardFallback: false)
     }
 }
 
+@MainActor
 public struct NullSelectedTextReader: SelectedTextReading {
     public init() {}
-    public func readSelection(mouseLocation _: CGPoint, allowClipboardFallback _: Bool) -> SelectedTextReadResult {
+    public func readSelection(
+        mouseLocation _: CGPoint,
+        allowClipboardFallback _: Bool
+    ) async -> SelectedTextReadResult {
         .empty
     }
 }
 
+@MainActor
 public protocol ClipboardSelectionFallingBack: Sendable {
-    func copySelectedTextRestoringClipboard() -> String?
+    func copySelectedTextRestoringClipboard() async -> String?
 }
 
 /// Reads AX `selectedText` / selected range on the focused element.
@@ -72,6 +82,7 @@ public protocol ClipboardSelectionFallingBack: Sendable {
 /// - AX reports a non-empty range but no string (legacy path), or
 /// - the caller allows it after a real mouse-drag selection (Electron / Feishu
 ///   often expose empty `selectedText` and a zero range).
+@MainActor
 public struct AXSelectedTextReader: SelectedTextReading, @unchecked Sendable {
     public let attributeReader: any AXAttributeReading
     public let clipboard: (any ClipboardSelectionFallingBack)?
@@ -94,7 +105,7 @@ public struct AXSelectedTextReader: SelectedTextReading, @unchecked Sendable {
         self.primaryDisplayFrame = primaryDisplayFrame
     }
 
-    public func readSelection(mouseLocation: CGPoint, allowClipboardFallback: Bool) -> SelectedTextReadResult {
+    public func readSelection(mouseLocation: CGPoint, allowClipboardFallback: Bool) async -> SelectedTextReadResult {
         guard let app = frontmostApplication() else { return .unavailable }
         let focused = attributeReader.focusedElement(for: app.pid)
         let window = attributeReader.focusedWindow(for: app.pid)
@@ -113,7 +124,7 @@ public struct AXSelectedTextReader: SelectedTextReading, @unchecked Sendable {
             (attributeReader.selectedTextRange(of: element)?.length ?? 0) > 0
         }
         if (allowClipboardFallback || hasPositiveRange),
-           let copied = clipboard?.copySelectedTextRestoringClipboard() {
+           let copied = await clipboard?.copySelectedTextRestoringClipboard() {
             let resolved = copied.trimmingCharacters(in: .whitespacesAndNewlines)
             if !resolved.isEmpty {
                 let anchor = candidates.first { element in
@@ -214,7 +225,7 @@ public struct AXSelectedTextReader: SelectedTextReading, @unchecked Sendable {
             && attributeReader.subrole(of: element) == "AXSecureTextField"
     }
 
-    public static func systemFrontmostApplication() -> FrontmostApplicationInfo? {
+    nonisolated public static func systemFrontmostApplication() -> FrontmostApplicationInfo? {
         guard let application = NSWorkspace.shared.frontmostApplication else { return nil }
         return FrontmostApplicationInfo(
             pid: application.processIdentifier,

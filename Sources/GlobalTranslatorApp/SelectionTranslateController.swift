@@ -268,11 +268,11 @@ public final class SelectionTranslateController {
                 return
             }
             guard let self, !Task.isCancelled, self.enabled, self.settleGate.isCurrent(token) else { return }
-            await self.processSettledSelection(location: location)
+            await self.processSettledSelection(location: location, token: token)
         }
     }
 
-    private func processSettledSelection(location: CGPoint) async {
+    private func processSettledSelection(location: CGPoint, token: UInt64) async {
         let fallback = SelectionTranslateSupport.fallbackFrame(at: location)
         guard permissions.snapshot.accessibilityTrusted else {
             logger.event("selection_ax_unavailable", fields: ["reason": "permission"])
@@ -291,13 +291,28 @@ public final class SelectionTranslateController {
                 fields: Self.gestureFields(verdict: verdict, features: pointer.gestureFeatures)
             )
         }
-        switch reader.readSelection(
+        let allowClipboardFallback = isTextSelection
+            && !degrade.isDegraded(at: timestamp)
+            && !isOwnFrontmostApplication()
+        let result = await reader.readSelection(
             mouseLocation: location,
-            allowClipboardFallback: isTextSelection
-                && !degrade.isDegraded(at: timestamp)
-                && !isOwnFrontmostApplication()
-        ) {
+            allowClipboardFallback: allowClipboardFallback
+        )
+        // Reading the selection now awaits the clipboard fallback. A newer
+        // gesture (or toggling 滑词 off) invalidates this token, so its stale
+        // snapshot must not pop a panel over a newer selection.
+        guard !Task.isCancelled, enabled, settleGate.isCurrent(token) else { return }
+        switch result {
         case .empty:
+            // A real drag-selection yielded neither AX text nor a clipboard
+            // copy: the UI stays silent (dragging a scrollbar or slider is not
+            // an error) but the event makes 「划词没反应」 diagnosable.
+            if isTextSelection {
+                var fields = Self.gestureFields(verdict: verdict, features: pointer.gestureFeatures)
+                fields["clipboardAllowed"] = allowClipboardFallback ? "true" : "false"
+                fields["degraded"] = degrade.isDegraded(at: timestamp) ? "true" : "false"
+                logger.event("selection_unreadable", fields: fields)
+            }
             suppressedSource = nil
             cancelPresentation()
             popover.dismiss()
@@ -334,6 +349,10 @@ public final class SelectionTranslateController {
             }
             switch TextFilter.selectionDecision(snapshot.text, targetLanguage: targetLanguage) {
             case .skip:
+                // The selection changed to something we deliberately ignore
+                // (URL / identifier). Forget the previously suppressed text so
+                // selecting it again can surface a popover.
+                suppressedSource = nil
                 popover.dismiss()
             case .alreadyTargetLanguage:
                 guard snapshot.text != suppressedSource else { return }

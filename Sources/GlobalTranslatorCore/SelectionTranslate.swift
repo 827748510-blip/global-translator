@@ -485,6 +485,10 @@ public enum SelectionTranslateSupport {
     public static let selectionChunkCharacters = 1_800
     /// Hard safety cap after chunking. 15k–22k Seedance prompts fit; leftover shows a Chinese note.
     public static let selectionHardLimitCharacters = 48_000
+    /// A structured local/cloud request that fails on parse or quality gets one
+    /// plain-text retry. Longer chunks stay on the structured path because the
+    /// plain fallback budget (1024 tokens) could silently truncate them.
+    public static let plainFallbackMaxCharacters = 600
     public static let originalPreviewLimit = 80
     public static let alreadyChineseCopy = "已是中文"
     public static let noTranslationNeededCopy = "专有名词，无需翻译"
@@ -502,6 +506,54 @@ public enum SelectionTranslateSupport {
         guard compact.count > limit else { return compact }
         let end = compact.index(compact.startIndex, offsetBy: limit)
         return String(compact[..<end]) + "…"
+    }
+
+    /// Plain fallback replies are model prose, not schema-bound JSON. Strip
+    /// wrapping quotes / labels so 「"Figma（设计工具）"」 and 「译文：…」 do not
+    /// land in the popover or the copy buffer verbatim. Code fences and think
+    /// tags are already removed by the transport parsers.
+    public static func cleanPlainFallback(_ raw: String) -> String {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        for _ in 0..<2 {
+            guard text.count >= 2 else { break }
+            let pairs: [(Character, Character)] = [("\"", "\""), ("“", "”"), ("「", "」")]
+            guard pairs.contains(where: { text.first == $0.0 && text.last == $0.1 }) else { break }
+            text = String(text.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        for label in ["译文：", "译文:", "翻译：", "翻译:", "简体中文：", "简体中文:"] {
+            if text.hasPrefix(label) {
+                text = String(text.dropFirst(label.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                break
+            }
+        }
+        return text
+    }
+
+    /// True for short brand / product / technology names ("Figma", "Mac
+    /// Studio", "npm"), false for sentences. Used only after a plain fallback
+    /// echoes the source: a term becomes 「专有名词，无需翻译」, while an echoed
+    /// sentence stays an honest failure.
+    public static func isProperNounPhrase(_ text: String) -> Bool {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, value.count <= 64 else { return false }
+        guard !value.contains(where: { "。！？.!?".contains($0) }) else { return false }
+        let tokens = value
+            .split(whereSeparator: { $0.isWhitespace || "+/|&,".contains($0) })
+            .filter { !$0.isEmpty }
+        guard (1...4).contains(tokens.count) else { return false }
+        if tokens.count == 1 {
+            let token = String(tokens[0])
+            // One short word: brands (Figma), lowercase tech names (npm, pnpm),
+            // camel case / all caps / version-like names. Only consulted after
+            // the model already echoed the source, so the worst case is a soft
+            // 「专有名词，无需翻译」 instead of a red failure.
+            return token.count > 1 && token.count <= 12
+        }
+        return tokens.allSatisfy { token in
+            let value = String(token)
+            guard let first = value.first else { return false }
+            return first.isUppercase || first.isNumber || value.contains(where: { $0.isUppercase })
+        }
     }
 
     /// Optimize-prompt path still uses the 4000-character cap (plain completion is not chunked).

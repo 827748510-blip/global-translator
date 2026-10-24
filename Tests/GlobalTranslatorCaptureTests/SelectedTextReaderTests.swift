@@ -4,9 +4,10 @@ import Testing
 @testable import GlobalTranslatorCapture
 import GlobalTranslatorCore
 
+@MainActor
 struct SelectedTextReaderTests {
     @Test
-    func focusedElementSelectedTextIsPreferred() {
+    func focusedElementSelectedTextIsPreferred() async {
         let ax = FakeSelectionAXReader(selectedText: "Hello from TextEdit", range: (0, 19),
                                        bounds: CGRect(x: 10, y: 20, width: 80, height: 16))
         let clipboard = RecordingClipboardFallback(text: "should-not-use")
@@ -16,7 +17,7 @@ struct SelectedTextReaderTests {
             frontmostApplication: { FrontmostApplicationInfo(pid: 42, bundleIdentifier: "com.apple.TextEdit") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 1440, height: 900) }
         )
-        let result = reader.readSelection(
+        let result = await reader.readSelection(
             mouseLocation: CGPoint(x: 40, y: 40),
             allowClipboardFallback: true
         )
@@ -33,7 +34,7 @@ struct SelectedTextReaderTests {
     }
 
     @Test
-    func longSelectionIsNotSilentlyCappedAtFourThousand() {
+    func longSelectionIsNotSilentlyCappedAtFourThousand() async {
         // `"Hello world. " × 400` is 5200 scalars, but AX read trims
         // whitespace, so a trailing space is not a cap off-by-one.
         let text = String(repeating: "Hello world.", count: 434)
@@ -50,7 +51,7 @@ struct SelectedTextReaderTests {
             frontmostApplication: { FrontmostApplicationInfo(pid: 42, bundleIdentifier: "com.apple.TextEdit") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 1440, height: 900) }
         )
-        guard case .snapshot(let snapshot) = reader.readSelection(mouseLocation: CGPoint(x: 40, y: 40)) else {
+        guard case .snapshot(let snapshot) = await reader.readSelection(mouseLocation: CGPoint(x: 40, y: 40)) else {
             Issue.record("expected snapshot")
             return
         }
@@ -60,7 +61,7 @@ struct SelectedTextReaderTests {
     }
 
     @Test
-    func longSelectionTrimsTrailingWhitespaceWithoutHittingTheCap() {
+    func longSelectionTrimsTrailingWhitespaceWithoutHittingTheCap() async {
         let padded = String(repeating: "Hello world. ", count: 400)
         #expect(padded.count == 5_200)
         let ax = FakeSelectionAXReader(
@@ -74,7 +75,7 @@ struct SelectedTextReaderTests {
             frontmostApplication: { FrontmostApplicationInfo(pid: 42, bundleIdentifier: "com.apple.TextEdit") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 1440, height: 900) }
         )
-        guard case .snapshot(let snapshot) = reader.readSelection(mouseLocation: CGPoint(x: 40, y: 40)) else {
+        guard case .snapshot(let snapshot) = await reader.readSelection(mouseLocation: CGPoint(x: 40, y: 40)) else {
             Issue.record("expected snapshot")
             return
         }
@@ -85,7 +86,7 @@ struct SelectedTextReaderTests {
     }
 
     @Test
-    func selectionReadAppliesHardCapWithVisibleFlag() {
+    func selectionReadAppliesHardCapWithVisibleFlag() async {
         let text = String(repeating: "Hello world. ", count: 4_000)
         #expect(text.count > SelectionTranslateSupport.selectionHardLimitCharacters)
         let ax = FakeSelectionAXReader(
@@ -99,7 +100,7 @@ struct SelectedTextReaderTests {
             frontmostApplication: { FrontmostApplicationInfo(pid: 42, bundleIdentifier: "com.apple.TextEdit") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 1440, height: 900) }
         )
-        guard case .snapshot(let snapshot) = reader.readSelection(mouseLocation: CGPoint(x: 40, y: 40)) else {
+        guard case .snapshot(let snapshot) = await reader.readSelection(mouseLocation: CGPoint(x: 40, y: 40)) else {
             Issue.record("expected snapshot")
             return
         }
@@ -108,7 +109,7 @@ struct SelectedTextReaderTests {
     }
 
     @Test
-    func emptySelectionIsEmptyNotUnavailable() {
+    func emptySelectionIsEmptyNotUnavailable() async {
         let ax = FakeSelectionAXReader(selectedText: "", range: (0, 0), bounds: nil)
         let clipboard = RecordingClipboardFallback(text: "clip")
         let reader = AXSelectedTextReader(
@@ -117,12 +118,12 @@ struct SelectedTextReaderTests {
             frontmostApplication: { FrontmostApplicationInfo(pid: 7, bundleIdentifier: "com.apple.Notes") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
-        #expect(reader.readSelection(mouseLocation: .zero) == .empty)
+        #expect(await reader.readSelection(mouseLocation: .zero) == .empty)
         #expect(clipboard.callCount == 0)
     }
 
     @Test
-    func dragWithEmptyAXUsesClipboardFallback() {
+    func dragWithEmptyAXUsesClipboardFallback() async {
         let ax = FakeSelectionAXReader(selectedText: "", range: (0, 0), bounds: nil)
         let clipboard = RecordingClipboardFallback(text: "Feishu selected text")
         let reader = AXSelectedTextReader(
@@ -131,7 +132,7 @@ struct SelectedTextReaderTests {
             frontmostApplication: { FrontmostApplicationInfo(pid: 21, bundleIdentifier: "com.electron.lark") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
-        guard case .snapshot(let snapshot) = reader.readSelection(
+        guard case .snapshot(let snapshot) = await reader.readSelection(
             mouseLocation: CGPoint(x: 40, y: 80),
             allowClipboardFallback: true
         ) else {
@@ -146,7 +147,7 @@ struct SelectedTextReaderTests {
     }
 
     @Test
-    func clickWithoutDragAndEmptyAXDoesNotUseClipboard() {
+    func clickWithoutDragAndEmptyAXDoesNotUseClipboard() async {
         let ax = FakeSelectionAXReader(selectedText: "", range: (0, 0), bounds: nil)
         let clipboard = RecordingClipboardFallback(text: "should-not-copy")
         let reader = AXSelectedTextReader(
@@ -155,12 +156,12 @@ struct SelectedTextReaderTests {
             frontmostApplication: { FrontmostApplicationInfo(pid: 21, bundleIdentifier: "com.electron.lark") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
-        #expect(reader.readSelection(mouseLocation: .zero, allowClipboardFallback: false) == .empty)
+        #expect(await reader.readSelection(mouseLocation: .zero, allowClipboardFallback: false) == .empty)
         #expect(clipboard.callCount == 0)
     }
 
     @Test
-    func dragWithEmptyAXAndEmptyClipboardStaysSilent() {
+    func dragWithEmptyAXAndEmptyClipboardStaysSilent() async {
         // Dragging a scroll bar / slider: no AX selection and ⌘C copies nothing.
         // This must stay silent instead of flashing 无法读取所选文字.
         let ax = FakeSelectionAXReader(selectedText: "", range: (0, 0), bounds: nil)
@@ -171,12 +172,12 @@ struct SelectedTextReaderTests {
             frontmostApplication: { FrontmostApplicationInfo(pid: 21, bundleIdentifier: "com.google.Chrome") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
-        #expect(reader.readSelection(mouseLocation: .zero, allowClipboardFallback: true) == .empty)
+        #expect(await reader.readSelection(mouseLocation: .zero, allowClipboardFallback: true) == .empty)
         #expect(clipboard.callCount == 1)
     }
 
     @Test
-    func dragWithPositiveRangeButNoTextStillReportsUnavailable() {
+    func dragWithPositiveRangeButNoTextStillReportsUnavailable() async {
         // AX claims a real selection it cannot produce text for, and ⌘C yields
         // nothing: that is a genuine read failure, so keep surfacing it.
         let ax = FakeSelectionAXReader(selectedText: "", range: (2, 11), bounds: CGRect(x: 0, y: 0, width: 40, height: 12))
@@ -187,12 +188,12 @@ struct SelectedTextReaderTests {
             frontmostApplication: { FrontmostApplicationInfo(pid: 11, bundleIdentifier: "com.google.Chrome") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
-        #expect(reader.readSelection(mouseLocation: .zero, allowClipboardFallback: true) == .unavailable)
+        #expect(await reader.readSelection(mouseLocation: .zero, allowClipboardFallback: true) == .unavailable)
         #expect(clipboard.callCount == 1)
     }
 
     @Test
-    func missingFocusedElementStillUsesClipboardAfterDrag() {
+    func missingFocusedElementStillUsesClipboardAfterDrag() async {
         let ax = FakeSelectionAXReader(hasFocus: false)
         let clipboard = RecordingClipboardFallback(text: "copied from custom canvas")
         let reader = AXSelectedTextReader(
@@ -201,7 +202,7 @@ struct SelectedTextReaderTests {
             frontmostApplication: { FrontmostApplicationInfo(pid: 9, bundleIdentifier: "com.electron.lark") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
-        guard case .snapshot(let snapshot) = reader.readSelection(
+        guard case .snapshot(let snapshot) = await reader.readSelection(
             mouseLocation: CGPoint(x: 12, y: 18),
             allowClipboardFallback: true
         ) else {
@@ -215,7 +216,7 @@ struct SelectedTextReaderTests {
     }
 
     @Test
-    func clipboardFallbackWithZeroRangeAnchorsNearMouseNotWebviewFrame() {
+    func clipboardFallbackWithZeroRangeAnchorsNearMouseNotWebviewFrame() async {
         let mouse = CGPoint(x: 420, y: 310)
         let ax = FakeSelectionAXReader(
             selectedText: "",
@@ -229,7 +230,7 @@ struct SelectedTextReaderTests {
             frontmostApplication: { FrontmostApplicationInfo(pid: 21, bundleIdentifier: "com.electron.lark") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 1_440, height: 900) }
         )
-        guard case .snapshot(let snapshot) = reader.readSelection(
+        guard case .snapshot(let snapshot) = await reader.readSelection(
             mouseLocation: mouse,
             allowClipboardFallback: true
         ) else {
@@ -242,7 +243,7 @@ struct SelectedTextReaderTests {
     }
 
     @Test
-    func missingFocusedElementWithoutDragDoesNotUseClipboard() {
+    func missingFocusedElementWithoutDragDoesNotUseClipboard() async {
         let ax = FakeSelectionAXReader(hasFocus: false)
         let clipboard = RecordingClipboardFallback(text: "should-not-copy")
         let reader = AXSelectedTextReader(
@@ -251,12 +252,12 @@ struct SelectedTextReaderTests {
             frontmostApplication: { FrontmostApplicationInfo(pid: 9, bundleIdentifier: "com.apple.Safari") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
-        #expect(reader.readSelection(mouseLocation: .zero, allowClipboardFallback: false) == .unavailable)
+        #expect(await reader.readSelection(mouseLocation: .zero, allowClipboardFallback: false) == .unavailable)
         #expect(clipboard.callCount == 0)
     }
 
     @Test
-    func clipboardFallbackRestoresPasteboardWhenRangeHasNoAXText() {
+    func clipboardFallbackRestoresPasteboardWhenRangeHasNoAXText() async {
         let ax = FakeSelectionAXReader(selectedText: "", range: (2, 11), bounds: CGRect(x: 0, y: 0, width: 40, height: 12))
         let clipboard = RecordingClipboardFallback(text: "Clipboard text")
         let reader = AXSelectedTextReader(
@@ -265,7 +266,7 @@ struct SelectedTextReaderTests {
             frontmostApplication: { FrontmostApplicationInfo(pid: 11, bundleIdentifier: "com.google.Chrome") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
-        guard case .snapshot(let snapshot) = reader.readSelection(mouseLocation: CGPoint(x: 5, y: 5)) else {
+        guard case .snapshot(let snapshot) = await reader.readSelection(mouseLocation: CGPoint(x: 5, y: 5)) else {
             Issue.record("expected clipboard snapshot")
             return
         }
@@ -278,7 +279,7 @@ struct SelectedTextReaderTests {
     }
 
     @Test
-    func secureFieldNeverReadsValueOrClipboard() {
+    func secureFieldNeverReadsValueOrClipboard() async {
         let ax = FakeSelectionAXReader(
             selectedText: "password",
             range: (0, 8),
@@ -293,16 +294,17 @@ struct SelectedTextReaderTests {
             frontmostApplication: { FrontmostApplicationInfo(pid: 3, bundleIdentifier: "com.apple.Safari") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
-        #expect(reader.readSelection(mouseLocation: .zero) == .empty)
-        #expect(reader.readSelection(mouseLocation: .zero, allowClipboardFallback: true) == .empty)
+        #expect(await reader.readSelection(mouseLocation: .zero) == .empty)
+        #expect(await reader.readSelection(mouseLocation: .zero, allowClipboardFallback: true) == .empty)
         #expect(clipboard.callCount == 0)
         #expect(ax.selectedTextCalls == 0)
     }
 }
 
+@MainActor
 struct ClipboardRestoreTests {
     @Test
-    func copyRestoresPreviousPasteboardAndReturnsNewString() {
+    func copyRestoresPreviousPasteboardAndReturnsNewString() async {
         let pasteboard = FakePasteboardAccess(initial: "secret-token", initialChange: 4)
         let keystroke = FakeCopyKeystroke { pasteboard.simulateCopy("selected phrase") }
         let fallback = RestoringClipboardSelectionFallback(
@@ -310,13 +312,13 @@ struct ClipboardRestoreTests {
             keystroke: keystroke,
             wait: {}
         )
-        #expect(fallback.copySelectedTextRestoringClipboard() == "selected phrase")
+        #expect(await fallback.copySelectedTextRestoringClipboard() == "selected phrase")
         #expect(pasteboard.stringValue == "secret-token")
         #expect(keystroke.callCount == 1)
     }
 
     @Test
-    func unchangedPasteboardReturnsNilAndStillRestores() {
+    func unchangedPasteboardReturnsNilAndStillRestores() async {
         let pasteboard = FakePasteboardAccess(initial: "keep-me", initialChange: 1)
         let keystroke = FakeCopyKeystroke {}
         let fallback = RestoringClipboardSelectionFallback(
@@ -324,12 +326,12 @@ struct ClipboardRestoreTests {
             keystroke: keystroke,
             wait: {}
         )
-        #expect(fallback.copySelectedTextRestoringClipboard() == nil)
+        #expect(await fallback.copySelectedTextRestoringClipboard() == nil)
         #expect(pasteboard.stringValue == "keep-me")
     }
 
     @Test
-    func incompletePasteboardSkipsCopyKeystroke() {
+    func incompletePasteboardSkipsCopyKeystroke() async {
         let pasteboard = FakePasteboardAccess(initial: "promised-file", initialChange: 9)
         pasteboard.captureResult = .incomplete
         let keystroke = FakeCopyKeystroke { pasteboard.simulateCopy("stolen") }
@@ -338,10 +340,57 @@ struct ClipboardRestoreTests {
             keystroke: keystroke,
             wait: {}
         )
-        #expect(fallback.copySelectedTextRestoringClipboard() == nil)
+        #expect(await fallback.copySelectedTextRestoringClipboard() == nil)
         #expect(keystroke.callCount == 0)
         #expect(pasteboard.restoreCount == 0)
         #expect(pasteboard.stringValue == "promised-file")
+    }
+
+    @Test
+    func lateCopyBeyondTheOldFiftyMillisecondBudgetIsReadAndRestored() async {
+        let pasteboard = FakePasteboardAccess(initial: "keep-me", initialChange: 3)
+        let keystroke = FakeCopyKeystroke {}
+        // The target App services ⌘C on its main thread. 20 waits (100 ms) is
+        // beyond the old 10 × 5 ms synchronous budget that silently gave up and
+        // made Electron selections look like 「划词没反应」.
+        let waits = WaitScript { index in
+            if index == 20 { pasteboard.simulateCopy("late selection") }
+        }
+        let fallback = RestoringClipboardSelectionFallback(
+            pasteboard: pasteboard,
+            keystroke: keystroke,
+            wait: { waits.run() }
+        )
+        #expect(await fallback.copySelectedTextRestoringClipboard() == "late selection")
+        #expect(waits.calls == 20)
+        #expect(pasteboard.stringValue == "keep-me")
+        #expect(keystroke.callCount == 1)
+    }
+
+    @Test
+    func cancelledReadStillRestoresAfterALateCopy() async {
+        // Regression: the early version used `try? await Task.sleep` as the
+        // wait, so a cancelled settle ran the whole wait loop in ~3 ms, restored
+        // the backup, and then the target App's late ⌘C overwrote it — the user
+        // clipboard ended up holding the selected text. Cancellation may only
+        // decide the return value, never shorten the steal-and-restore window.
+        let pasteboard = FakePasteboardAccess(initial: "keep-me", initialChange: 3)
+        let keystroke = FakeCopyKeystroke {}
+        let fallback = RestoringClipboardSelectionFallback(
+            pasteboard: pasteboard,
+            keystroke: keystroke
+        )
+        let read = Task { await fallback.copySelectedTextRestoringClipboard() }
+        for _ in 0..<400 where keystroke.callCount == 0 {
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        #expect(keystroke.callCount == 1)
+        read.cancel()
+        try? await Task.sleep(for: .milliseconds(30))
+        // The target App services ⌘C only now, long after a naive restore.
+        pasteboard.simulateCopy("late selection")
+        #expect(await read.value == "late selection")
+        #expect(pasteboard.stringValue == "keep-me")
     }
 }
 
@@ -389,11 +438,12 @@ final class FakeSelectionAXReader: AXAttributeReading, @unchecked Sendable {
     func children(of element: AXElement) -> [AXElement] { [] }
 }
 
+@MainActor
 final class RecordingClipboardFallback: ClipboardSelectionFallingBack, @unchecked Sendable {
     let text: String?
     private(set) var callCount = 0
     init(text: String?) { self.text = text }
-    func copySelectedTextRestoringClipboard() -> String? {
+    func copySelectedTextRestoringClipboard() async -> String? {
         callCount += 1
         return text
     }
@@ -439,5 +489,31 @@ final class FakeCopyKeystroke: CopyKeystrokeIssuing, @unchecked Sendable {
     func issueCopyKeystroke() {
         callCount += 1
         body()
+    }
+}
+
+/// Records how many async `wait` steps the clipboard fallback took and lets a
+/// test script the moment the target App finally writes the pasteboard.
+final class WaitScript: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private let action: (Int) -> Void
+
+    init(action: @escaping (Int) -> Void) {
+        self.action = action
+    }
+
+    func run() {
+        lock.lock()
+        count += 1
+        let value = count
+        lock.unlock()
+        action(value)
+    }
+
+    var calls: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
     }
 }

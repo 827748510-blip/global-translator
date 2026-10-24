@@ -889,17 +889,8 @@ enum LocalTranslationQuality {
     }
 
     static func rejectCopiedSource(translated: String, source: String) throws {
-        let translated = translated.trimmingCharacters(in: .whitespacesAndNewlines)
-        let original = source.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard isEligibleLatin(original) else { return }
-        if translated.caseInsensitiveCompare(original) == .orderedSame {
-            throw TranslationError.invalidResponse("translation copied the source")
-        }
-    }
-
-    private static func isEligibleLatin(_ text: String) -> Bool {
-        guard TextFilter.shouldTranslate(text) else { return false }
-        return text.unicodeScalars.contains { CharacterSet.letters.contains($0) && $0.isASCII }
+        guard CopiedSourceDetector.translationCopiesSource(translated, source: source) else { return }
+        throw TranslationError.invalidResponse("translation copied the source")
     }
 }
 

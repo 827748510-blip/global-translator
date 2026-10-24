@@ -1,6 +1,24 @@
 import Foundation
 import NaturalLanguage
 
+/// Detects a translation that is byte-for-byte the Latin source. Local models
+/// echo brand / product words ("Figma", "Python", "npm") instead of translating
+/// them; treating that as a hard failure surfaced 「翻译失败」 for a third of
+/// common UI labels. The detector is shared by the backend quality gate and the
+/// selection fallback so both agree on what "copied the source" means.
+public enum CopiedSourceDetector {
+    public static func translationCopiesSource(_ translated: String, source: String) -> Bool {
+        let translation = translated.trimmingCharacters(in: .whitespacesAndNewlines)
+        let original = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !translation.isEmpty, !original.isEmpty else { return false }
+        guard TextFilter.shouldTranslate(original) else { return false }
+        guard original.unicodeScalars.contains(where: {
+            CharacterSet.letters.contains($0) && $0.isASCII
+        }) else { return false }
+        return translation.caseInsensitiveCompare(original) == .orderedSame
+    }
+}
+
 public enum TextFilter {
     private static let traditionalToSimplified = StringTransform(rawValue: "Traditional-Simplified")
 
