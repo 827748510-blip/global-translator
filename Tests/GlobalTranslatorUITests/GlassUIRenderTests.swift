@@ -69,6 +69,51 @@ struct GlassUIRenderTests {
     }
 
     @Test
+    func settingsGlassPageRendersOverColorfulBackdrop() throws {
+        let content = SettingsPopoverView(
+            viewModel: SettingsViewModel(actions: RenderActions()),
+            maxHeight: 640
+        )
+        .modifier(GTSettingsPanelChrome(cornerRadius: GTRadius.card))
+        let view = ZStack {
+            LinearGradient(
+                colors: [.indigo, .blue, .purple, .pink],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            content
+        }
+        let image = try Self.renderHostingView(view)
+        #expect(image.size.width > 0)
+        #expect(image.size.height > 0)
+        try Self.writeIfRequested(image, named: "gt-glass-settings-backdrop.png")
+    }
+
+    @Test
+    func selectionPopoverTransmitsBackdrop() throws {
+        let content = SelectionPopoverContent.translated(
+            original: "Hello world",
+            translation: "你好，世界",
+            screenFrame: .zero
+        )
+        let view = ZStack {
+            LinearGradient(
+                colors: [.indigo, .blue, .purple, .pink],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            SelectionTranslatePopoverView(
+                content: content,
+                chrome: SelectionPopoverChrome()
+            )
+        }
+        let image = try Self.renderHostingView(view)
+        #expect(image.size.width > 0)
+        #expect(image.size.height > 0)
+        try Self.writeIfRequested(image, named: "gt-glass-selection-backdrop.png")
+    }
+
+    @Test
     func singleGlassCardRendersContent() throws {
         let view = GTSettingsCard {
             Text("截图翻译").font(GTType.sectionTitle)

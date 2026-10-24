@@ -7,6 +7,9 @@ struct GTGlassBackground: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     var material: Material = .regularMaterial
     var fallback: Color = GTColor.panelBackground
+    /// Alpha applied to the material itself, not to the text. Lower values let
+    /// more of the desktop show through the panel.
+    var transmission: Double = 1.0
 
     static func usesMaterial(reduceTransparency: Bool) -> Bool {
         !reduceTransparency
@@ -14,9 +17,52 @@ struct GTGlassBackground: View {
 
     var body: some View {
         if Self.usesMaterial(reduceTransparency: reduceTransparency) {
-            Rectangle().fill(material)
+            Rectangle().fill(material).opacity(transmission)
         } else {
             fallback
+        }
+    }
+}
+
+/// Optical tuning for the glass surfaces. Thinner materials let the desktop
+/// show through; a diagonal highlight suggests light bending at the edge.
+enum GTGlassOptics {
+    static let panelMaterial: Material = .ultraThinMaterial
+    static let cardMaterial: Material = .ultraThinMaterial
+    static let selectionMaterial: Material = .ultraThinMaterial
+    static let panelTransmission = 0.72
+    static let cardTransmission = 0.84
+    static let selectionTransmission = 0.78
+
+    static let refractionStroke = LinearGradient(
+        stops: [
+            .init(color: Color.white.opacity(0.55), location: 0),
+            .init(color: Color.white.opacity(0.12), location: 0.24),
+            .init(color: GTColor.accent.opacity(0.08), location: 0.60),
+            .init(color: GTColor.hairline, location: 1)
+        ],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+}
+
+/// A very light diagonal sheen. It is decorative only and removed when the
+/// user asks for reduced transparency.
+struct GTRefractionSheen: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        if !reduceTransparency {
+            LinearGradient(
+                colors: [
+                    Color.white.opacity(0.16),
+                    Color.clear,
+                    GTColor.accent.opacity(0.035)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .allowsHitTesting(false)
         }
     }
 }
@@ -29,22 +75,17 @@ struct GTSettingsPanelChrome: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background {
-                GTGlassBackground(material: .regularMaterial)
-                LinearGradient(
-                    colors: [Color.white.opacity(0.10), GTColor.accent.opacity(0.025)],
-                    startPoint: .top,
-                    endPoint: .bottom
+                GTGlassBackground(
+                    material: GTGlassOptics.panelMaterial,
+                    transmission: GTGlassOptics.panelTransmission
                 )
+                GTRefractionSheen()
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .strokeBorder(
-                        LinearGradient(
-                            colors: [Color.white.opacity(0.22), GTColor.hairline],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
+                        GTGlassOptics.refractionStroke,
                         lineWidth: GTControlMetrics.fieldStrokeWidth
                     )
             }
@@ -64,20 +105,17 @@ struct GTSettingsCard<Content: View>: View {
         .padding(GTSpacing.small)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            GTGlassBackground(material: .thinMaterial, fallback: GTColor.sectionFill)
+            GTGlassBackground(
+                material: GTGlassOptics.cardMaterial,
+                fallback: GTColor.sectionFill,
+                transmission: GTGlassOptics.cardTransmission
+            )
         }
         .clipShape(RoundedRectangle(cornerRadius: GTRadius.card, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: GTRadius.card, style: .continuous)
                 .strokeBorder(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(isHovered ? 0.32 : 0.20),
-                            GTColor.hairline
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
+                    GTGlassOptics.refractionStroke,
                     lineWidth: GTControlMetrics.fieldStrokeWidth
                 )
         }

@@ -71,11 +71,7 @@ public struct SelectionTranslatePopoverView: View {
         .overlay {
             RoundedRectangle(cornerRadius: GTRadius.overlay, style: .continuous)
                 .strokeBorder(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.22), GTColor.hairline],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
+                    GTGlassOptics.refractionStroke,
                     lineWidth: GTControlMetrics.fieldStrokeWidth
                 )
         }
@@ -183,7 +179,14 @@ public struct SelectionTranslatePopoverView: View {
     }
 
     private var background: some View {
-        GTGlassBackground(material: .regularMaterial, fallback: GTColor.overlaySolidFallback)
+        ZStack {
+            GTGlassBackground(
+                material: GTGlassOptics.selectionMaterial,
+                fallback: GTColor.overlaySolidFallback,
+                transmission: GTGlassOptics.selectionTransmission
+            )
+            GTRefractionSheen()
+        }
     }
 }
 
