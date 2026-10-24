@@ -118,8 +118,8 @@ public struct SelectionTranslatePopoverView: View {
                         Button("翻译", action: onTranslate)
                             .lineLimit(1)
                             .minimumScaleFactor(0.75)
-                            .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
                             .disabled(content.status == .loading)
                             .accessibilityHint("按内容自动翻译选区：中文译成英文，其他译成简体中文")
                     }
@@ -127,8 +127,8 @@ public struct SelectionTranslatePopoverView: View {
                         Button("优化提示词", action: onOptimize)
                             .lineLimit(1)
                             .minimumScaleFactor(0.75)
-                            .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
                             .disabled(content.status == .optimizing)
                             .accessibilityHint(chrome.optimizeMode.optimizeAccessibilityHint)
                     }

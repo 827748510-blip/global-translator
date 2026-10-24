@@ -118,6 +118,55 @@ struct GlassUIRenderTests {
     }
 
     @Test
+    func selectionActionButtonsFillTheirCells() {
+        let allActions = SelectionPopoverContent.translated(
+            original: "Hello world",
+            translation: "你好，世界",
+            screenFrame: .zero
+        )
+        let allButtonsHosting = NSHostingView(
+            rootView: SelectionTranslatePopoverView(
+                content: allActions,
+                chrome: SelectionPopoverChrome()
+            )
+        )
+        allButtonsHosting.layoutSubtreeIfNeeded()
+        let allFrames = Set(Self.controlFrames(allButtonsHosting).map(\.frame))
+            .filter { $0.width < 200 && $0.minY > 0 }
+        #expect(allFrames.count == 3, "expected three buttons, got \(allFrames)")
+        #expect(allFrames.allSatisfy { $0.width > 70 }, "button frames: \(allFrames)")
+
+        let copyOnly = SelectionPopoverContent.translated(
+            original: "Hello world",
+            translation: "你好，世界",
+            screenFrame: .zero
+        ).asScreenshotResult()
+        let copyHosting = NSHostingView(
+            rootView: SelectionTranslatePopoverView(
+                content: copyOnly,
+                chrome: SelectionPopoverChrome()
+            )
+        )
+        copyHosting.layoutSubtreeIfNeeded()
+        let copyFrames = Self.controlFrames(copyHosting)
+        #expect(copyFrames.contains { $0.frame.width == 284 }, "button frames: \(copyFrames)")
+    }
+
+    private static func viewDescriptions(_ view: NSView) -> [String] {
+        ["\(type(of: view)) frame=\(view.frame)"] + view.subviews.flatMap(viewDescriptions)
+    }
+
+    private static func controlFrames(_ view: NSView) -> [(title: String, frame: CGRect)] {
+        let own: [(title: String, frame: CGRect)] =
+            String(describing: type(of: view)) == "_NSGraphicsView"
+                && view.frame.height == GTSelectionMetrics.actionRowHeight
+                && view.frame.width > 0
+                ? [("glassButton", view.frame)]
+                : []
+        return own + view.subviews.flatMap(controlFrames)
+    }
+
+    @Test
     func selectionPopoverTransmitsBackdrop() throws {
         let content = SelectionPopoverContent.translated(
             original: "Hello world",
