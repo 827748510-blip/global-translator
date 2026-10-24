@@ -225,9 +225,9 @@ struct BackendPickerSection: View {
                 accessibilityLabelText: "翻译后端"
             )
 
-            GTLabeledControl(title: "目标语言") {
+            GTLabeledControl(title: "窗口/网页目标语言") {
                 GTReadOnlyField(value: viewModel.targetLanguageDisplayName)
-                    .accessibilityLabel("目标语言，固定为简体中文")
+                    .accessibilityLabel("窗口覆盖层与网页整页翻译固定为简体中文；划词与截图自动判断中英互译方向")
             }
         }
     }

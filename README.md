@@ -95,7 +95,7 @@ swift test -Xswiftc -warnings-as-errors
 swift build -c release -Xswiftc -warnings-as-errors
 ```
 
-已使用真实 DeepSeek 和本机 Ollama 验证翻译链路。跨 App 交互证据及尚未达到的性能目标见 [当前真实验收记录](docs/real-acceptance-current.md)，本机启动方式见 [本地模型配置](docs/local-model-setup.md)。新版应用的构建和实机结果见 [桌面应用验收记录](docs/desktop-app-2026-09-07.md)。滑词翻译的双向互译、开关、权限与验证步骤见 [滑词翻译](docs/selection-translate.md)；中英双向互译 + 截图保存/复制的实现与验收见 [多语言互译与截图增强记录](docs/multilingual-and-screenshot-save-2026-10-23.md)；2026-10 的失灵根因（品牌词回声、剪贴板等待过短）与修复验证见 [滑词翻译失灵修复记录](docs/selection-translate-resilience-2026-10-22.md)。截图翻译（区域拖选 + 本机 Vision OCR）见 [截图翻译](docs/screenshot-translate.md)。应用不捆绑模型权重。
+已使用真实 DeepSeek 和本机 Ollama 验证翻译链路。跨 App 交互证据及尚未达到的性能目标见 [当前真实验收记录](docs/real-acceptance-current.md)，本机启动方式见 [本地模型配置](docs/local-model-setup.md)。新版应用的构建和实机结果见 [桌面应用验收记录](docs/desktop-app-2026-09-07.md)。设置页与划词/截图弹层采用毛玻璃卡片风格（Reduce Transparency 实色降级），实现与预览验证见 [毛玻璃 UI 改造](docs/glass-ui-2026-10-24.md)；PR #26/#27 合并后的真机验收见 [合并后验收记录](docs/merged-acceptance-2026-10-24.md)。滑词翻译的双向互译、开关、权限与验证步骤见 [滑词翻译](docs/selection-translate.md)；中英双向互译 + 截图保存/复制的实现与验收见 [多语言互译与截图增强记录](docs/multilingual-and-screenshot-save-2026-10-23.md)；2026-10 的失灵根因（品牌词回声、剪贴板等待过短）与修复验证见 [滑词翻译失灵修复记录](docs/selection-translate-resilience-2026-10-22.md)。截图翻译（区域拖选 + 本机 Vision OCR）见 [截图翻译](docs/screenshot-translate.md)。应用不捆绑模型权重。
 
 ## 本轮可用性修复
 

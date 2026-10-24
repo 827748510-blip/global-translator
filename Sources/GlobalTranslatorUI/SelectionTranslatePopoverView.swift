@@ -68,6 +68,17 @@ public struct SelectionTranslatePopoverView: View {
         .frame(width: GTSelectionMetrics.width, alignment: .leading)
         .background(background)
         .clipShape(RoundedRectangle(cornerRadius: GTRadius.overlay, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: GTRadius.overlay, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.22), GTColor.hairline],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: GTControlMetrics.fieldStrokeWidth
+                )
+        }
         .accessibilityElement(children: .contain)
     }
 
@@ -112,7 +123,7 @@ public struct SelectionTranslatePopoverView: View {
                         Button("翻译", action: onTranslate)
                             .buttonStyle(GTEqualFillButtonStyle())
                             .disabled(content.status == .loading)
-                            .accessibilityHint("把选区译成简体中文")
+                            .accessibilityHint("按内容自动翻译选区：中文译成英文，其他译成简体中文")
                     }
                     if content.showsOptimizeAction {
                         Button("优化提示词", action: onOptimize)
@@ -172,7 +183,7 @@ public struct SelectionTranslatePopoverView: View {
     }
 
     private var background: some View {
-        GTColor.panelBackground
+        GTGlassBackground(material: .regularMaterial, fallback: GTColor.overlaySolidFallback)
     }
 }
 

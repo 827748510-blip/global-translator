@@ -49,7 +49,8 @@ public struct SettingsPopoverView: View {
         }
         .frame(width: GTPopoverMetrics.width)
         .frame(maxHeight: maxHeight)
-        .background(GTColor.panelBackground)
+        // The rounded glass surface is owned by StatusItemController's root.
+        .background(Color.clear)
         .confirmationDialog(
             "删除已保存的 API Key？",
             isPresented: Binding(

@@ -63,7 +63,7 @@ public final class SettingsViewModel: ObservableObject {
     @Published public var isVisionConsentPresented = false
     @Published public var isClearCacheConfirmationPresented = false
 
-    /// Target language is fixed by product design.
+    /// 窗口覆盖层与扩展桥的目标语言固定为简体中文；划词/截图方向按内容判定。
     public let targetLanguageDisplayName = "简体中文"
 
     /// Consent copy shown before the vision fallback can be enabled.

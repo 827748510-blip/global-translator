@@ -1,8 +1,60 @@
 import SwiftUI
 import GlobalTranslatorCore
 
+/// Shared frosted-glass surface with an opaque fallback for Reduce Transparency.
+/// Kept separate from layout so cards can change material without changing size.
+struct GTGlassBackground: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    var material: Material = .regularMaterial
+    var fallback: Color = GTColor.panelBackground
+
+    static func usesMaterial(reduceTransparency: Bool) -> Bool {
+        !reduceTransparency
+    }
+
+    var body: some View {
+        if Self.usesMaterial(reduceTransparency: reduceTransparency) {
+            Rectangle().fill(material)
+        } else {
+            fallback
+        }
+    }
+}
+
+/// The production settings-panel chrome, shared with render tests so previews
+/// exercise the exact same material/gradient/stroke composition as the app.
+struct GTSettingsPanelChrome: ViewModifier {
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                GTGlassBackground(material: .regularMaterial)
+                LinearGradient(
+                    colors: [Color.white.opacity(0.10), GTColor.accent.opacity(0.025)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.22), GTColor.hairline],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: GTControlMetrics.fieldStrokeWidth
+                    )
+            }
+    }
+}
+
 /// Grouped settings block: fill, radius, and inner padding from DesignTokens.
 struct GTSettingsCard<Content: View>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
     @ViewBuilder var content: () -> Content
 
     var body: some View {
@@ -11,8 +63,33 @@ struct GTSettingsCard<Content: View>: View {
         }
         .padding(GTSpacing.small)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(GTColor.sectionFill)
+        .background {
+            GTGlassBackground(material: .thinMaterial, fallback: GTColor.sectionFill)
+        }
         .clipShape(RoundedRectangle(cornerRadius: GTRadius.card, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: GTRadius.card, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(isHovered ? 0.32 : 0.20),
+                            GTColor.hairline
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: GTControlMetrics.fieldStrokeWidth
+                )
+        }
+        .shadow(
+            color: Color.black.opacity(isHovered ? 0.16 : 0.08),
+            radius: isHovered ? 12 : 7,
+            x: 0,
+            y: isHovered ? 6 : 3
+        )
+        .offset(y: reduceMotion || !isHovered ? 0 : -1)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: isHovered)
+        .onHover { isHovered = $0 }
     }
 }
 
