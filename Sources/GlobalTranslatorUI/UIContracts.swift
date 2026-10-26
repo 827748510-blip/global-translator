@@ -203,5 +203,7 @@ public protocol SettingsActions: AnyObject {
     func removeTranslationApplication(bundleIdentifier: String)
     func clearCache() async throws
     func openLogs()
+    /// Opens the DeepSeek cost and token statistics window.
+    func openDeepSeekStats()
     func quit()
 }

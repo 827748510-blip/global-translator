@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Root view of the menu-bar settings popover. ~380px wide, scrolls
-/// vertically within the usable screen height (see DESIGN.md §5).
+/// Root view of the menu-bar settings popover. 360px wide, compact vertical
+/// rhythm with a hidden scrollbar; scrolls within the usable screen height.
 public struct SettingsPopoverView: View {
     @ObservedObject private var viewModel: SettingsViewModel
 
@@ -18,7 +18,7 @@ public struct SettingsPopoverView: View {
 
     public var body: some View {
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: GTSpacing.small) {
+            VStack(alignment: .leading, spacing: GTPopoverMetrics.cardSpacing) {
                 GTSettingsCard {
                     SettingsHeaderSection(viewModel: viewModel)
                 }
@@ -45,8 +45,9 @@ public struct SettingsPopoverView: View {
                 }
                 SettingsFooterSection(viewModel: viewModel)
             }
-            .padding(GTSpacing.medium)
+            .padding(GTPopoverMetrics.contentPadding)
         }
+        .scrollIndicators(.hidden)
         .frame(width: GTPopoverMetrics.width)
         .frame(maxHeight: maxHeight)
         // The rounded glass surface is owned by StatusItemController's root.

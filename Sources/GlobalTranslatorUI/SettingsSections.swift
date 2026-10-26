@@ -12,25 +12,27 @@ struct SettingsHeaderSection: View {
     @ObservedObject var viewModel: SettingsViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: GTSpacing.small) {
-            HStack(alignment: .center, spacing: GTSpacing.small) {
+        VStack(alignment: .leading, spacing: GTControlMetrics.sectionSpacing) {
+            HStack(alignment: .center, spacing: GTSpacing.xSmall) {
                 Image(systemName: viewModel.status.symbolName)
-                    .font(.title3)
+                    .font(.system(size: 16, weight: .semibold))
                     .symbolRenderingMode(.monochrome)
                     .foregroundStyle(GTColor.primaryText)
                     .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: GTSpacing.xxSmall) {
+                VStack(alignment: .leading, spacing: 1) {
                     Text(viewModel.status.accessibilityLabel)
                         .font(GTType.stateLine)
+                        .lineLimit(1)
                     if let message = viewModel.visibleAutomaticEnableBlockedReason ?? viewModel.healthMessage,
                        !message.isEmpty {
                         Text(message)
-                            .font(GTType.secondary)
+                            .font(GTType.caption)
                             .foregroundStyle(GTColor.secondaryText)
+                            .lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                Spacer(minLength: GTSpacing.small)
+                Spacer(minLength: GTSpacing.xSmall)
                 Toggle(
                     "自动翻译",
                     isOn: Binding(
@@ -39,6 +41,8 @@ struct SettingsHeaderSection: View {
                     )
                 )
                 .toggleStyle(.switch)
+                .controlSize(.small)
+                .font(GTType.body)
                 // Disabled only for OFF→ON when the gate fails; turning OFF is
                 // always possible.
                 .disabled(!viewModel.isAutomaticTranslationEnabled && !viewModel.canEnableAutomaticTranslation)
@@ -61,9 +65,11 @@ struct SettingsHeaderSection: View {
                     )
                 )
                 .toggleStyle(.switch)
+                .controlSize(.small)
+                .font(GTType.body)
                 .accessibilityHint("划选后显示译文，并可按场景优化措辞，默认开启")
 
-                Spacer(minLength: GTSpacing.small)
+                Spacer(minLength: GTSpacing.xSmall)
 
                 Toggle(
                     "视频翻译",
@@ -73,9 +79,11 @@ struct SettingsHeaderSection: View {
                     )
                 )
                 .toggleStyle(.switch)
+                .controlSize(.small)
+                .font(GTType.body)
                 .accessibilityHint("启用后对网页视频字幕叠简体中文；无外语字幕时用本机系统/窗口音频转写。默认关闭，不单独占一行")
             }
-            .frame(minHeight: GTPopoverMetrics.minRowHitHeight)
+            .frame(minHeight: GTControlMetrics.settingRowHeight)
             .frame(maxWidth: .infinity)
             .accessibilityElement(children: .contain)
 
@@ -85,7 +93,8 @@ struct SettingsHeaderSection: View {
                         selection: Binding(
                             get: { viewModel.promptOptimizeMode },
                             set: { viewModel.setPromptOptimizeMode($0) }
-                        )
+                        ),
+                        height: GTControlMetrics.segmentHeight
                     )
                 }
             }
@@ -99,16 +108,18 @@ struct ScreenshotTranslateSection: View {
     @ObservedObject var viewModel: SettingsViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: GTSpacing.small) {
+        VStack(alignment: .leading, spacing: GTControlMetrics.sectionSpacing) {
             Text("截图翻译")
-                .font(GTType.sectionTitle)
+                .font(GTType.cardTitle)
+                .foregroundStyle(GTColor.secondaryText)
 
             GTLabeledControl(title: "快捷键") {
                 HStack(spacing: GTSpacing.xSmall) {
                     Text(viewModel.screenshotTranslateHotkey.displayString)
                         .font(GTType.body)
+                        .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, GTSpacing.small)
+                        .padding(.horizontal, GTSpacing.xSmall)
                         .frame(height: GTControlMetrics.fieldHeight)
                         .background(GTColor.fieldFill)
                         .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
@@ -128,77 +139,70 @@ struct ScreenshotTranslateSection: View {
                         }
                     }
                     .buttonStyle(.glass)
+                    .controlSize(.small)
                     .accessibilityHint("录制新的截图翻译快捷键，按下带修饰键的组合即可保存")
                 }
             }
 
             if let message = viewModel.screenshotHotkeyConflictMessage, !message.isEmpty {
                 Text(message)
-                    .font(GTType.secondary)
+                    .font(GTType.caption)
                     .foregroundStyle(GTColor.destructive)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityLabel("快捷键冲突")
                     .accessibilityValue(message)
             }
 
-            Toggle(
-                "自动复制译文",
-                isOn: Binding(
-                    get: { viewModel.autoCopyScreenshotTranslation },
-                    set: { viewModel.setAutoCopyScreenshotTranslation($0) }
+            VStack(alignment: .leading, spacing: 2) {
+                GTSettingsToggleRow(
+                    title: "自动复制译文",
+                    isOn: Binding(
+                        get: { viewModel.autoCopyScreenshotTranslation },
+                        set: { viewModel.setAutoCopyScreenshotTranslation($0) }
+                    ),
+                    hint: "翻译成功后自动把简体中文译文写入剪贴板，默认关闭"
                 )
-            )
-            .toggleStyle(.switch)
-            .frame(minHeight: GTPopoverMetrics.minRowHitHeight)
-            .accessibilityHint("翻译成功后自动把简体中文译文写入剪贴板，默认关闭")
-
-            HStack(alignment: .center, spacing: GTSpacing.medium) {
-                Toggle(
-                    "保存截图",
+                GTSettingsToggleRow(
+                    title: "保存截图",
                     isOn: Binding(
                         get: { viewModel.saveScreenshotImage },
                         set: { viewModel.setSaveScreenshotImage($0) }
-                    )
+                    ),
+                    hint: "截图后把拖选区域存成 PNG 文件，默认关闭"
                 )
-                .toggleStyle(.switch)
-                .accessibilityHint("截图后把拖选区域存成 PNG 文件，默认关闭")
-
-                Spacer(minLength: GTSpacing.small)
-
-                Toggle(
-                    "复制截图",
+                GTSettingsToggleRow(
+                    title: "复制截图",
                     isOn: Binding(
                         get: { viewModel.copyScreenshotImage },
                         set: { viewModel.setCopyScreenshotImage($0) }
-                    )
+                    ),
+                    hint: "截图后把拖选区域复制到剪贴板，默认关闭"
                 )
-                .toggleStyle(.switch)
-                .accessibilityHint("截图后把拖选区域复制到剪贴板，默认关闭")
             }
-            .frame(minHeight: GTPopoverMetrics.minRowHitHeight)
 
-            HStack(alignment: .center, spacing: GTSpacing.xSmall) {
-                Text("保存位置")
-                    .font(GTType.body)
-                    .foregroundStyle(GTColor.secondaryText)
-                Text(SelectionTranslateSupport.displayPath(viewModel.screenshotSaveDirectory))
-                    .font(GTType.caption)
-                    .foregroundStyle(GTColor.secondaryText)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                    .accessibilityLabel("截图保存位置")
-                    .accessibilityValue(SelectionTranslateSupport.displayPath(viewModel.screenshotSaveDirectory))
-                Button("选择…") {
-                    viewModel.chooseScreenshotSaveDirectory()
+            if viewModel.saveScreenshotImage {
+                GTLabeledControl(title: "保存位置") {
+                    HStack(spacing: GTSpacing.xSmall) {
+                        Text(SelectionTranslateSupport.displayPath(viewModel.screenshotSaveDirectory))
+                            .font(GTType.caption)
+                            .foregroundStyle(GTColor.secondaryText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                            .accessibilityLabel("截图保存位置")
+                            .accessibilityValue(SelectionTranslateSupport.displayPath(viewModel.screenshotSaveDirectory))
+                        Button("选择…") {
+                            viewModel.chooseScreenshotSaveDirectory()
+                        }
+                        .buttonStyle(.glass)
+                        .controlSize(.small)
+                        .accessibilityHint("选择截图保存文件夹")
+                    }
                 }
-                .buttonStyle(.glass)
-                .accessibilityHint("选择截图保存文件夹")
             }
-            .accessibilityElement(children: .contain)
 
-            Text("按快捷键后拖选区域。文字由本机 Vision 识别（中/英），再走当前翻译后端。需要屏幕录制权限。")
+            Text("拖选区域后由本机 Vision 识别，再走当前翻译后端；需要屏幕录制权限。")
                 .font(GTType.caption)
                 .foregroundStyle(GTColor.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -212,9 +216,10 @@ struct BackendPickerSection: View {
     @ObservedObject var viewModel: SettingsViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: GTSpacing.small) {
+        VStack(alignment: .leading, spacing: GTControlMetrics.sectionSpacing) {
             Text("翻译后端")
-                .font(GTType.sectionTitle)
+                .font(GTType.cardTitle)
+                .foregroundStyle(GTColor.secondaryText)
             GTEqualWidthSegmentedPicker(
                 options: [BackendKind.deepSeekCloud, .local],
                 selection: Binding(
@@ -222,18 +227,21 @@ struct BackendPickerSection: View {
                     set: { viewModel.selectBackend($0) }
                 ),
                 title: { $0.displayTitle },
+                height: GTControlMetrics.segmentHeight,
                 accessibilityLabelText: "翻译后端"
             )
 
-            Text("默认 Ollama 地址且由 Homebrew 管理时：切到 DeepSeek 云端会停止 Ollama 服务（进行中的本地翻译会中断），切回本地模型会自动启动并等接口就绪。其他本地服务不受影响。")
+            Text("切到云端会暂停 Homebrew Ollama；切回本地自动启动（仅默认 :11434）。")
                 .font(GTType.caption)
                 .foregroundStyle(GTColor.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
-            GTLabeledControl(title: "窗口/网页目标语言") {
-                GTReadOnlyField(value: viewModel.targetLanguageDisplayName)
-                    .accessibilityLabel("窗口覆盖层与网页整页翻译固定为简体中文；划词与截图自动判断中英互译方向")
+            GTLabeledControl(title: "目标语言") {
+                Text(viewModel.targetLanguageDisplayName)
+                    .font(GTType.body)
+                    .foregroundStyle(GTColor.primaryText)
             }
+            .accessibilityLabel("窗口覆盖层与网页整页翻译固定为简体中文；划词与截图自动判断中英互译方向")
         }
     }
 }
@@ -244,42 +252,55 @@ struct CloudBackendSection: View {
     @ObservedObject var viewModel: SettingsViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: GTSpacing.small) {
-            HStack {
+        VStack(alignment: .leading, spacing: GTControlMetrics.sectionSpacing) {
+            HStack(spacing: GTSpacing.xSmall) {
                 Text("API Key")
-                    .font(GTType.body)
-                Spacer()
-                Text(viewModel.keyConfigured ? "已配置 · 钥匙串保存" : "未配置")
                     .font(GTType.secondary)
+                    .foregroundStyle(GTColor.secondaryText)
+                    .frame(width: GTControlMetrics.settingLabelWidth, alignment: .leading)
+                Text(viewModel.keyConfigured ? "已保存在钥匙串" : "未配置")
+                    .font(GTType.body)
                     .foregroundStyle(viewModel.keyConfigured ? GTColor.secondaryText : GTColor.destructive)
+                    .lineLimit(1)
+                Spacer(minLength: GTSpacing.xSmall)
+                if viewModel.keyConfigured, !viewModel.showsKeyEntry {
+                    Button("替换") {
+                        viewModel.beginReplaceKey()
+                    }
+                    .buttonStyle(.glass)
+                    .controlSize(.small)
+                    .disabled(viewModel.isKeyOperationInProgress)
+                    .accessibilityHint("仅在替换时显示输入框，已保存的密钥不会回填")
+
+                    Button("删除", role: .destructive) {
+                        viewModel.requestDeleteKey()
+                    }
+                    .buttonStyle(.glass)
+                    .controlSize(.small)
+                    .foregroundStyle(GTColor.destructive)
+                    .disabled(viewModel.isKeyOperationInProgress)
+                    .accessibilityHint("删除保存在钥匙串中的 API Key")
+                }
             }
+            .frame(minHeight: GTControlMetrics.settingRowHeight)
+            .accessibilityElement(children: .contain)
 
             if viewModel.showsKeyEntry {
-                SecureField("输入新的 API Key", text: $viewModel.keyDraft)
-                    .textFieldStyle(GTFieldTextStyle())
-                    .accessibilityLabel("DeepSeek API Key")
-                    .accessibilityHint("出于安全考虑，已保存的密钥不会显示或预填")
-            }
-
-            if case .failure(let message) = viewModel.keyOperation {
-                Text(message)
-                    .font(GTType.secondary)
-                    .foregroundStyle(GTColor.destructive)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            HStack(spacing: GTSpacing.xSmall) {
-                if viewModel.showsKeyEntry {
+                HStack(spacing: GTSpacing.xSmall) {
+                    SecureField("输入新的 API Key", text: $viewModel.keyDraft)
+                        .textFieldStyle(GTFieldTextStyle())
+                        .accessibilityLabel("DeepSeek API Key")
+                        .accessibilityHint("出于安全考虑，已保存的密钥不会显示或预填")
                     Button(action: { Task { await viewModel.saveKey() } }) {
                         if viewModel.isKeyOperationInProgress {
                             ProgressView()
                                 .controlSize(.small)
                         } else {
-                            Text("保存密钥")
+                            Text("保存")
                         }
                     }
                     .buttonStyle(.glass)
-                    .frame(maxWidth: .infinity)
+                    .controlSize(.small)
                     .disabled(!viewModel.canSaveKey)
                     .accessibilityHint("保存后输入框将清空，密钥只写入钥匙串")
 
@@ -288,35 +309,25 @@ struct CloudBackendSection: View {
                             viewModel.cancelReplaceKey()
                         }
                         .buttonStyle(.glass)
-                        .frame(maxWidth: .infinity)
+                        .controlSize(.small)
                         .disabled(viewModel.isKeyOperationInProgress)
                     }
-                } else {
-                    Button("替换密钥") {
-                        viewModel.beginReplaceKey()
-                    }
-                    .buttonStyle(.glass)
-                    .frame(maxWidth: .infinity)
-                    .disabled(viewModel.isKeyOperationInProgress)
-                    .accessibilityHint("仅在替换时显示输入框，已保存的密钥不会回填")
                 }
-
-                if viewModel.keyConfigured {
-                    Button("删除密钥", role: .destructive) {
-                        viewModel.requestDeleteKey()
-                    }
-                    .buttonStyle(.glass)
-                    .frame(maxWidth: .infinity)
-                    .disabled(viewModel.isKeyOperationInProgress)
-                }
+                .frame(minHeight: GTControlMetrics.settingRowHeight)
             }
-            .frame(minHeight: GTPopoverMetrics.minRowHitHeight)
+
+            if case .failure(let message) = viewModel.keyOperation {
+                Text(message)
+                    .font(GTType.caption)
+                    .foregroundStyle(GTColor.destructive)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             GTLabeledControl(title: "模型") {
                 if viewModel.availableModels.isEmpty {
                     GTReadOnlyField(value: viewModel.keyConfigured
-                        ? "尚未获取模型列表，请先测试连接"
-                        : "可测试连接验证已有钥匙串密钥，或保存 API Key")
+                        ? "请先测试连接"
+                        : "请先配置 API Key")
                         .accessibilityLabel("模型")
                         .accessibilityValue(viewModel.keyConfigured
                             ? "尚未获取模型列表"
@@ -333,18 +344,25 @@ struct CloudBackendSection: View {
                 }
             }
 
-            Toggle(
-                "视觉兜底（截图识别）",
+            GTSettingsToggleRow(
+                title: "视觉兜底",
                 isOn: Binding(
                     get: { viewModel.visionFallbackEnabled },
                     set: { viewModel.setVisionFallbackEnabled($0) }
-                )
+                ),
+                hint: "辅助功能无法读取文本时，将局部截图上传 DeepSeek 识别，开启前需确认"
             )
-            .toggleStyle(.switch)
-            .frame(minHeight: GTPopoverMetrics.minRowHitHeight)
-            .accessibilityHint("辅助功能无法读取文本时，将局部截图上传 DeepSeek 识别，开启前需确认")
 
             ConnectionTestRow(viewModel: viewModel, fillsWidth: true)
+
+            Button("费用与 Token 统计…") {
+                viewModel.openDeepSeekStats()
+            }
+            .buttonStyle(.glass)
+            .controlSize(.small)
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: GTControlMetrics.settingRowHeight)
+            .accessibilityHint("查看 DeepSeek 请求费用、输入输出 tokens、缓存命中率和输出速度")
         }
     }
 }
@@ -355,8 +373,8 @@ struct LocalBackendSection: View {
     @ObservedObject var viewModel: SettingsViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: GTSpacing.small) {
-            GTLabeledControl(title: "本地服务地址") {
+        VStack(alignment: .leading, spacing: GTControlMetrics.sectionSpacing) {
+            GTLabeledControl(title: "服务地址") {
                 TextField("http://127.0.0.1:11434/v1", text: $viewModel.localBaseURL)
                     .textFieldStyle(GTFieldTextStyle())
                     .accessibilityLabel("本地服务地址")
@@ -366,7 +384,7 @@ struct LocalBackendSection: View {
 
             GTLabeledControl(title: "模型") {
                 if viewModel.availableModels.isEmpty {
-                    GTReadOnlyField(value: "尚未获取模型列表，请先测试连接")
+                    GTReadOnlyField(value: "请先测试连接")
                         .accessibilityLabel("模型")
                         .accessibilityValue("尚未获取模型列表")
                 } else {
@@ -391,6 +409,7 @@ struct LocalBackendSection: View {
                     }
                 }
                 .buttonStyle(.glass)
+                .controlSize(.small)
                 .disabled(!viewModel.canTestConnection)
                 .accessibilityHint(ConnectionTestRow.testHint(for: viewModel))
             } secondary: {
@@ -398,6 +417,7 @@ struct LocalBackendSection: View {
                     viewModel.commitLocalConfiguration()
                 }
                 .buttonStyle(.glass)
+                .controlSize(.small)
                 .disabled(viewModel.localBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
@@ -428,10 +448,11 @@ struct ConnectionTestRow: View {
                 }
             }
             .buttonStyle(.glass)
+            .controlSize(.small)
             .frame(maxWidth: fillsWidth ? .infinity : nil)
             .disabled(!viewModel.canTestConnection)
             .accessibilityHint(Self.testHint(for: viewModel))
-            .frame(minHeight: GTPopoverMetrics.minRowHitHeight)
+            .frame(minHeight: GTControlMetrics.settingRowHeight)
 
             ConnectionTestStatus(viewModel: viewModel)
         }
@@ -457,12 +478,12 @@ struct ConnectionTestStatus: View {
         switch viewModel.connectionTest {
         case .healthy(let message):
             Text(message)
-                .font(GTType.secondary)
+                .font(GTType.caption)
                 .foregroundStyle(GTColor.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         case .failed(let message):
             Text(message)
-                .font(GTType.secondary)
+                .font(GTType.caption)
                 .foregroundStyle(GTColor.destructive)
                 .fixedSize(horizontal: false, vertical: true)
         case .idle, .testing:
@@ -477,12 +498,11 @@ struct PermissionsSection: View {
     @ObservedObject var viewModel: SettingsViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: GTSpacing.small) {
-            HStack {
-                Text("系统权限")
-                    .font(GTType.sectionTitle)
-                Spacer()
+        VStack(alignment: .leading, spacing: GTControlMetrics.sectionSpacing) {
+            GTSettingsSectionHeader(title: "系统权限") {
                 Button("重新检查", action: viewModel.refreshPermissions)
+                    .buttonStyle(.glass)
+                    .controlSize(.small)
                     .accessibilityLabel("重新检查系统权限")
             }
             PermissionRow(
@@ -499,7 +519,7 @@ struct PermissionsSection: View {
             )
             if !viewModel.permissionSnapshot.accessibilityTrusted
                 || !viewModel.permissionSnapshot.screenCaptureAuthorized {
-                Text("授权后返回此窗口会自动检查。更新后若仍显示未授权，请在系统设置中重新授权当前版本。")
+                Text("授权后返回此窗口会自动检查；更新后若仍显示未授权，请重新授权当前版本。")
                     .font(GTType.caption)
                     .foregroundStyle(GTColor.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -519,7 +539,7 @@ private struct PermissionRow: View {
             Text(title)
                 .font(GTType.body)
             Text(granted ? "已授权" : "未授权")
-                .font(GTType.secondary)
+                .font(GTType.caption)
                 .foregroundStyle(granted ? GTColor.secondaryText : GTColor.destructive)
             Spacer()
             if !granted {
@@ -527,13 +547,15 @@ private struct PermissionRow: View {
                     viewModel.requestPermission(kind)
                 }
                 .buttonStyle(.glass)
+                .controlSize(.small)
                 Button("打开系统设置") {
                     viewModel.openSystemSettings(kind)
                 }
                 .buttonStyle(.glass)
+                .controlSize(.small)
             }
         }
-        .frame(minHeight: GTPopoverMetrics.minRowHitHeight)
+        .frame(minHeight: GTControlMetrics.settingRowHeight)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(title)，\(granted ? "已授权" : "未授权")")
     }
@@ -545,26 +567,23 @@ struct TranslatedApplicationsSection: View {
     @ObservedObject var viewModel: SettingsViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: GTSpacing.small) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("要翻译的应用")
-                    .font(GTType.sectionTitle)
-                Spacer(minLength: GTSpacing.small)
+        VStack(alignment: .leading, spacing: GTControlMetrics.sectionSpacing) {
+            GTSettingsSectionHeader(title: "要翻译的应用") {
                 Button("选择应用…") {
                     viewModel.chooseTranslatedApplications()
                 }
                 .buttonStyle(.glass)
-                .controlSize(.regular)
+                .controlSize(.small)
                 .accessibilityHint("选择一个或多个要翻译的应用，可按住 Command 多选")
             }
 
             if viewModel.translatedApplications.isEmpty {
                 Text("未选择要翻译的应用")
-                    .font(GTType.secondary)
+                    .font(GTType.caption)
                     .foregroundStyle(GTColor.secondaryText)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(GTSpacing.small)
-                    .frame(minHeight: GTPopoverMetrics.minRowHitHeight)
+                    .padding(.horizontal, GTSpacing.xSmall)
+                    .frame(height: 32)
                     .background(GTColor.fieldFill)
                     .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
                     .overlay(
@@ -598,8 +617,8 @@ struct TranslatedApplicationsSection: View {
                             .buttonStyle(.borderless)
                             .accessibilityLabel("移除 \(app.displayName)")
                         }
-                        .padding(.horizontal, GTSpacing.small)
-                        .frame(minHeight: GTPopoverMetrics.minRowHitHeight)
+                        .padding(.horizontal, GTSpacing.xSmall)
+                        .padding(.vertical, 6)
                     }
                 }
                 .background(GTColor.fieldFill)
@@ -610,7 +629,7 @@ struct TranslatedApplicationsSection: View {
                 )
             }
 
-            Text("只有所选应用会被翻译；未选择时不翻译任何应用。")
+            Text("仅翻译所选应用；未选择时不翻译。")
                 .font(GTType.caption)
                 .foregroundStyle(GTColor.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -629,22 +648,27 @@ struct SettingsFooterSection: View {
                 viewModel.requestClearCache()
             }
             .buttonStyle(.glass)
+            .controlSize(.small)
             .accessibilityHint("删除本地翻译缓存，需确认")
 
-            Button("打开日志") {
+            Button("日志") {
                 viewModel.openLogs()
             }
             .buttonStyle(.glass)
+            .controlSize(.small)
+            .accessibilityLabel("打开日志")
 
             Spacer()
 
-            Button("退出 Global Translator") {
+            Button("退出应用") {
                 viewModel.quit()
             }
             .buttonStyle(.glass)
+            .controlSize(.small)
             .foregroundStyle(GTColor.destructive)
+            .accessibilityLabel("退出 Global Translator")
             .accessibilityHint("停止翻译并退出程序")
         }
-        .frame(minHeight: GTPopoverMetrics.minRowHitHeight)
+        .frame(minHeight: GTControlMetrics.settingRowHeight)
     }
 }

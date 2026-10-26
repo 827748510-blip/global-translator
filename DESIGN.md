@@ -51,8 +51,9 @@ page, and no custom artwork. Material, color, type, and motion all come from the
    permissions show their real status.
 3. **System first.** Semantic colors, system materials, SF Symbols, SF Pro via system text
    styles. No raw hex, no custom art, no emojis, no gradients.
-4. **Compact but touchable.** 4px spacing grid, small system type, minimum practical 44pt
-   vertical hit areas on interactive rows, full keyboard and VoiceOver operability.
+4. **Compact but touchable.** 4px spacing grid, small system type. Floating selection
+   actions keep ≥44pt targets; desktop settings rows use a compact 30pt rhythm with full
+   keyboard and VoiceOver operability.
 5. **The overlay is a guest.** Click-through, nonactivating, never shadowed or keyed; it sits
    below menu/status chrome, vanishes instantly on demand, and never shows stale text.
 
@@ -62,6 +63,12 @@ All tokens resolve to system semantics in `DesignTokens.swift`; no raw values.
 
 - **Spacing (4px grid):** `xxSmall 4`, `xSmall 8`, `small 12`, `medium 16`, `large 20`,
   `xLarge 24`.
+- **Settings panel:** 360 wide, max 600 high, 12 content padding, 8 card gap, cards with
+  12 horizontal / 10 vertical padding and 8 internal spacing. Scroll indicators are hidden;
+  wheel/trackpad and keyboard scrolling remain available.
+- **Compact rows:** 72pt label column, 30pt field/row height, 28pt segmented control,
+  28pt menu rows. `GTPopoverMetrics.minRowHitHeight` (44pt) remains for floating selection
+  surfaces, not for the desktop settings panel.
 - **Corner radius:** `row 6` (small controls), `card 10` (grouped sections), `overlay 8`.
 - **Color:** `Color.primary` / `Color.secondary` for text hierarchy; `Color.accentColor` for
   the single primary action; `Color(nsColor: .systemRed)` reserved for destructive labels and
@@ -79,7 +86,8 @@ All tokens resolve to system semantics in `DesignTokens.swift`; no raw values.
 
 - Overlay translation text: `.callout` weight regular — readable at glance, caps at 3 lines.
 - Popover header state line: `.headline`.
-- Section titles: `.subheadline` semibold.
+- Settings card titles: 12pt semibold, secondary color — quiet group labels above primary rows.
+- Section titles: 12pt semibold, secondary; primary rows stay `.body`.
 - Body/rows: `.body`.
 - Secondary/explanatory text: `.footnote` and `.caption` (permission hints, health messages).
 - All styles are dynamic system styles: Dynamic Type and system font scaling work unchanged;
@@ -115,7 +123,8 @@ disabled), error (red text plus preserved input), empty (textual, e.g. "未添�
 - Status item: template SF Symbol plus textual accessibility label/help per state
   ("翻译中", "已暂停", "正在监听", "需要授权 / 出错"); state is never color-only.
 - Popover: full keyboard traversal, every control labeled and hinted in Chinese; rows expose
-  value text (permission status read as words); hit areas ≥ 44pt where practical.
+  value text (permission status read as words). Settings rows use compact 30pt targets with
+  full keyboard/VoiceOver operation; floating selection actions keep ≥44pt targets where practical.
 - Overlay: `ignoresMouseEvents`, nonactivating, excluded from the window cycle; it is visual
   output only and never steals focus from the user's real work.
 - Settings and 滑词 popovers use a solid panel background (white / system dark) so Dark Mode

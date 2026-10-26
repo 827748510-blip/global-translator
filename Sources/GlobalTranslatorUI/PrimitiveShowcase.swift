@@ -175,6 +175,7 @@ private final class ShowcaseActions: SettingsActions {
     func removeTranslationApplication(bundleIdentifier: String) {}
     func clearCache() async throws {}
     func openLogs() {}
+    func openDeepSeekStats() {}
     func quit() {}
 }
 #endif

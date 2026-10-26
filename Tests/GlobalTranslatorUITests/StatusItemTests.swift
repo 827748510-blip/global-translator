@@ -36,6 +36,7 @@ private final class StatusItemTestActions: SettingsActions {
     func removeTranslationApplication(bundleIdentifier: String) {}
     func clearCache() async throws {}
     func openLogs() {}
+    func openDeepSeekStats() {}
     func quit() {}
 }
 

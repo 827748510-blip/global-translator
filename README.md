@@ -55,7 +55,7 @@ global-translator run --foreground
 - 本应用只适配官方 `deepseek-flash`（V4.1 Flash，支持视觉）；官网即使还列出 `deepseek-v4-pro` 也不在设置页展示、不会发送。模型列表从 `/models` 过滤后写入
 - 所有旧模型/未知模型统一归一为 `deepseek-flash`：`deepseek-chat`、`deepseek-reasoner`、`deepseek-v4-flash`、`deepseek-v4-flash-vision-exp`、`deepseek-v4-pro`
 - 视觉兜底与文本翻译都使用 `deepseek-flash`
-- Key 只保存在 macOS 数据保护 Keychain（`com.maodashu.global-translator.deepseek`，`WhenUnlockedThisDeviceOnly`，禁止 iCloud 同步）；配置里只有非敏感的“已配置”布尔值，不进入参数、环境、日志或缓存
+- Key 只保存到 macOS 系统 Keychain：有 data-protection entitlement 时优先使用数据保护钥匙串；当前自签名 App 无该 entitlement 时，安全回退到本机登录钥匙串（不写配置文件、不启用 iCloud 同步）。已配置时设置显示「已保存在钥匙串」
 - 默认只发送待翻译文字；局部截图视觉兜底必须在弹窗中明确授权
 - 不自动切换到本地后端，不自动重放状态不确定的请求
 
@@ -76,7 +76,7 @@ global-translator run --foreground
 - PID/socket：`~/Library/Application Support/GlobalTranslator/runtime/`
 - 脱敏日志：`~/Library/Logs/GlobalTranslator/`，权限 `0600`
 - API Key 不进入配置、参数、环境、日志或翻译缓存
-- Keychain 项使用数据保护钥匙串、`kSecAttrAccessibleWhenUnlockedThisDeviceOnly` 和 `kSecAttrSynchronizable=false`；保存前去除首尾空白并拒绝控制字符/非 ASCII 值，防止请求头注入；Settings 里只编辑临时草稿，保存成功后立刻清空
+- Keychain 项优先使用数据保护钥匙串和 `WhenUnlockedThisDeviceOnly`；自签名构建缺少 entitlement（`errSecMissingEntitlement`）时回退到登录钥匙串，保存/读取/删除都不会把明文写入磁盘配置。保存前去除首尾空白并拒绝控制字符/非 ASCII 值，防止请求头注入；Settings 里只编辑临时草稿，保存成功后立刻清空
 - 截图、原文、译文和翻译缓存均不持久化
 - 滑词翻译仅监听鼠标左键抬起以读取 Accessibility 选区；不注入键盘。AX 读不到字时，仅在真实拖选后（或 AX 报告有选区范围却无字符串）、且剪贴板能完整备份时才临时 ⌘C 并立即恢复；单击不拖选不发 ⌘C。备份不全、密码框、本应用窗口则跳过。⌘C 兜底异步等待目标 App（最多 200ms，不阻塞主线程；等待不可被取消打断，取消后仍恢复原剪贴板）。结构化翻译失败（回声原文 / JSON 解析失败）时对 ≤600 字选区做一次纯文本兜底：品牌名给中文注释（如 `Figma（设计工具）`）；仍回声且像专有名词时显示「专有名词，无需翻译」，句子回声仍报「翻译失败」。弹层提供翻译与「优化提示词」（沟通润色 / 任务指令 / 用词修正，默认沟通润色；拷贝成功显示「已拷贝」）
 - 截图翻译只在用户按下快捷键并拖选区域后截一次屏，用本机 Vision 识别中/英文，不把截图发给本地或云端模型；译文可拷贝，自动复制默认关；「保存截图」开启时才会把区域图写成 PNG 到设置里的目录（默认关，落盘位置在设置中展示并可改），「复制截图」开启时把区域图复制到剪贴板（默认关）

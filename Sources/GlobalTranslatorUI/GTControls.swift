@@ -21,10 +21,11 @@ struct GTSettingsCard<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: GTSpacing.small) {
+        VStack(alignment: .leading, spacing: GTControlMetrics.sectionSpacing) {
             content()
         }
-        .padding(GTSpacing.small)
+        .padding(.horizontal, GTControlMetrics.cardHorizontalPadding)
+        .padding(.vertical, GTControlMetrics.cardVerticalPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(
             .regular.interactive(),
@@ -33,18 +34,69 @@ struct GTSettingsCard<Content: View>: View {
     }
 }
 
-/// Caption above a full-width control so address, model, and language rows share rhythm.
+/// One compact card header, optionally with a trailing action (选择应用 / 重新检查).
+struct GTSettingsSectionHeader<Trailing: View>: View {
+    let title: String
+    @ViewBuilder var trailing: () -> Trailing
+
+    var body: some View {
+        HStack(alignment: .center, spacing: GTSpacing.xSmall) {
+            Text(title)
+                .font(GTType.cardTitle)
+                .foregroundStyle(GTColor.secondaryText)
+            Spacer(minLength: GTSpacing.xSmall)
+            trailing()
+        }
+        .frame(minHeight: GTControlMetrics.settingRowHeight)
+        .accessibilityElement(children: .contain)
+    }
+}
+
+extension GTSettingsSectionHeader where Trailing == EmptyView {
+    init(title: String) {
+        self.init(title: title) { EmptyView() }
+    }
+}
+
+/// Compact settings toggle: label on the left, switch pinned to the right.
+/// The expanding label keeps every switch in one aligned column.
+struct GTSettingsToggleRow: View {
+    let title: String
+    @Binding var isOn: Bool
+    var hint: String = ""
+
+    var body: some View {
+        Toggle(isOn: $isOn) {
+            Text(title)
+                .font(GTType.body)
+                .foregroundStyle(GTColor.primaryText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .toggleStyle(.switch)
+        .controlSize(.small)
+        .frame(minHeight: GTControlMetrics.settingRowHeight)
+        .accessibilityHint(hint)
+    }
+}
+
+/// A label on the left and a control on the right. Keeping one label column
+/// across the page is what makes the compact settings layout scan cleanly.
 struct GTLabeledControl<Content: View>: View {
     let title: String
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: GTSpacing.xxSmall) {
+        HStack(alignment: .center, spacing: GTSpacing.xSmall) {
             Text(title)
                 .font(GTType.secondary)
                 .foregroundStyle(GTColor.secondaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(width: GTControlMetrics.settingLabelWidth, alignment: .leading)
             content()
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(minHeight: GTControlMetrics.settingRowHeight)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
     }
@@ -108,7 +160,7 @@ struct GTActionRow<Primary: View, Secondary: View>: View {
             primary()
                 .frame(maxWidth: .infinity)
         }
-        .frame(minHeight: GTPopoverMetrics.minRowHitHeight)
+        .frame(minHeight: GTControlMetrics.settingRowHeight)
         .frame(maxWidth: .infinity)
     }
 }
@@ -270,6 +322,7 @@ struct GTEqualWidthSegmentedPicker<Value: Hashable>: View {
     @Binding var selection: Value
     var title: (Value) -> String
     var isEnabled: Bool = true
+    var height: CGFloat = GTSelectionMetrics.modePickerHeight
     var accessibilityLabelText: String = ""
 
     var body: some View {
@@ -294,7 +347,7 @@ struct GTEqualWidthSegmentedPicker<Value: Hashable>: View {
                 .accessibilityValue(title(option))
             }
         }
-        .frame(height: GTSelectionMetrics.modePickerHeight)
+        .frame(height: height)
         .frame(maxWidth: .infinity)
         .background(GTColor.segmentTrack)
         .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
@@ -311,6 +364,7 @@ struct GTEqualWidthSegmentedPicker<Value: Hashable>: View {
 struct GTOptimizeModePicker: View {
     @Binding var selection: PromptOptimizeMode
     var isEnabled: Bool = true
+    var height: CGFloat = GTSelectionMetrics.modePickerHeight
 
     var body: some View {
         GTEqualWidthSegmentedPicker(
@@ -318,6 +372,7 @@ struct GTOptimizeModePicker: View {
             selection: $selection,
             title: { $0.title },
             isEnabled: isEnabled,
+            height: height,
             accessibilityLabelText: "优化场景"
         )
         .accessibilityValue(selection.title)
