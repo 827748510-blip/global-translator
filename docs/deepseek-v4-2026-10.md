@@ -41,13 +41,14 @@
 
 ## API Key 安全
 
-- 只存 macOS **data-protection Keychain**，Service `com.maodashu.global-translator.deepseek`，Account `default`。
-- 存储属性：`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`、`kSecAttrSynchronizable=false`，设备绑定、不随 iCloud Keychain 同步。
-- 应用更新已有 Keychain 项时也会重新写入安全属性，修复旧版本可能较弱的可访问性。
+- 只存 macOS 系统 Keychain：Service `com.maodashu.global-translator.deepseek`，Account `default`。
+- 有 data-protection entitlement 时优先使用数据保护钥匙串，`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`、`kSecAttrSynchronizable=false`。
+- 当前 App 使用本机自签名（无 Keychain entitlement）。系统在这种情况下对 data-protection 写入返回 `errSecMissingEntitlement (-34018)`；代码会自动回退到登录钥匙串，保存、读取、删除都走同一条兼容路径。登录钥匙串同样加密并由系统保护，不写明文配置、不启用 iCloud 同步。
 - 保存前统一 trim，只接受可见 ASCII（禁止换行、控制字符、空格和非 ASCII），防止 `Authorization` 头注入；最长 4096 字符。
 - `config.json` 只保存 `deepSeekAPIKeyConfigured: Bool`，不包含密钥；错误信息、日志、缓存、请求参数和环境变量都不含 Key。
 - Settings 中的 `keyDraft` 仅在编辑期间存在，保存成功、取消替换或切换后端都会清空。
-- 旧登录钥匙串条目仅在迁移时读取一次，迁移成功即删除旧项；迁移失败则保留原项，避免丢 Key。
+- 旧登录钥匙串条目仅在迁移时读取一次；data-protection 不可用时保留原项。
+- 写入都失败时，UI 明确显示「无法访问系统钥匙串，请检查钥匙串权限后重试。」，不再退化成“操作失败，请稍后重试”。
 
 ## 验证
 
@@ -61,4 +62,4 @@ swift build -c release -Xswiftc -warnings-as-errors
 
 本轮自动化测试使用 mock transport，不调用真实计费接口；正式上线前建议用户亲自在设置页点一次“测试连接”做真实账号验收。
 
-Keychain 的最终验收需要在已签名的 `.app` 中进行：SwiftPM 测试进程没有 data-protection Keychain 权限，真实写入会返回 `errSecMissingEntitlement (-34018)`，因此自动化测试覆盖密钥校验、配置不含明文和 mock 凭据路径，真实钥匙串读写请在安装后的 App 设置页保存一次 Key、重启后再翻译验证。
+Keychain 的最终验收需要在已签名的 `.app` 中进行：SwiftPM 测试进程没有 data-protection Keychain 权限，真实写入会返回 `errSecMissingEntitlement (-34018)`。本轮额外用与 App 相同的自签名身份编译临时探针，只写入随机 service 的假 Key，已验证「保存 → 更新 → 读取 → 删除」全部成功；不接触真实 API Key。真实钥匙串读写仍建议在安装后的 App 设置页保存一次 Key、重启后再翻译验证。

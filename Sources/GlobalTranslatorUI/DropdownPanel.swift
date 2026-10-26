@@ -29,7 +29,7 @@ public final class DropdownPanel: NSPanel {
 
     public init(content: NSViewController) {
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 380, height: 240),
+            contentRect: NSRect(x: 0, y: 0, width: GTPopoverMetrics.width, height: 240),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false

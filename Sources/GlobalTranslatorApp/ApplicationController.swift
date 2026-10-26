@@ -22,6 +22,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
     let persistence: ConfigurationPersistence
     let onQuit: @MainActor @Sendable () -> Void
     var statusItem: (any StatusItemControlling)?
+    var deepSeekStatsWindow: DeepSeekStatsWindowController?
     var overlay: (any OverlayControlling)?
     var session: TranslationSession?
     var selectionTranslate: SelectionTranslateController?
@@ -150,6 +151,8 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         bridgeServer = nil
         statusItem?.stop()
         statusItem = nil
+        deepSeekStatsWindow?.close()
+        deepSeekStatsWindow = nil
         overlay?.hideAll()
         overlay = nil
         do {

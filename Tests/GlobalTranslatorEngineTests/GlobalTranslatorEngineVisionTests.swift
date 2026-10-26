@@ -169,14 +169,13 @@ extension GlobalTranslatorEngineTests {
 
     @Test
     func duplicateSourceLowConfidenceCropUsesRepresentativeSegmentID() async throws {
-        let firstID = UUID()
         let secondID = UUID()
         let backend = VisionRecordingBackend(kind: .deepSeekCloud)
         let coordinator = TranslationCoordinator(backends: [backend], permissions: SystemPermissionController(snapshotProvider: { .allGranted }))
         _ = try await coordinator.translate(
             snapshot: makeSnapshot(
                 regions: [
-                    makeRegion(id: firstID, text: "hello", y: 100, confidence: 1),
+                    makeRegion(text: "hello", y: 100, confidence: 1),
                     makeRegion(id: secondID, text: "hello", y: 50, confidence: 0.1)
                 ],
                 revision: 1,
@@ -190,7 +189,9 @@ extension GlobalTranslatorEngineTests {
         let requests = await backend.visionRequests
         #expect(requests.count == 1)
         #expect(requests[0].count == 1)
-        #expect(requests[0].first?.segmentId == firstID)
+        // Both regions share the stable prompt ID for "hello"; the crop must
+        // attach to that representative item rather than the second region ID.
+        #expect(requests[0].first?.segmentId == PromptStableIdentifier.id(for: "hello"))
         #expect(requests[0].first?.segmentId != secondID)
     }
 }

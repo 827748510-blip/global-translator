@@ -463,6 +463,10 @@ public final class SettingsViewModel: ObservableObject {
         actions.openLogs()
     }
 
+    public func openDeepSeekStats() {
+        actions.openDeepSeekStats()
+    }
+
     public func quit() {
         actions.quit()
     }
@@ -474,6 +478,14 @@ public final class SettingsViewModel: ObservableObject {
     private static func describe(_ error: Error) -> String {
         if let safe = error as? UISafeError {
             return safe.uiSafeDescription
+        }
+        if let credential = error as? CredentialStoreError {
+            switch credential {
+            case .invalidValue:
+                return "API Key 格式无效"
+            case .keychainFailure:
+                return "无法访问系统钥匙串，请检查钥匙串权限后重试。"
+            }
         }
         return UIFeedback.genericErrorMessage
     }

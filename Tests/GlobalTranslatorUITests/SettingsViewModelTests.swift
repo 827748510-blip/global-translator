@@ -36,6 +36,7 @@ private final class SpyActions: SettingsActions {
     var removedExclusions: [String] = []
     var clearCacheCallCount = 0
     var openLogsCallCount = 0
+    var openDeepSeekStatsCallCount = 0
     var quitCallCount = 0
 
     var saveKeyError: Error?
@@ -148,6 +149,10 @@ private final class SpyActions: SettingsActions {
 
     func openLogs() {
         openLogsCallCount += 1
+    }
+
+    func openDeepSeekStats() {
+        openDeepSeekStatsCallCount += 1
     }
 
     func quit() {
@@ -675,6 +680,28 @@ struct SettingsViewModelTests {
     }
 
     @Test
+    func keychainFailureShowsAnActionableNonSecretMessage() async {
+        let (viewModel, actions) = makeViewModel(keyConfigured: true)
+        viewModel.keyDraft = "sk-new"
+        actions.saveKeyError = CredentialStoreError.keychainFailure(status: -34018)
+        await viewModel.saveKey()
+        guard case .failure(let message) = viewModel.keyOperation else {
+            Issue.record("expected keyOperation to be .failure")
+            return
+        }
+        #expect(message == "无法访问系统钥匙串，请检查钥匙串权限后重试。")
+        #expect(!message.contains("sk-"))
+
+        actions.saveKeyError = CredentialStoreError.invalidValue
+        await viewModel.saveKey()
+        guard case .failure(let invalidMessage) = viewModel.keyOperation else {
+            Issue.record("expected keyOperation to be .failure")
+            return
+        }
+        #expect(invalidMessage == "API Key 格式无效")
+    }
+
+    @Test
     func arbitraryErrorsNeverRenderSecretLikeText() async {
         let (viewModel, actions) = makeViewModel(keyConfigured: true)
         let secretError = NSError(
@@ -749,11 +776,13 @@ struct SettingsViewModelTests {
     }
 
     @Test
-    func openLogsAndQuitForward() {
+    func openLogsStatsAndQuitForward() {
         let (viewModel, actions) = makeViewModel()
         viewModel.openLogs()
+        viewModel.openDeepSeekStats()
         viewModel.quit()
         #expect(actions.openLogsCallCount == 1)
+        #expect(actions.openDeepSeekStatsCallCount == 1)
         #expect(actions.quitCallCount == 1)
     }
 

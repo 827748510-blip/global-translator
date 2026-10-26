@@ -612,6 +612,14 @@ extension ApplicationController {
         NSWorkspace.shared.activateFileViewerSelecting([paths.logURL])
     }
 
+    public func openDeepSeekStats() {
+        guard started else { return }
+        if deepSeekStatsWindow == nil {
+            deepSeekStatsWindow = DeepSeekStatsWindowController()
+        }
+        deepSeekStatsWindow?.present()
+    }
+
     public func quit() {
         components.logger.event("application_quit_requested", fields: [:])
         Task { @MainActor [weak self] in

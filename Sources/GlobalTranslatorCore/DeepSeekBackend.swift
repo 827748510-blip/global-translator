@@ -16,15 +16,18 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
 
     private let transport: any HTTPTransport
     private let credentialStore: any CredentialStoring
+    private let usageStore: DeepSeekUsageStore
 
     public init(
         transport: any HTTPTransport = URLSessionHTTPTransport(),
         credentialStore: any CredentialStoring = MacOSKeychainStore(),
-        model: String = AppConfiguration.defaultDeepSeekModel
+        model: String = AppConfiguration.defaultDeepSeekModel,
+        usageStore: DeepSeekUsageStore = .shared
     ) {
         self.transport = transport
         self.credentialStore = credentialStore
         self.model = AppConfiguration.resolvedDeepSeekModel(model)
+        self.usageStore = usageStore
     }
 
     public func healthCheck() async -> BackendHealth {
@@ -80,6 +83,8 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
         urlRequest.setValue("Bearer " + apiKey, forHTTPHeaderField: "Authorization")
         urlRequest.httpBody = body
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let requestedAt = Date()
         let response: HTTPResponse
         do {
             response = try await transport.send(urlRequest)
@@ -92,6 +97,7 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         guard (200..<300).contains(response.statusCode) else {
             throw TranslationError.invalidResponse("unexpected DeepSeek HTTP status")
         }
+        recordUsage(from: response.body, startedAt: startedAt, requestedAt: requestedAt)
         return try TranslationResponseParser.parseResponses(
             response.body,
             expectedIDs: request.items.map { $0.id },
@@ -121,6 +127,8 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
         urlRequest.setValue("Bearer " + apiKey, forHTTPHeaderField: "Authorization")
         urlRequest.httpBody = body
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let requestedAt = Date()
         let response: HTTPResponse
         do {
             response = try await transport.send(urlRequest)
@@ -133,6 +141,7 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         guard (200..<300).contains(response.statusCode) else {
             throw TranslationError.invalidResponse("unexpected DeepSeek HTTP status")
         }
+        recordUsage(from: response.body, startedAt: startedAt, requestedAt: requestedAt)
         return try TranslationResponseParser.parsePlainResponses(response.body)
     }
 
@@ -158,6 +167,8 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
         urlRequest.setValue("Bearer " + apiKey, forHTTPHeaderField: "Authorization")
         urlRequest.httpBody = body
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let requestedAt = Date()
         let response: HTTPResponse
         do {
             response = try await transport.send(urlRequest)
@@ -170,6 +181,7 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         guard (200..<300).contains(response.statusCode) else {
             throw TranslationError.invalidResponse("unexpected DeepSeek HTTP status")
         }
+        recordUsage(from: response.body, startedAt: startedAt, requestedAt: requestedAt)
         return try TranslationResponseParser.parseResponses(
             response.body,
             expectedIDs: request.items.map { $0.id },
@@ -204,7 +216,7 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
 
     private func makePayload(for request: TranslationRequest) throws -> Data {
         let direction = SelectionTranslationDirection(targetLanguage: request.targetLanguage) ?? .toChinese
-        let userContent = try TranslationInstructions.userContent(for: request.items)
+        let userContent = try TranslationInstructions.userContent(for: Self.stablePromptOrder(request.items))
         let payload = ResponsesPayload(
             model: model,
             input: [
@@ -272,9 +284,9 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         images: [VisionTranslationImage]
     ) throws -> Data {
         let direction = SelectionTranslationDirection(targetLanguage: request.targetLanguage) ?? .toChinese
-        let userText = try TranslationInstructions.userContent(for: request.items)
+        let userText = try TranslationInstructions.userContent(for: Self.stablePromptOrder(request.items))
         var userContent: [VisionContentPart] = [.inputText(userText)]
-        for image in images {
+        for image in images.sorted(by: { $0.segmentId.uuidString < $1.segmentId.uuidString }) {
             userContent.append(.inputText("segmentId=\(image.segmentId.uuidString)"))
             userContent.append(.inputImage(
                 imageURL: "data:\(image.mime);base64,\(image.pngData.base64EncodedString())",
@@ -296,6 +308,22 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         } catch {
             throw TranslationError.invalidRequest("unable to encode vision translation request")
         }
+    }
+
+    /// Canonical item order makes an unchanged screen batch byte-identical.
+    /// The model maps results by segment ID, so display order is unaffected.
+    private static func stablePromptOrder(_ items: [TranslationItem]) -> [TranslationItem] {
+        items.sorted { $0.id.uuidString < $1.id.uuidString }
+    }
+
+    private func recordUsage(from body: Data, startedAt: TimeInterval, requestedAt: Date) {
+        guard let usage = DeepSeekUsageParser.parse(body) else { return }
+        usageStore.record(
+            usage: usage,
+            model: model,
+            durationSeconds: ProcessInfo.processInfo.systemUptime - startedAt,
+            requestedAt: requestedAt
+        )
     }
 
     private func health(for error: TranslationError) -> BackendHealth {

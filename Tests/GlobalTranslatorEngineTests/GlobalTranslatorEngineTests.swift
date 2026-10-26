@@ -143,6 +143,14 @@ struct GlobalTranslatorEngineTests {
     }
 
     @Test
+    func batcherUsesStableSourceIDsForRepeatedContent() {
+        let first = TranslationBatcher().plan(regions: [makeRegion(text: "hello")])
+        let second = TranslationBatcher().plan(regions: [makeRegion(text: "hello")])
+        #expect(first.entries.first?.item.id == second.entries.first?.item.id)
+        #expect(first.entries.first?.item.id == PromptStableIdentifier.id(for: "hello"))
+    }
+
+    @Test
     func batcherRespectsUniqueItemAndCharacterLimitsInReadingOrder() {
         var regions: [TextRegion] = []
         for index in 0..<26 {

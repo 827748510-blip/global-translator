@@ -21,7 +21,8 @@ public enum GTRadius {
 /// System text styles (SF Pro / PingFang fallback chain). Dynamic Type safe.
 public enum GTType {
     public static let stateLine = Font.headline
-    public static let sectionTitle = Font.subheadline.weight(.semibold)
+    public static let cardTitle = Font.system(size: 12, weight: .semibold)
+    public static let sectionTitle = Font.system(size: 12, weight: .semibold)
     public static let body = Font.body
     public static let secondary = Font.footnote
     public static let caption = Font.caption
@@ -61,11 +62,18 @@ public enum GTEqualWidthMetrics {
 
 /// Shared form controls (settings cards, text fields, custom menus).
 public enum GTControlMetrics {
-    /// Comfortable field / menu trigger height (taller than the system Picker).
-    public static let fieldHeight: CGFloat = 36
-    public static let menuRowHeight: CGFloat = 32
-    public static let menuListMaxHeight: CGFloat = 168
+    /// Compact settings field / menu trigger height.
+    public static let fieldHeight: CGFloat = 30
+    public static let menuRowHeight: CGFloat = 28
+    public static let menuListMaxHeight: CGFloat = 144
     public static let fieldStrokeWidth: CGFloat = 1
+    /// Compact settings rows keep the whole page dense without shrinking labels.
+    public static let settingRowHeight: CGFloat = 30
+    public static let settingLabelWidth: CGFloat = 72
+    public static let sectionSpacing: CGFloat = 8
+    public static let cardHorizontalPadding: CGFloat = 12
+    public static let cardVerticalPadding: CGFloat = 10
+    public static let segmentHeight: CGFloat = 28
 }
 
 /// Overlay layout metrics (see DESIGN.md §3/§5).
@@ -82,12 +90,14 @@ public enum GTOverlayMetrics {
 
 /// Popover chrome metrics (see DESIGN.md §0/§5).
 public enum GTPopoverMetrics {
-    public static let width: CGFloat = 380
+    public static let width: CGFloat = 360
     /// Fallback max height when no screen is available; the controller recomputes
     /// the real limit from the visible frame at show time.
-    public static let defaultMaxHeight: CGFloat = 640
+    public static let defaultMaxHeight: CGFloat = 600
     /// Keeps a floating panel clear of the menu bar and screen edges.
     public static let screenMargin: CGFloat = 8
+    public static let contentPadding: CGFloat = 12
+    public static let cardSpacing: CGFloat = 8
     /// Minimum practical vertical hit area for interactive rows.
     public static let minRowHitHeight: CGFloat = 44
 }

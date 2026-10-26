@@ -233,8 +233,8 @@ struct SelectionTranslatePopoverTests {
         #expect(abs(three * 3 + GTSpacing.xSmall * 2 - 284) < 0.001)
         #expect(GTEqualWidthMetrics.itemWidth(total: 284, count: 2, spacing: GTSpacing.xSmall) == 138)
         #expect(GTEqualWidthMetrics.itemWidth(total: 100, count: 0, spacing: 8) == 0)
-        #expect(GTControlMetrics.fieldHeight >= 36)
-        #expect(GTControlMetrics.menuRowHeight >= 32)
+        #expect(GTControlMetrics.fieldHeight >= 30)
+        #expect(GTControlMetrics.menuRowHeight >= 28)
         #expect(GTControlMetrics.fieldHeight > GTSelectionMetrics.modePickerHeight - 8)
     }
 

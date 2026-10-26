@@ -83,8 +83,11 @@ public struct TranslationBatcher: Sendable {
                 group = TranslationBatchEntry(item: group.item, sourceText: source, regions: group.regions + [region])
                 groups[source] = group
             } else {
+                // Stable per-source IDs keep repeated cloud batches byte-identical
+                // so DeepSeek can fully reuse its prefix cache. Region IDs stay
+                // unchanged in `orderedRegions` and are mapped back downstream.
                 groups[source] = TranslationBatchEntry(
-                    item: TranslationItem(id: region.id, sourceText: source),
+                    item: TranslationItem(id: PromptStableIdentifier.id(for: source), sourceText: source),
                     sourceText: source,
                     regions: [region]
                 )

@@ -36,11 +36,22 @@ private final class RenderActions: SettingsActions {
     func removeTranslationApplication(bundleIdentifier: String) {}
     func clearCache() async throws {}
     func openLogs() {}
+    func openDeepSeekStats() {}
     func quit() {}
 }
 
 @MainActor
 struct GlassUIRenderTests {
+    @Test
+    func settingsUsesCompactLayoutTokens() {
+        #expect(GTPopoverMetrics.width == 360)
+        #expect(GTPopoverMetrics.defaultMaxHeight == 600)
+        #expect(GTControlMetrics.settingRowHeight == 30)
+        #expect(GTControlMetrics.fieldHeight == 30)
+        #expect(GTControlMetrics.settingLabelWidth == 72)
+        #expect(GTControlMetrics.segmentHeight == 28)
+    }
+
     @Test
     func settingsGlassPageRenders() throws {
         let view = SettingsPopoverView(
@@ -66,6 +77,23 @@ struct GlassUIRenderTests {
         #expect(image.size.width > 0)
         #expect(image.size.height > 0)
         try Self.writeIfRequested(image, named: "gt-glass-settings-dark.png")
+    }
+
+    @Test
+    func deepSeekStatsViewRendersLiveTotals() throws {
+        let store = DeepSeekUsageStore()
+        store.record(
+            usage: DeepSeekTokenUsage(inputTokens: 1_200, cachedInputTokens: 900, outputTokens: 300),
+            model: AppConfiguration.defaultDeepSeekModel,
+            durationSeconds: 2,
+            requestedAt: Date(timeIntervalSince1970: 1_760_000_000)
+        )
+        let view = DeepSeekStatsView(viewModel: DeepSeekStatsViewModel(store: store))
+            .frame(width: 420, height: 520)
+        let image = try Self.renderHostingView(view)
+        #expect(image.size.width == 420)
+        #expect(image.size.height == 520)
+        try Self.writeIfRequested(image, named: "gt-deepseek-stats.png")
     }
 
     @Test
