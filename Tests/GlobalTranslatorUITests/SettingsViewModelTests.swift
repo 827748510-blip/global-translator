@@ -42,7 +42,7 @@ private final class SpyActions: SettingsActions {
     var deleteKeyError: Error?
     var testConnectionError: Error?
     var clearCacheError: Error?
-    var health = BackendHealth(status: .healthy, message: "连接正常", availableModels: ["deepseek-chat"])
+    var health = BackendHealth(status: .healthy, message: "连接正常", availableModels: ["deepseek-flash"])
 
     func setAutomaticTranslation(_ enabled: Bool) {
         automaticValues.append(enabled)
@@ -545,23 +545,23 @@ struct SettingsViewModelTests {
         actions.health = BackendHealth(
             status: .healthy,
             message: "连接正常",
-            availableModels: ["deepseek-chat"]
+            availableModels: ["deepseek-flash"]
         )
         await viewModel.testConnection()
         #expect(actions.testConnectionCallCount == 1)
         #expect(viewModel.connectionTest == .healthy("连接正常"))
         #expect(viewModel.backendReady)
-        #expect(viewModel.availableModels == ["deepseek-chat"])
+        #expect(viewModel.availableModels == ["deepseek-flash"])
     }
 
     @Test
     func successfulConnectionTestUpdatesModelsAndHealth() async {
         let (viewModel, actions) = makeViewModel(keyConfigured: true)
-        actions.health = BackendHealth(status: .healthy, message: "连接正常", availableModels: ["a", "b"])
+        actions.health = BackendHealth(status: .healthy, message: "连接正常", availableModels: ["deepseek-flash"])
         await viewModel.testConnection()
         #expect(actions.testConnectionCallCount == 1)
         #expect(viewModel.connectionTest == .healthy("连接正常"))
-        #expect(viewModel.availableModels == ["a", "b"])
+        #expect(viewModel.availableModels == ["deepseek-flash"])
         #expect(viewModel.healthMessage == "连接正常")
         #expect(viewModel.backendReady)
     }
@@ -592,14 +592,14 @@ struct SettingsViewModelTests {
             actions.health = BackendHealth(
                 status: status,
                 message: "upstream 401 Authorization: sk-secret-detail",
-                availableModels: ["fresh-model"]
+                availableModels: ["deepseek-flash"]
             )
             await viewModel.testConnection()
             #expect(viewModel.connectionTest == .failed(expected))
             #expect(viewModel.healthMessage == expected)
             #expect(!viewModel.backendReady)
-            // Failure responses still refresh the model list when provided.
-            #expect(viewModel.availableModels == ["fresh-model"])
+            // Failure responses still refresh the supported model list.
+            #expect(viewModel.availableModels == ["deepseek-flash"])
         }
     }
 
@@ -625,14 +625,14 @@ struct SettingsViewModelTests {
         actions.health = BackendHealth(
             status: .modelUnavailable,
             message: "Selected DeepSeek model is unavailable",
-            availableModels: ["deepseek-chat", "deepseek-reasoner"]
+            availableModels: ["deepseek-flash", "deepseek-v4-pro"]
         )
         await viewModel.testConnection()
         #expect(viewModel.connectionTest == .healthy("DeepSeek backend is ready"))
         #expect(viewModel.backendReady)
-        #expect(viewModel.deepSeekModel == "deepseek-chat")
-        #expect(actions.deepSeekModels == ["deepseek-chat"])
-        #expect(viewModel.availableModels == ["deepseek-chat", "deepseek-reasoner"])
+        #expect(viewModel.deepSeekModel == "deepseek-flash")
+        #expect(actions.deepSeekModels == ["deepseek-flash"])
+        #expect(viewModel.availableModels == ["deepseek-flash"])
     }
 
     @Test
@@ -658,9 +658,10 @@ struct SettingsViewModelTests {
     @Test
     func commitDeepSeekModelForwardsSelection() {
         let (viewModel, actions) = makeViewModel(keyConfigured: true)
-        viewModel.deepSeekModel = "deepseek-reasoner"
+        viewModel.deepSeekModel = "deepseek-v4-pro"
         viewModel.commitDeepSeekModel()
-        #expect(actions.deepSeekModels == ["deepseek-reasoner"])
+        #expect(viewModel.deepSeekModel == "deepseek-flash")
+        #expect(actions.deepSeekModels == ["deepseek-flash"])
     }
 
     @Test

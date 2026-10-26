@@ -41,7 +41,6 @@ struct PromptSegment: Encodable {
 struct JSONSchemaFormat: Encodable {
     let type = "json_schema"
     let name = "translation_result"
-    let strict = true
     let schema: JSONSchemaObject
 }
 

@@ -195,6 +195,15 @@ public final class NullSelectionPopover: SelectionPopoverControlling {
     public func dismiss() { currentContent = nil }
 }
 
+/// Resolved geometry for one popover presentation. `resultHeight` is the
+/// visible viewport for the result; it equals the measured full height when
+/// nothing needs to scroll.
+struct SelectionPopoverSizing: Equatable {
+    let contentSize: CGSize
+    let resultHeight: CGFloat
+    let isResultScrollable: Bool
+}
+
 @MainActor
 public final class SelectionTranslatePanelController: SelectionPopoverControlling {
     public private(set) var currentContent: SelectionPopoverContent?
@@ -268,15 +277,21 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
             dismiss()
             return
         }
-        let size = Self.contentSize(for: content)
+        let maxPanelHeight = max(
+            GTPopoverMetrics.minRowHitHeight,
+            visibleFrame.height - GTPopoverMetrics.screenMargin * 2
+        )
+        let sizing = Self.sizing(for: content, maxHeight: maxPanelHeight)
         let frame = OverlayLayout.placementFrame(
             originalFrame: content.screenFrame,
-            contentSize: size,
+            contentSize: sizing.contentSize,
             screenVisibleFrame: visibleFrame
         )
         let hosting = NSHostingView(rootView: SelectionTranslatePopoverView(
             content: content,
             chrome: chrome,
+            resultHeight: sizing.resultHeight,
+            isResultScrollable: sizing.isResultScrollable,
             onCopy: { [weak self] in self?.copyCurrentTranslation() },
             onTranslate: { [weak self] in self?.onTranslate?() },
             onOptimize: { [weak self] in self?.onOptimize?() },
@@ -359,26 +374,32 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     }
 
     public static func contentSize(for content: SelectionPopoverContent) -> CGSize {
+        sizing(for: content, maxHeight: .greatestFiniteMagnitude).contentSize
+    }
+
+    /// Measures the whole result, then caps only the visible result viewport to
+    /// the screen. Actions and the truncated original stay outside the scroll
+    /// area, so 翻译 / 拷贝 never disappear below a long explanation.
+    static func sizing(
+        for content: SelectionPopoverContent,
+        maxHeight: CGFloat
+    ) -> SelectionPopoverSizing {
         let textWidth = GTSelectionMetrics.width - GTSelectionMetrics.horizontalPadding * 2
-        var height = GTSelectionMetrics.verticalPadding * 2
+        let resultMeasuringFont = SelectionPopoverLayout.resultMeasuringFont(for: content.status)
+        let resultLineHeight = OverlayLayout.estimatedLineHeight(for: resultMeasuringFont)
+        var chromeHeight = GTSelectionMetrics.verticalPadding * 2
         if !content.originalPreview.isEmpty {
-            height += OverlayLayout.estimatedTextSize(
+            chromeHeight += OverlayLayout.estimatedTextSize(
                 for: content.originalPreview,
                 maxWidth: textWidth,
                 maxLines: GTSelectionMetrics.maxOriginalLines,
                 font: NSFont.preferredFont(forTextStyle: .caption1)
             ).height
-            height += GTSelectionMetrics.textBlockSpacing
+            chromeHeight += GTSelectionMetrics.textBlockSpacing
         }
-        height += OverlayLayout.estimatedTextSize(
-            for: content.displayTranslation,
-            maxWidth: textWidth,
-            maxLines: GTSelectionMetrics.maxTranslationLines,
-            font: SelectionPopoverLayout.resultMeasuringFont(for: content.status)
-        ).height
         if let savedHint = content.savedImageHint, !savedHint.isEmpty {
-            height += GTSelectionMetrics.textBlockSpacing
-            height += OverlayLayout.estimatedTextSize(
+            chromeHeight += GTSelectionMetrics.textBlockSpacing
+            chromeHeight += OverlayLayout.estimatedTextSize(
                 for: savedHint,
                 maxWidth: textWidth,
                 maxLines: 2,
@@ -387,17 +408,50 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
         }
         let hasActions = content.showsOptimizeAction || content.showsActionButtons
         if hasActions {
-            height += GTSelectionMetrics.sectionSpacing
+            chromeHeight += GTSelectionMetrics.sectionSpacing
             if content.showsOptimizeAction {
-                height += GTSelectionMetrics.modePickerHeight
+                chromeHeight += GTSelectionMetrics.modePickerHeight
             }
             if content.showsActionButtons {
                 if content.showsOptimizeAction {
-                    height += GTSelectionMetrics.actionsSpacing
+                    chromeHeight += GTSelectionMetrics.actionsSpacing
                 }
-                height += GTSelectionMetrics.actionRowHeight
+                chromeHeight += GTSelectionMetrics.actionRowHeight
             }
         }
-        return CGSize(width: GTSelectionMetrics.width, height: max(height, 44))
+
+        let fullResultHeight = max(
+            resultLineHeight,
+            SelectionPopoverLayout.measuredWrappedHeight(
+                for: content.displayTranslation,
+                width: textWidth,
+                font: resultMeasuringFont
+            )
+        )
+        let desiredHeight = chromeHeight + fullResultHeight
+        let finiteMaxHeight = maxHeight.isFinite ? max(maxHeight, 1) : desiredHeight
+        let availableForResult = max(0, finiteMaxHeight - chromeHeight)
+        if desiredHeight <= finiteMaxHeight + 0.5 {
+            return SelectionPopoverSizing(
+                contentSize: CGSize(
+                    width: GTSelectionMetrics.width,
+                    height: max(desiredHeight, GTPopoverMetrics.minRowHitHeight)
+                ),
+                resultHeight: fullResultHeight,
+                isResultScrollable: false
+            )
+        }
+
+        let resultHeight = max(min(resultLineHeight, fullResultHeight), availableForResult)
+        let totalHeight = min(chromeHeight + resultHeight, finiteMaxHeight)
+        let minimumHeight = min(GTPopoverMetrics.minRowHitHeight, finiteMaxHeight)
+        return SelectionPopoverSizing(
+            contentSize: CGSize(
+                width: GTSelectionMetrics.width,
+                height: max(totalHeight, minimumHeight)
+            ),
+            resultHeight: resultHeight,
+            isResultScrollable: true
+        )
     }
 }

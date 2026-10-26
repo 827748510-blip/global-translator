@@ -4,6 +4,9 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
     private static let endpointURL = URL(string: "https://api.deepseek.com")!
 
     public static let defaultModel = AppConfiguration.defaultDeepSeekModel
+    /// Official DeepSeek docs (2026-10): only deepseek-flash accepts
+    /// `input_image` content parts. This build supports no other cloud model.
+    public static let visionModel = "deepseek-flash"
     public static let maximumVisionImages = 8
     public static let maximumVisionImageBytes = 4_194_304
     public static let maximumVisionTotalImageBytes = 16_777_216
@@ -35,9 +38,17 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
             return BackendHealth(status: .invalidCredentials, message: "DeepSeek API key is not configured")
         }
         do {
-            let models = try await listModels(apiKey: apiKey)
+            let discovered = try await listModels(apiKey: apiKey)
+            // This build intentionally supports only deepseek-flash. Do not
+            // surface deepseek-v4-pro or unknown IDs in Settings even if the
+            // account's /models response includes them.
+            let models = discovered.filter(AppConfiguration.isSupportedDeepSeekModel)
             guard !models.isEmpty else {
-                return BackendHealth(status: .modelUnavailable, message: "No DeepSeek models are available", availableModels: models)
+                return BackendHealth(
+                    status: .modelUnavailable,
+                    message: "deepseek-flash is not available for this account",
+                    availableModels: models
+                )
             }
             let resolved = AppConfiguration.resolvedDeepSeekModel(model)
             guard models.contains(resolved) else {
@@ -66,6 +77,7 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         var urlRequest = URLRequest(url: Self.endpointURL.appendingPathComponent("responses"))
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
         urlRequest.setValue("Bearer " + apiKey, forHTTPHeaderField: "Authorization")
         urlRequest.httpBody = body
         let response: HTTPResponse
@@ -106,6 +118,7 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         var urlRequest = URLRequest(url: Self.endpointURL.appendingPathComponent("responses"))
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
         urlRequest.setValue("Bearer " + apiKey, forHTTPHeaderField: "Authorization")
         urlRequest.httpBody = body
         let response: HTTPResponse
@@ -142,6 +155,7 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         var urlRequest = URLRequest(url: Self.endpointURL.appendingPathComponent("responses"))
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
         urlRequest.setValue("Bearer " + apiKey, forHTTPHeaderField: "Authorization")
         urlRequest.httpBody = body
         let response: HTTPResponse
@@ -166,6 +180,7 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
     private func listModels(apiKey: String) async throws -> [String] {
         var request = URLRequest(url: Self.endpointURL.appendingPathComponent("models"))
         request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("Bearer " + apiKey, forHTTPHeaderField: "Authorization")
         let response: HTTPResponse
         do {
@@ -267,7 +282,7 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
             ))
         }
         let payload = VisionResponsesPayload(
-            model: model,
+            model: Self.visionModel,
             input: [
                 VisionResponseInputMessage(role: "system", content: [.inputText(TranslationInstructions.system(for: direction))]),
                 VisionResponseInputMessage(role: "user", content: userContent)
@@ -310,7 +325,18 @@ private struct ResponsesPayload: Encodable {
     let stream = false
     let reasoning = ResponsesReasoning()
     let temperature = 0.1
+    let maxOutputTokens = 8_192
     let text: ResponsesText
+
+    private enum CodingKeys: String, CodingKey {
+        case model
+        case input
+        case stream
+        case reasoning
+        case temperature
+        case maxOutputTokens = "max_output_tokens"
+        case text
+    }
 }
 
 private struct ResponsesText: Encodable {
@@ -341,7 +367,18 @@ private struct VisionResponsesPayload: Encodable {
     let stream = false
     let reasoning = ResponsesReasoning()
     let temperature = 0.1
+    let maxOutputTokens = 8_192
     let text: ResponsesText
+
+    private enum CodingKeys: String, CodingKey {
+        case model
+        case input
+        case stream
+        case reasoning
+        case temperature
+        case maxOutputTokens = "max_output_tokens"
+        case text
+    }
 }
 
 private struct VisionResponseInputMessage: Encodable {

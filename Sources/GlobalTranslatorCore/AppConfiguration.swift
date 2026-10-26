@@ -69,7 +69,11 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     }
 
     public static let defaultLocalBaseURL = URL(string: "http://127.0.0.1:11434/v1")!
-    public static let defaultDeepSeekModel = "deepseek-chat"
+    /// This build supports exactly one DeepSeek model. The official API still
+    /// exposes deepseek-v4-pro, but the app intentionally does not offer or
+    /// request it; all persisted IDs and API model lists are normalized here.
+    public static let defaultDeepSeekModel = "deepseek-flash"
+    public static let supportedDeepSeekModels = [defaultDeepSeekModel]
 
     /// 截图翻译的默认保存目录（「图片」下的独立子目录）。用户可在设置里改。
     public static var defaultScreenshotSaveDirectory: String {
@@ -78,16 +82,21 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
             .path
     }
 
+    public static func isSupportedDeepSeekModel(_ model: String) -> Bool {
+        supportedDeepSeekModels.contains(model)
+    }
+
+    /// Retired IDs, deepseek-v4-pro, and any future/unknown ID are collapsed to
+    /// deepseek-flash so this build cannot select an unsupported model.
     public static func resolvedDeepSeekModel(_ model: String) -> String {
-        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? defaultDeepSeekModel : trimmed
+        _ = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return defaultDeepSeekModel
     }
 
     public static func preferredDeepSeekModel(current: String, available: [String]) -> String {
-        let resolved = resolvedDeepSeekModel(current)
-        if available.contains(resolved) { return resolved }
-        if available.contains(defaultDeepSeekModel) { return defaultDeepSeekModel }
-        return available.first ?? resolved
+        _ = current
+        _ = available
+        return defaultDeepSeekModel
     }
 
     private enum CodingKeys: String, CodingKey {

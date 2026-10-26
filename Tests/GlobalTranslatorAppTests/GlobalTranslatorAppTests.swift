@@ -30,6 +30,7 @@ struct ConfigurationPersistenceTests {
 }
 
 @MainActor
+@Suite(.serialized)
 struct ApplicationControllerTests {
     @Test
     func redundantRootNotificationKeepsValidatedOverlayVisible() async throws {
@@ -581,11 +582,11 @@ struct ApplicationControllerTests {
         try await controller.start()
         await waitForStartupHealthCheck(controller)
         controller.selectBackend(.deepSeekCloud)
-        controller.viewModel.availableModels = ["deepseek-chat", "deepseek-reasoner"]
-        controller.setDeepSeekModel("deepseek-reasoner")
+        controller.viewModel.availableModels = ["deepseek-flash"]
+        controller.setDeepSeekModel("deepseek-v4-pro")
         #expect(credentials.readCount == 0)
-        #expect(controller.configuration.deepSeekModel == "deepseek-reasoner")
-        #expect(controller.viewModel.deepSeekModel == "deepseek-reasoner")
+        #expect(controller.configuration.deepSeekModel == "deepseek-flash")
+        #expect(controller.viewModel.deepSeekModel == "deepseek-flash")
         await controller.stop()
     }
 
@@ -711,7 +712,7 @@ struct ApplicationControllerTests {
     }
 
     @Test
-    func testConnectionAfterSwitchAdoptsDeepSeekModelAndKeepsOverlayRunning() async throws {
+    func testConnectionAfterSwitchKeepsOnlyFlashAndOverlayRunning() async throws {
         let factory = RecordingModelBackendFactory(healthResults: [
             BackendHealth(status: .healthy, message: "ok", availableModels: ["model-b"])
         ])
@@ -737,8 +738,8 @@ struct ApplicationControllerTests {
         await waitForStartupHealthCheck(controller)
         controller.selectBackend(.deepSeekCloud)
         #expect(credentials.readCount == 0)
-        #expect(controller.session?.configuredModel == "model-a")
-        #expect(factory.madeDeepSeekModels.last == "model-a")
+        #expect(controller.session?.configuredModel == "deepseek-flash")
+        #expect(factory.madeDeepSeekModels.last == "deepseek-flash")
 
         controller.configuration.autoTranslateEnabled = true
         controller.viewModel.isAutomaticTranslationEnabled = true
@@ -750,10 +751,11 @@ struct ApplicationControllerTests {
 
         _ = try await controller.testConnection()
 
-        #expect(controller.configuration.deepSeekModel == "model-b")
-        #expect(controller.viewModel.deepSeekModel == "model-b")
-        #expect(controller.session?.configuredModel == "model-b")
-        #expect(factory.madeDeepSeekModels.last == "model-b")
+        #expect(controller.configuration.deepSeekModel == "deepseek-flash")
+        #expect(controller.viewModel.deepSeekModel == "deepseek-flash")
+        #expect(controller.session?.configuredModel == "deepseek-flash")
+        #expect(factory.madeDeepSeekModels.last == "deepseek-flash")
+        #expect(!controller.viewModel.availableModels.contains("model-b"))
         #expect(controller.session?.isRunning == true)
         #expect(controller.session?.isBridgeActive == true)
         #expect(controller.viewModel.isAutomaticTranslationEnabled)
@@ -799,18 +801,18 @@ struct ApplicationControllerTests {
         )
         try await controller.start()
         await waitForStartupHealthCheck(controller)
-        controller.viewModel.availableModels = ["deepseek-chat", "deepseek-reasoner"]
-        controller.setDeepSeekModel("deepseek-reasoner")
-        #expect(controller.configuration.deepSeekModel == "deepseek-reasoner")
-        #expect(controller.viewModel.deepSeekModel == "deepseek-reasoner")
-        #expect(controller.modelIdentifier == "deepseek-reasoner")
+        controller.viewModel.availableModels = ["deepseek-flash"]
+        controller.setDeepSeekModel("deepseek-v4-pro")
+        #expect(controller.configuration.deepSeekModel == "deepseek-flash")
+        #expect(controller.viewModel.deepSeekModel == "deepseek-flash")
+        #expect(controller.modelIdentifier == "deepseek-flash")
         try await controller.persistence.flush()
         let saved = await store.saved.last
-        #expect(saved?.deepSeekModel == "deepseek-reasoner")
+        #expect(saved?.deepSeekModel == "deepseek-flash")
         let encoded = try JSONEncoder().encode(controller.configuration)
         let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         #expect(object["apiKey"] == nil)
-        #expect(object["deepSeekModel"] as? String == "deepseek-reasoner")
+        #expect(object["deepSeekModel"] as? String == "deepseek-flash")
         await controller.stop()
     }
 
@@ -971,7 +973,7 @@ struct ApplicationControllerTests {
         controller.session?.configure(
             backends: [StubBackend(kind: .deepSeekCloud)],
             backend: .deepSeekCloud,
-            model: "deepseek-v4-flash-vision-exp",
+            model: "deepseek-flash",
             visionFallbackEnabled: false
         )
         controller.session?.start()
@@ -1300,6 +1302,7 @@ struct ApplicationControllerTests {
         credentials: RecordingCredentialStore = RecordingCredentialStore(value: nil),
         permission: FakePermissionController = FakePermissionController(snapshot: .allGranted),
         backendFactory: any TranslationBackendFactory = StubBackendFactory(health: BackendHealth(status: .healthy, message: "ok")),
+        ollamaLifecycle: any OllamaLifecycleControlling = NoopOllamaLifecycle(),
         monitor: FakeWindowMonitor = FakeWindowMonitor(),
         overlay: FakeOverlay = FakeOverlay(),
         overlayFactory: OverlayFactory? = nil,
@@ -1318,6 +1321,7 @@ struct ApplicationControllerTests {
             credentialStore: credentials,
             permissionController: permission,
             backendFactory: backendFactory,
+            ollamaLifecycle: ollamaLifecycle,
             monitorFactory: { _ in monitor },
             capturePipelineFactory: { _ in capture },
             statusItemFactory: { _ in statusItem },

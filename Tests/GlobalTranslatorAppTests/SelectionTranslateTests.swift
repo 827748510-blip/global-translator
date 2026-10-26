@@ -169,6 +169,42 @@ struct SelectionTranslateControllerTests {
     }
 
     @Test
+    func codeSelectionBypassesIdentifierFilterAndOffersCodeActions() async throws {
+        // `getUserProfile()` is a valid snippet that TextFilter intentionally
+        // treats as an identifier in prose. Code detection must run first.
+        let source = "getUserProfile()"
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot(source)))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "调用 getUserProfile() 读取当前用户的资料。"
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .translated }
+        #expect(translator.texts == [source])
+        #expect(popover.currentContent?.isCodeSnippet == true)
+        #expect(popover.currentContent?.displayTranslation.contains("getUserProfile()") == true)
+        #expect(popover.currentContent?.showsOptimizeAction == false)
+        #expect(popover.currentContent?.showsTranslateAction == true)
+        #expect(popover.currentContent?.allowsCopy == true)
+    }
+
+    @Test
+    func ordinaryProseStillUsesTheNormalTranslationPath() async throws {
+        let reader = FakeSelectedTextReader(result: .snapshot(snapshot("Please review the pull request.")))
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "请审阅这个拉取请求。"
+        let controller = makeController(reader: reader, popover: popover, translator: translator)
+        controller.setEnabled(true)
+        select(controller)
+        try await waitUntil { popover.currentContent?.status == .translated }
+        #expect(popover.currentContent?.isCodeSnippet == false)
+        #expect(popover.currentContent?.showsOptimizeAction == true)
+        #expect(popover.currentContent?.displayTranslation == "请审阅这个拉取请求。")
+    }
+
+    @Test
     func technicalTokenPhraseShowsSoftCopyWithoutCallingBackend() async throws {
         let phrase = "Swift 6 + SwiftUI + ScreenCaptureKit"
         let reader = FakeSelectedTextReader(result: .snapshot(snapshot(phrase)))
@@ -1061,6 +1097,93 @@ extension ApplicationControllerTests {
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(popover.currentContent?.displayTranslation == "你好 Hello from Chrome")
+        await controller.stop()
+    }
+
+    @Test
+    func codeSelectionUsesCodeExplanationPromptInsteadOfProseTranslation() async throws {
+        let coordinator = RecordingPlainCoordinator()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: false, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, coordinator: coordinator)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        let code = "const total = items.reduce((sum, item) => sum + item.price, 0);"
+        #expect(try await session.translateSelection(code).text == "rewritten")
+        #expect(try await session.translateSelection("getUserProfile()").text == "rewritten")
+        // Chinese comments do not flip code explanations to English.
+        let commentedCode = "// 计算总价\nconst total = items.reduce((sum, item) => sum + item.price, 0);"
+        #expect(try await session.translateSelection(commentedCode).text == "rewritten")
+
+        #expect(await coordinator.sources.isEmpty)
+        let systems = await coordinator.systems
+        #expect(systems.count == 3)
+        #expect(systems.allSatisfy { $0.contains("explain source code by translating") })
+        #expect(systems.allSatisfy { $0.contains("Simplified Chinese") })
+        #expect(systems.allSatisfy { !$0.contains("natural English") })
+        #expect(systems.allSatisfy { $0.contains("untrusted data") })
+        let users = await coordinator.users
+        #expect(users.count == 3)
+        #expect(users[0].contains("JavaScript"))
+        #expect(users[0].contains(code))
+        #expect(users[1].contains("代码"))
+        #expect(users[2].contains("JavaScript"))
+        #expect(users[2].contains("sourceCode"))
+        await controller.stop()
+    }
+
+    @Test
+    func longCodeSelectionIsSplitIntoOrderedExplanationParts() async throws {
+        let coordinator = RecordingPlainCoordinator()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: false, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, coordinator: coordinator)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        let code = (1...60)
+            .map { "let value\($0) = computeValue(\($0));" }
+            .joined(separator: "\n")
+        let plan = CodeTranslationSupport.prepareSource(code)
+        #expect(plan.chunks.count > 1)
+        let outcome = try await session.translateSelection(code)
+        let expected = SelectionTranslateSupport.joinTranslatedChunks(
+            Array(repeating: "rewritten", count: plan.chunks.count)
+        )
+        #expect(outcome.text == expected)
+        #expect(!outcome.sourceWasTruncated)
+        let users = await coordinator.users
+        #expect(users.count == plan.chunks.count)
+        #expect(users.allSatisfy { $0.contains("\"partCount\":\(plan.chunks.count)") })
+        #expect(await coordinator.sources.isEmpty)
+        await controller.stop()
+    }
+
+    @Test
+    func codeExplanationThatEchoesTheSourceFailsInsteadOfShowingCode() async throws {
+        let coordinator = RecordingPlainCoordinator()
+        let code = "const total = items.length;"
+        await coordinator.setPlainResult(code)
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: false, backend: .local, localModel: "test"))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, coordinator: coordinator)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        await #expect(throws: SelectionTranslateError.emptyResult) {
+            _ = try await session.translateSelection(code)
+        }
+        #expect(await coordinator.users.count == 1)
         await controller.stop()
     }
 

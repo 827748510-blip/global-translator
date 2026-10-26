@@ -86,6 +86,8 @@ public enum GTPopoverMetrics {
     /// Fallback max height when no screen is available; the controller recomputes
     /// the real limit from the visible frame at show time.
     public static let defaultMaxHeight: CGFloat = 640
+    /// Keeps a floating panel clear of the menu bar and screen edges.
+    public static let screenMargin: CGFloat = 8
     /// Minimum practical vertical hit area for interactive rows.
     public static let minRowHitHeight: CGFloat = 44
 }
@@ -94,7 +96,6 @@ public enum GTPopoverMetrics {
 public enum GTSelectionMetrics {
     public static let width: CGFloat = 312
     public static let maxOriginalLines = 2
-    public static let maxTranslationLines = 8
     public static let modePickerHeight: CGFloat = 32
     public static let actionRowHeight: CGFloat = 28
     public static let horizontalPadding: CGFloat = 14

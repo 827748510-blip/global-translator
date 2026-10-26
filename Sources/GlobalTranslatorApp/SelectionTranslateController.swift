@@ -347,6 +347,15 @@ public final class SelectionTranslateController {
                 popover.dismiss()
                 return
             }
+            // Code is checked before TextFilter: `foo()` / `x = 1` are valid
+            // snippets that the prose filter would otherwise reject as an
+            // identifier. Code never gets the prompt-rewrite action.
+            if CodeSnippetDetector.isCode(snapshot.text) {
+                guard snapshot.text != suppressedSource else { return }
+                suppressedSource = nil
+                presentTranslation(snapshot)
+                return
+            }
             switch TextFilter.selectionDecision(snapshot.text, targetLanguage: targetLanguage) {
             case .skip:
                 // The selection changed to something we deliberately ignore
@@ -373,6 +382,10 @@ public final class SelectionTranslateController {
 
     private func performTranslate() {
         guard enabled, let content = popover.currentContent, !content.original.isEmpty else { return }
+        if content.isCodeSnippet {
+            presentTranslation(snapshot(from: content), force: true)
+            return
+        }
         switch TextFilter.selectionDecision(content.original, targetLanguage: targetLanguage) {
         case .skip:
             return
@@ -400,6 +413,7 @@ public final class SelectionTranslateController {
 
     private func performOptimize() {
         guard enabled, let content = popover.currentContent, !content.original.isEmpty else { return }
+        guard !content.isCodeSnippet else { return }
         guard TextFilter.shouldOfferPromptOptimization(content.original, targetLanguage: targetLanguage) else { return }
         presentOptimize(original: content.original, screenFrame: content.screenFrame)
     }

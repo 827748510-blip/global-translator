@@ -307,23 +307,24 @@ public final class SettingsViewModel: ObservableObject {
         connectionTest = .testing
         do {
             let health = try await actions.testConnection()
+            let supportedModels = health.availableModels.filter(AppConfiguration.isSupportedDeepSeekModel)
             switch health.status {
             case .healthy:
                 connectionTest = .healthy(health.message)
                 healthMessage = health.message
                 backendReady = true
-                availableModels = health.availableModels
-                adoptCloudModelIfNeeded(from: health.availableModels)
+                availableModels = supportedModels
+                adoptCloudModelIfNeeded(from: supportedModels)
             case .modelUnavailable:
                 // Only the fresh `/models` payload may be adopted. An empty
                 // list must not reuse a stale `availableModels` to fake healthy.
-                if selectedBackend == .deepSeekCloud, !health.availableModels.isEmpty {
-                    availableModels = health.availableModels
+                if selectedBackend == .deepSeekCloud, !supportedModels.isEmpty {
+                    availableModels = supportedModels
                     let picked = AppConfiguration.preferredDeepSeekModel(
                         current: deepSeekModel,
-                        available: health.availableModels
+                        available: supportedModels
                     )
-                    if health.availableModels.contains(picked) {
+                    if supportedModels.contains(picked) {
                         if picked != deepSeekModel {
                             deepSeekModel = picked
                             actions.setDeepSeekModel(picked)
@@ -346,8 +347,8 @@ public final class SettingsViewModel: ObservableObject {
                 connectionTest = .failed(message)
                 healthMessage = message
                 backendReady = false
-                if !health.availableModels.isEmpty {
-                    availableModels = health.availableModels
+                if !supportedModels.isEmpty {
+                    availableModels = supportedModels
                 }
             }
         } catch {
@@ -394,14 +395,16 @@ public final class SettingsViewModel: ObservableObject {
     }
 
     public func commitDeepSeekModel() {
-        let trimmed = deepSeekModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = AppConfiguration.resolvedDeepSeekModel(deepSeekModel)
         guard !trimmed.isEmpty else { return }
+        deepSeekModel = trimmed
         actions.setDeepSeekModel(trimmed)
     }
 
     private func adoptCloudModelIfNeeded(from models: [String]) {
         guard selectedBackend == .deepSeekCloud, !models.isEmpty else { return }
-        let picked = AppConfiguration.preferredDeepSeekModel(current: deepSeekModel, available: models)
+        let supported = models.filter(AppConfiguration.isSupportedDeepSeekModel)
+        let picked = AppConfiguration.preferredDeepSeekModel(current: deepSeekModel, available: supported)
         if picked != deepSeekModel {
             deepSeekModel = picked
             actions.setDeepSeekModel(picked)
