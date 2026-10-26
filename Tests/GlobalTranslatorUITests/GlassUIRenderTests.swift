@@ -100,70 +100,121 @@ struct GlassUIRenderTests {
     }
 
     @Test
-    func nativeGlassButtonLayoutUsesFullWidth() {
-        let row = HStack {
-            Button("拷贝") {}
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+    func selectionPopoverActionGlassSurfacesFillTheirCells() {
+        let selection = Self.actionSurfaceFrames(in: SelectionTranslatePopoverView(
+            content: .translated(
+                original: "Hello world",
+                translation: "你好，世界",
+                screenFrame: .zero
+            ),
+            chrome: SelectionPopoverChrome()
+        ))
+        Self.expectActionSurfacesFillRow(
+            selection.frames,
+            names: ["translate", "optimize", "copy"],
+            detail: selection.tree
+        )
+
+        let screenshot = Self.actionSurfaceFrames(in: SelectionTranslatePopoverView(
+            content: .translated(
+                original: "Hello world",
+                translation: "你好，世界",
+                screenFrame: .zero
+            ).asScreenshotResult(),
+            chrome: SelectionPopoverChrome()
+        ))
+        Self.expectActionSurfacesFillRow(
+            screenshot.frames,
+            names: ["copy"],
+            detail: screenshot.tree
+        )
+    }
+
+    private static let actionSurfaceTolerance: CGFloat = 1
+
+    private static func expectActionSurfacesFillRow(
+        _ frames: [String: [CGRect]],
+        names: [String],
+        detail: String
+    ) {
+        let rowWidth = GTSelectionMetrics.width - GTSelectionMetrics.horizontalPadding * 2
+        let spacing = GTSpacing.xSmall
+        let cellWidth = names.count == 1
+            ? rowWidth
+            : GTEqualWidthMetrics.itemWidth(total: rowWidth, count: names.count, spacing: spacing)
+        #expect(frames.count == names.count, "surfaces=\(frames) tree=\(detail)")
+        var ordered: [CGRect] = []
+        for name in names {
+            let matches = frames[name] ?? []
+            #expect(matches.count == 1, "\(name) frames=\(matches) tree=\(detail)")
+            guard let frame = matches.first else { continue }
+            ordered.append(frame)
+            #expect(
+                abs(frame.width - cellWidth) <= actionSurfaceTolerance,
+                "\(name) width \(frame.width) expected \(cellWidth) tree=\(detail)"
+            )
+            #expect(
+                abs(frame.height - GTSelectionMetrics.actionRowHeight) <= actionSurfaceTolerance,
+                "\(name) height \(frame.height) tree=\(detail)"
+            )
         }
-        .frame(width: 284, height: 28)
-        let hosting = NSHostingView(rootView: row)
+        guard ordered.count == names.count else { return }
+        #expect(
+            abs(ordered[0].minX - GTSelectionMetrics.horizontalPadding) <= actionSurfaceTolerance,
+            "leading \(ordered[0].minX) tree=\(detail)"
+        )
+        let trailing = GTSelectionMetrics.horizontalPadding + rowWidth
+        #expect(
+            abs(ordered[ordered.count - 1].maxX - trailing) <= actionSurfaceTolerance,
+            "trailing \(ordered[ordered.count - 1].maxX) expected \(trailing) tree=\(detail)"
+        )
+        #expect(
+            abs((ordered[ordered.count - 1].maxX - ordered[0].minX) - rowWidth) <= actionSurfaceTolerance,
+            "coverage \(ordered) tree=\(detail)"
+        )
+        let midY = ordered.map(\.midY)
+        #expect(
+            (midY.max() ?? 0) - (midY.min() ?? 0) <= actionSurfaceTolerance,
+            "row \(ordered) tree=\(detail)"
+        )
+        if names.count > 1 {
+            for index in 1..<ordered.count {
+                let gap = ordered[index].minX - ordered[index - 1].maxX
+                #expect(
+                    abs(gap - spacing) <= actionSurfaceTolerance,
+                    "gap \(gap) between \(names[index - 1]) and \(names[index]) tree=\(detail)"
+                )
+            }
+        }
+    }
+
+    private static func actionSurfaceFrames<V: View>(in root: V) -> (frames: [String: [CGRect]], tree: String) {
+        let hosting = NSHostingView(rootView: root)
+        let size = hosting.fittingSize
+        hosting.frame = CGRect(origin: .zero, size: size)
         hosting.layoutSubtreeIfNeeded()
-        let widths = Self.subviewWidths(hosting)
-        #expect(widths.max() == 284, "subview widths: \(widths)")
-    }
-
-    private static func subviewWidths(_ view: NSView) -> [CGFloat] {
-        [view.frame.width] + view.subviews.flatMap(subviewWidths)
-    }
-
-    @Test
-    func selectionActionButtonsFillTheirCells() {
-        let allActions = SelectionPopoverContent.translated(
-            original: "Hello world",
-            translation: "你好，世界",
-            screenFrame: .zero
-        )
-        let allButtonsHosting = NSHostingView(
-            rootView: SelectionTranslatePopoverView(
-                content: allActions,
-                chrome: SelectionPopoverChrome()
+        var frames: [String: [CGRect]] = [:]
+        var lines: [String] = []
+        func walk(_ view: NSView, depth: Int) {
+            let rect = hosting.convert(view.bounds, from: view)
+            let identifier = view.identifier?.rawValue ?? ""
+            lines.append(
+                "\(String(repeating: "  ", count: depth))\(type(of: view)) id=\(identifier) host=\(Self.formatRect(rect))"
             )
-        )
-        allButtonsHosting.layoutSubtreeIfNeeded()
-        let allFrames = Set(Self.controlFrames(allButtonsHosting).map(\.frame))
-            .filter { $0.width < 200 && $0.minY > 0 }
-        #expect(allFrames.count == 3, "expected three buttons, got \(allFrames)")
-        #expect(allFrames.allSatisfy { $0.width > 70 }, "button frames: \(allFrames)")
-
-        let copyOnly = SelectionPopoverContent.translated(
-            original: "Hello world",
-            translation: "你好，世界",
-            screenFrame: .zero
-        ).asScreenshotResult()
-        let copyHosting = NSHostingView(
-            rootView: SelectionTranslatePopoverView(
-                content: copyOnly,
-                chrome: SelectionPopoverChrome()
-            )
-        )
-        copyHosting.layoutSubtreeIfNeeded()
-        let copyFrames = Self.controlFrames(copyHosting)
-        #expect(copyFrames.contains { $0.frame.width == 284 }, "button frames: \(copyFrames)")
+            if identifier.hasPrefix(SelectionActionSurface.identifierPrefix) {
+                let name = String(identifier.dropFirst(SelectionActionSurface.identifierPrefix.count))
+                frames[name, default: []].append(rect)
+            }
+            for child in view.subviews where depth < 16 {
+                walk(child, depth: depth + 1)
+            }
+        }
+        walk(hosting, depth: 0)
+        return (frames, lines.joined(separator: "\n"))
     }
 
-    private static func viewDescriptions(_ view: NSView) -> [String] {
-        ["\(type(of: view)) frame=\(view.frame)"] + view.subviews.flatMap(viewDescriptions)
-    }
-
-    private static func controlFrames(_ view: NSView) -> [(title: String, frame: CGRect)] {
-        let own: [(title: String, frame: CGRect)] =
-            String(describing: type(of: view)) == "_NSGraphicsView"
-                && view.frame.height == GTSelectionMetrics.actionRowHeight
-                && view.frame.width > 0
-                ? [("glassButton", view.frame)]
-                : []
-        return own + view.subviews.flatMap(controlFrames)
+    private static func formatRect(_ rect: CGRect) -> String {
+        String(format: "(%.2f,%.2f %.2fx%.2f)", rect.origin.x, rect.origin.y, rect.size.width, rect.size.height)
     }
 
     @Test

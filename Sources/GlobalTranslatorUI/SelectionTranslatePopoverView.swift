@@ -159,7 +159,7 @@ public struct SelectionTranslatePopoverView: View {
                         }
                         .buttonStyle(.plain)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+                        .selectionActionGlassSurface("translate")
                         .disabled(content.status == .loading)
                         .accessibilityHint(
                             content.isCodeSnippet
@@ -180,7 +180,7 @@ public struct SelectionTranslatePopoverView: View {
                         }
                         .buttonStyle(.plain)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+                        .selectionActionGlassSurface("optimize")
                         .disabled(content.status == .optimizing)
                         .accessibilityHint(chrome.optimizeMode.optimizeAccessibilityHint)
                     }
@@ -200,7 +200,7 @@ public struct SelectionTranslatePopoverView: View {
                         }
                         .buttonStyle(.plain)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+                        .selectionActionGlassSurface("copy")
                         .accessibilityLabel(chrome.copyFeedback.title)
                         .accessibilityHint(chrome.copyFeedback == .idle ? "将结果复制到剪贴板" : chrome.copyFeedback.title)
                     }
@@ -244,6 +244,60 @@ public struct SelectionTranslatePopoverView: View {
         }
     }
 
+}
+
+extension View {
+    /// Glass for one action. The marker is part of this surface, after the
+    /// expanding frame and with the glass, so a full-width row ancestor or an
+    /// intrinsic focus ring is not what gets measured.
+    func selectionActionGlassSurface(_ name: String) -> some View {
+        glassEffect(
+            .regular.interactive(),
+            in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous)
+        )
+        .background {
+            SelectionActionSurfaceMarker(name: name)
+                .allowsHitTesting(false)
+        }
+    }
+}
+
+enum SelectionActionSurface {
+    static let identifierPrefix = "selection-action-surface."
+
+    static func identifier(_ name: String) -> String {
+        identifierPrefix + name
+    }
+}
+
+/// Invisible layout probe sized to the glass surface it decorates.
+struct SelectionActionSurfaceMarker: NSViewRepresentable {
+    var name: String
+
+    func makeNSView(context _: Context) -> NSView {
+        let view = SelectionActionSurfaceNSView()
+        configure(view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context _: Context) {
+        configure(nsView)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView _: NSView, context _: Context) -> CGSize? {
+        guard proposal.width != nil, proposal.height != nil else { return nil }
+        return proposal.replacingUnspecifiedDimensions()
+    }
+
+    private func configure(_ view: NSView) {
+        view.identifier = NSUserInterfaceItemIdentifier(SelectionActionSurface.identifier(name))
+        view.setAccessibilityElement(false)
+        view.alphaValue = 0
+    }
+}
+
+final class SelectionActionSurfaceNSView: NSView {
+    override func hitTest(_: NSPoint) -> NSView? { nil }
 }
 
 enum SelectionPopoverLayout {
