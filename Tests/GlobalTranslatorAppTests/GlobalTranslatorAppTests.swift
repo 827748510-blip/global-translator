@@ -32,6 +32,75 @@ struct ConfigurationPersistenceTests {
 @MainActor
 @Suite(.serialized)
 struct ApplicationControllerTests {
+    @Test(arguments: ["", "removed-model"])
+    func localModelCatalogRecoversConfiguration(initialModel: String) async throws {
+        let transport = LocalModelCatalogTransport()
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            backend: .local, localModel: initialModel
+        ))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: store, backendFactory: LiveTranslationBackendFactory(transport: transport)
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        // Startup uses applyHealth without the settings connection-test path.
+        #expect(controller.viewModel.availableModels == ["qwen3:8b", "llama3.2:latest"])
+        #expect(!controller.viewModel.backendReady)
+
+        await controller.viewModel.testConnection()
+        #expect(controller.viewModel.availableModels == ["qwen3:8b", "llama3.2:latest"])
+        #expect(!controller.viewModel.backendReady)
+        #expect(controller.configuration.localModel == initialModel)
+
+        controller.viewModel.localModel = "qwen3:8b"
+        controller.viewModel.commitLocalConfiguration()
+        await waitForStartupHealthCheck(controller)
+        await controller.viewModel.testConnection()
+        #expect(controller.configuration.localModel == "qwen3:8b")
+        #expect(controller.viewModel.backendReady)
+        #expect(controller.viewModel.connectionTest == .healthy("Local backend is ready"))
+        #expect(controller.viewModel.availableModels == ["qwen3:8b", "llama3.2:latest"])
+        await controller.stop()
+        #expect(await store.saved.last?.localModel == "qwen3:8b")
+        #expect(await transport.paths.contains("/v1/chat/completions"))
+    }
+
+    @Test
+    func modelCatalogFollowsBackendSwitches() async throws {
+        let models = ["qwen3:8b", "deepseek-flash", "deepseek-v4-pro", "llama3.2:latest"]
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(
+                store: RecordingConfigurationStore(configuration: AppConfiguration(
+                    backend: .local, localModel: "qwen3:8b"
+                )),
+                backendFactory: StubBackendFactory(health: BackendHealth(
+                    status: .healthy, message: "ok", availableModels: models
+                ))
+            )
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        #expect(controller.viewModel.availableModels == models)
+
+        controller.viewModel.selectBackend(.deepSeekCloud)
+        #expect(controller.viewModel.availableModels.isEmpty)
+        await controller.viewModel.testConnection()
+        #expect(controller.viewModel.availableModels == ["deepseek-flash"])
+        #expect(controller.configuration.localModel == "qwen3:8b")
+
+        controller.viewModel.selectBackend(.local)
+        #expect(controller.viewModel.availableModels.isEmpty)
+        await controller.viewModel.testConnection()
+        #expect(controller.viewModel.availableModels == models)
+        #expect(controller.viewModel.localModel == "qwen3:8b")
+        #expect(controller.viewModel.backendReady)
+        await controller.stop()
+    }
+
     @Test
     func redundantRootNotificationKeepsValidatedOverlayVisible() async throws {
         let monitor = FakeWindowMonitor()
