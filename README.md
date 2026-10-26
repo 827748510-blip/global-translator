@@ -54,9 +54,9 @@ global-translator run --foreground
 - 固定官方基址：`https://api.deepseek.com`；使用官方 OpenAI 兼容 Responses API（`/responses`、`/models`）
 - 本应用只适配官方 `deepseek-flash`（V4.1 Flash，支持视觉）；官网即使还列出 `deepseek-v4-pro` 也不在设置页展示、不会发送。模型列表从 `/models` 过滤后写入
 - 所有旧模型/未知模型统一归一为 `deepseek-flash`：`deepseek-chat`、`deepseek-reasoner`、`deepseek-v4-flash`、`deepseek-v4-flash-vision-exp`、`deepseek-v4-pro`
-- 视觉兜底与文本翻译都使用 `deepseek-flash`
+- 文本翻译统一使用 `deepseek-flash`
 - Key 只保存到 macOS 系统 Keychain：有 data-protection entitlement 时优先使用数据保护钥匙串；当前自签名 App 无该 entitlement 时，安全回退到本机登录钥匙串（不写配置文件、不启用 iCloud 同步）。已配置时设置显示「已保存在钥匙串」
-- 默认只发送待翻译文字；局部截图视觉兜底必须在弹窗中明确授权
+- 只发送待翻译文字，不上传局部截图
 - 不自动切换到本地后端，不自动重放状态不确定的请求
 
 官方配置来源：[API 首页](https://api-docs.deepseek.com/)、[模型与价格](https://api-docs.deepseek.com/quick_start/pricing/)、[Responses API](https://api-docs.deepseek.com/api/create-response/)。本轮适配与密钥审计见 [DeepSeek V4.1 适配](docs/deepseek-v4-2026-10.md)。历史真实接口验收记录见 [真实云端验收记录](docs/real-acceptance-2026-09-05.md)。

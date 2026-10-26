@@ -26,7 +26,6 @@ public final class SettingsViewModel: ObservableObject {
     @Published public var isRecordingScreenshotHotkey = false
     @Published public var screenshotHotkeyConflictMessage: String?
     @Published public var selectedBackend: BackendKind = .deepSeekCloud
-    @Published public var visionFallbackEnabled = false
     @Published public var keyConfigured = false
     @Published public var localBaseURL = ""
     @Published public var localModel = ""
@@ -60,16 +59,10 @@ public final class SettingsViewModel: ObservableObject {
     // MARK: - Confirmation state
 
     @Published public var isDeleteKeyConfirmationPresented = false
-    @Published public var isVisionConsentPresented = false
     @Published public var isClearCacheConfirmationPresented = false
 
     /// 窗口覆盖层与扩展桥的目标语言固定为简体中文；划词/截图方向按内容判定。
     public let targetLanguageDisplayName = "简体中文"
-
-    /// Consent copy shown before the vision fallback can be enabled.
-    public var visionConsentText: String {
-        "开启视觉兜底后，当辅助功能无法读取文本时，Global Translator 会将当前窗口的局部截图上传到 DeepSeek 进行识别翻译。截图仅用于本次翻译，不会在本地保存。仅在信任该后端时开启。"
-    }
 
     private let actions: SettingsActions
 
@@ -333,8 +326,8 @@ public final class SettingsViewModel: ObservableObject {
                             deepSeekModel = picked
                             actions.setDeepSeekModel(picked)
                         }
-                        connectionTest = .healthy("DeepSeek backend is ready")
-                        healthMessage = "DeepSeek backend is ready"
+                        connectionTest = .healthy("DeepSeek 后端已就绪")
+                        healthMessage = "DeepSeek 后端已就绪"
                         backendReady = true
                         break
                     }
@@ -361,31 +354,6 @@ public final class SettingsViewModel: ObservableObject {
             healthMessage = message
             backendReady = false
         }
-    }
-
-    // MARK: - Vision fallback
-
-    /// Enabling requires explicit consent about the screenshot upload;
-    /// disabling applies immediately.
-    public func setVisionFallbackEnabled(_ enabled: Bool) {
-        if enabled {
-            guard !visionFallbackEnabled else { return }
-            isVisionConsentPresented = true
-        } else {
-            visionFallbackEnabled = false
-            isVisionConsentPresented = false
-            actions.setVisionFallback(false)
-        }
-    }
-
-    public func confirmVisionConsent() {
-        isVisionConsentPresented = false
-        visionFallbackEnabled = true
-        actions.setVisionFallback(true)
-    }
-
-    public func cancelVisionConsent() {
-        isVisionConsentPresented = false
     }
 
     // MARK: - Local backend
@@ -465,10 +433,6 @@ public final class SettingsViewModel: ObservableObject {
 
     public func openLogs() {
         actions.openLogs()
-    }
-
-    public func openDeepSeekStats() {
-        actions.openDeepSeekStats()
     }
 
     public func quit() {

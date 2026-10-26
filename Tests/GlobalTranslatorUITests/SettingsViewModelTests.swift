@@ -26,7 +26,6 @@ private final class SpyActions: SettingsActions {
     var selectedBackends: [BackendKind] = []
     var savedKeyDrafts: [String] = []
     var deleteKeyCallCount = 0
-    var visionValues: [Bool] = []
     var localConfigurations: [(baseURL: String, model: String)] = []
     var deepSeekModels: [String] = []
     var testConnectionCallCount = 0
@@ -36,7 +35,6 @@ private final class SpyActions: SettingsActions {
     var removedExclusions: [String] = []
     var clearCacheCallCount = 0
     var openLogsCallCount = 0
-    var openDeepSeekStatsCallCount = 0
     var quitCallCount = 0
 
     var saveKeyError: Error?
@@ -109,10 +107,6 @@ private final class SpyActions: SettingsActions {
         return health
     }
 
-    func setVisionFallback(_ enabled: Bool) {
-        visionValues.append(enabled)
-    }
-
     func setLocalConfiguration(baseURL: String, model: String) {
         localConfigurations.append((baseURL, model))
     }
@@ -149,10 +143,6 @@ private final class SpyActions: SettingsActions {
 
     func openLogs() {
         openLogsCallCount += 1
-    }
-
-    func openDeepSeekStats() {
-        openDeepSeekStatsCallCount += 1
     }
 
     func quit() {
@@ -240,47 +230,6 @@ struct SettingsViewModelTests {
         #expect(!viewModel.isDeleteKeyConfirmationPresented)
         #expect(actions.deleteKeyCallCount == 0)
         #expect(viewModel.keyConfigured)
-    }
-
-    @Test
-    func enablingVisionFallbackRequiresConsentDescribingUpload() async {
-        let (viewModel, actions) = makeViewModel()
-        viewModel.setVisionFallbackEnabled(true)
-        #expect(viewModel.isVisionConsentPresented)
-        #expect(!viewModel.visionFallbackEnabled)
-        #expect(actions.visionValues.isEmpty)
-        viewModel.confirmVisionConsent()
-        #expect(viewModel.visionFallbackEnabled)
-        #expect(!viewModel.isVisionConsentPresented)
-        #expect(actions.visionValues == [true])
-    }
-
-    @Test
-    func decliningVisionConsentLeavesFallbackDisabled() {
-        let (viewModel, actions) = makeViewModel()
-        viewModel.setVisionFallbackEnabled(true)
-        viewModel.cancelVisionConsent()
-        #expect(!viewModel.visionFallbackEnabled)
-        #expect(!viewModel.isVisionConsentPresented)
-        #expect(actions.visionValues.isEmpty)
-    }
-
-    @Test
-    func disablingVisionFallbackAppliesImmediatelyWithoutConsent() {
-        let (viewModel, actions) = makeViewModel()
-        viewModel.visionFallbackEnabled = true
-        viewModel.setVisionFallbackEnabled(false)
-        #expect(!viewModel.visionFallbackEnabled)
-        #expect(!viewModel.isVisionConsentPresented)
-        #expect(actions.visionValues == [false])
-    }
-
-    @Test
-    func visionConsentTextMentionsLocalCroppedScreenshotUploadToDeepSeek() {
-        let viewModel = SettingsViewModel(actions: SpyActions())
-        let text = viewModel.visionConsentText
-        #expect(text.contains("截图"))
-        #expect(text.contains("DeepSeek"))
     }
 
     @Test
@@ -671,7 +620,7 @@ struct SettingsViewModelTests {
             availableModels: ["deepseek-flash", "deepseek-v4-pro"]
         )
         await viewModel.testConnection()
-        #expect(viewModel.connectionTest == .healthy("DeepSeek backend is ready"))
+        #expect(viewModel.connectionTest == .healthy("DeepSeek 后端已就绪"))
         #expect(viewModel.backendReady)
         #expect(viewModel.deepSeekModel == "deepseek-flash")
         #expect(actions.deepSeekModels == ["deepseek-flash"])
@@ -814,13 +763,11 @@ struct SettingsViewModelTests {
     }
 
     @Test
-    func openLogsStatsAndQuitForward() {
+    func openLogsAndQuitForward() {
         let (viewModel, actions) = makeViewModel()
         viewModel.openLogs()
-        viewModel.openDeepSeekStats()
         viewModel.quit()
         #expect(actions.openLogsCallCount == 1)
-        #expect(actions.openDeepSeekStatsCallCount == 1)
         #expect(actions.quitCallCount == 1)
     }
 

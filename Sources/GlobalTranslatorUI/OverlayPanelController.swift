@@ -82,35 +82,25 @@ public enum OverlayLayout {
         )
     }
 
-    /// Places the panel adjacent to the original region: above when there is
-    /// room, below as a fallback, clamped inside the owning screen's visible
-    /// frame either way. Works with negative-coordinate secondary displays.
+    /// Places the patch over the original region so the source text is hidden
+    /// behind the translation. The frame grows just enough for longer
+    /// translations, then clamps inside the owning screen's visible frame.
+    /// Works with negative-coordinate secondary displays.
     public static func placementFrame(
         originalFrame: CGRect,
         contentSize: CGSize,
-        screenVisibleFrame: CGRect,
-        gap: CGFloat = GTOverlayMetrics.gap
+        screenVisibleFrame: CGRect
     ) -> CGRect {
-        let width = min(contentSize.width, screenVisibleFrame.width)
-        let height = min(contentSize.height, screenVisibleFrame.height)
+        let padding = GTOverlayMetrics.coverPadding
+        let desiredWidth = max(originalFrame.width + padding * 2, contentSize.width)
+        let desiredHeight = max(originalFrame.height + padding * 2, contentSize.height)
+        let width = min(desiredWidth, screenVisibleFrame.width)
+        let height = min(desiredHeight, screenVisibleFrame.height)
 
-        var x = originalFrame.minX
+        var x = originalFrame.minX - padding
+        var y = originalFrame.minY - padding
         x = min(max(x, screenVisibleFrame.minX), screenVisibleFrame.maxX - width)
-
-        var y: CGFloat
-        let aboveY = originalFrame.maxY + gap
-        if aboveY + height <= screenVisibleFrame.maxY {
-            y = aboveY
-        } else {
-            let belowY = originalFrame.minY - gap - height
-            if belowY >= screenVisibleFrame.minY {
-                y = belowY
-            } else {
-                // Neither side fits; clamp inside the visible frame.
-                y = min(max(aboveY, screenVisibleFrame.minY), screenVisibleFrame.maxY - height)
-            }
-        }
-
+        y = min(max(y, screenVisibleFrame.minY), screenVisibleFrame.maxY - height)
         return CGRect(x: x, y: y, width: width, height: height)
     }
 

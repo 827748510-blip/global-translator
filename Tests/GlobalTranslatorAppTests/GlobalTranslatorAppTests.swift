@@ -61,7 +61,7 @@ struct ApplicationControllerTests {
         await controller.viewModel.testConnection()
         #expect(controller.configuration.localModel == "qwen3:8b")
         #expect(controller.viewModel.backendReady)
-        #expect(controller.viewModel.connectionTest == .healthy("Local backend is ready"))
+        #expect(controller.viewModel.connectionTest == .healthy("本地后端已就绪"))
         #expect(controller.viewModel.availableModels == ["qwen3:8b", "llama3.2:latest"])
         await controller.stop()
         #expect(await store.saved.last?.localModel == "qwen3:8b")

@@ -2,12 +2,10 @@ import SwiftUI
 import GlobalTranslatorCore
 import GlobalTranslatorEngine
 
-/// Click-through translation bubble. Plain `Text` only — no HTML/Markdown.
-/// Uses a system material with a solid fallback when Reduce Transparency is on.
+/// Click-through translation patch. Plain `Text` only — no HTML/Markdown.
+/// Draws a solid system background so the source text underneath is covered.
 public struct OverlayView: View {
     private let text: String
-
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     public init(text: String) {
         self.text = text
@@ -31,18 +29,14 @@ public struct OverlayView: View {
             )
             .padding(.horizontal, GTOverlayMetrics.horizontalPadding)
             .padding(.vertical, GTOverlayMetrics.verticalPadding)
-            .background(background)
-            .clipShape(RoundedRectangle(cornerRadius: GTRadius.overlay, style: .continuous))
+            // Fill the whole panel, not just the text's intrinsic width, so the
+            // patch also covers the original text underneath.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            // Solid fill, not a translucent material: a material still lets the
+            // English source show through, which defeats the in-place patch.
+            .background(GTColor.overlaySolidFallback)
+            .clipShape(RoundedRectangle(cornerRadius: GTOverlayMetrics.patchCornerRadius, style: .continuous))
             .accessibilityLabel("翻译结果")
             .accessibilityValue(text)
-    }
-
-    @ViewBuilder
-    private var background: some View {
-        if reduceTransparency {
-            GTColor.overlaySolidFallback
-        } else {
-            Rectangle().fill(.regularMaterial)
-        }
     }
 }

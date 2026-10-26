@@ -24,7 +24,7 @@ struct OverlayLayoutTests {
     private let primaryVisible = CGRect(x: 0, y: 0, width: 1440, height: 875)
 
     @Test
-    func placesTranslationAboveOriginalWhenRoomExists() {
+    func coverPatchContainsOriginalRegion() {
         let original = CGRect(x: 100, y: 300, width: 200, height: 20)
         let content = CGSize(width: 260, height: 40)
         let frame = OverlayLayout.placementFrame(
@@ -32,13 +32,28 @@ struct OverlayLayoutTests {
             contentSize: content,
             screenVisibleFrame: primaryVisible
         )
-        #expect(frame.minY > original.maxY)
-        #expect(frame.minX == 100)
+        #expect(frame.contains(original))
+        #expect(frame.minX == original.minX - GTOverlayMetrics.coverPadding)
+        #expect(frame.minY == original.minY - GTOverlayMetrics.coverPadding)
         #expect(frame.size == content)
     }
 
     @Test
-    func fallsBackBelowOriginalWhenTopIsOutOfRoom() {
+    func coverPatchUsesOriginalSizeWhenTranslationIsNarrower() {
+        let original = CGRect(x: 100, y: 300, width: 200, height: 20)
+        let content = CGSize(width: 120, height: 16)
+        let frame = OverlayLayout.placementFrame(
+            originalFrame: original,
+            contentSize: content,
+            screenVisibleFrame: primaryVisible
+        )
+        #expect(frame.contains(original))
+        #expect(frame.width == original.width + GTOverlayMetrics.coverPadding * 2)
+        #expect(frame.height == original.height + GTOverlayMetrics.coverPadding * 2)
+    }
+
+    @Test
+    func coverPatchStaysInsideTopEdge() {
         let original = CGRect(x: 100, y: 840, width: 200, height: 20)
         let content = CGSize(width: 260, height: 40)
         let frame = OverlayLayout.placementFrame(
@@ -46,8 +61,8 @@ struct OverlayLayoutTests {
             contentSize: content,
             screenVisibleFrame: primaryVisible
         )
-        #expect(frame.maxY <= original.minY)
-        #expect(frame.minY >= primaryVisible.minY)
+        #expect(frame.maxY <= primaryVisible.maxY)
+        #expect(frame.contains(original))
     }
 
     @Test
@@ -76,12 +91,11 @@ struct OverlayLayoutTests {
         #expect(frame.minX >= secondaryVisible.minX)
         #expect(frame.minX == secondaryVisible.minX)
         #expect(frame.maxX <= secondaryVisible.maxX)
-        #expect(frame.minY > original.maxY)
         #expect(frame.maxY <= secondaryVisible.maxY)
     }
 
     @Test
-    func clampsVerticallyWhenNeitherAboveNorBelowFits() {
+    func clampsCoverPatchVerticallyInsideVisibleFrame() {
         let visible = CGRect(x: 0, y: 0, width: 800, height: 100)
         let original = CGRect(x: 10, y: 40, width: 200, height: 20)
         let content = CGSize(width: 260, height: 90)
@@ -92,6 +106,7 @@ struct OverlayLayoutTests {
         )
         #expect(frame.minY >= visible.minY)
         #expect(frame.maxY <= visible.maxY)
+        #expect(frame.contains(original))
     }
 
     @Test
@@ -153,6 +168,8 @@ struct OverlayPanelControllerTests {
         #expect(controller.panelLevel(for: first.id) == .screenSaver)
         #expect(controller.panelLevel(for: second.id) == .floating)
         controller.updateHover(at: CGPoint(x: 150, y: 335))
+        #expect(controller.panelLevel(for: first.id) == .floating)
+        controller.updateHover(at: CGPoint(x: 150, y: 305))
         #expect(controller.panelLevel(for: first.id) == .screenSaver)
         controller.updateHover(at: CGPoint(x: 1200, y: 700))
         #expect(controller.panelLevel(for: first.id) == .floating)

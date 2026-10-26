@@ -82,10 +82,12 @@ public enum GTOverlayMetrics {
     public static let maxTextWidth: CGFloat = 320
     /// Maximum visible text lines before truncation.
     public static let maxLines = 3
-    public static let horizontalPadding: CGFloat = 10
-    public static let verticalPadding: CGFloat = 6
-    /// Vertical gap between the original text region and the overlay panel.
-    public static let gap: CGFloat = 6
+    /// Tight padding so the translation reads as a patch over the source text.
+    public static let horizontalPadding: CGFloat = 6
+    public static let verticalPadding: CGFloat = 3
+    /// The patch extends slightly beyond the source region so its edges are covered.
+    public static let coverPadding: CGFloat = 2
+    public static let patchCornerRadius: CGFloat = 4
 }
 
 /// Popover chrome metrics (see DESIGN.md §0/§5).

@@ -69,18 +69,6 @@ public struct SettingsPopoverView: View {
         } message: {
             Text("删除后需要重新输入密钥才能使用云端翻译。此操作不会影响其他设置。")
         }
-        .alert(
-            "开启视觉兜底？",
-            isPresented: Binding(
-                get: { viewModel.isVisionConsentPresented },
-                set: { if !$0 { viewModel.cancelVisionConsent() } }
-            )
-        ) {
-            Button("开启", action: viewModel.confirmVisionConsent)
-            Button("取消", role: .cancel, action: viewModel.cancelVisionConsent)
-        } message: {
-            Text(viewModel.visionConsentText)
-        }
         .confirmationDialog(
             "清除本地翻译缓存？",
             isPresented: Binding(

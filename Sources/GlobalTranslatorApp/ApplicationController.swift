@@ -22,7 +22,6 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
     let persistence: ConfigurationPersistence
     let onQuit: @MainActor @Sendable () -> Void
     var statusItem: (any StatusItemControlling)?
-    var deepSeekStatsWindow: DeepSeekStatsWindowController?
     var overlay: (any OverlayControlling)?
     var session: TranslationSession?
     var selectionTranslate: SelectionTranslateController?
@@ -82,6 +81,12 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             configuration.translatedBundleIDs = loaded.translatedBundleIDs.filter {
                 Self.isSafeBundleIdentifier($0) && $0 != Bundle.main.bundleIdentifier
                     && $0 != "com.maodashu.global-translator" && seen.insert($0).inserted
+            }
+            // 视觉兜底已从设置移除；旧配置里的 true 必须强制关闭，
+            // 避免升级后仍静默上传局部截图。
+            if configuration.visionFallbackEnabled {
+                configuration.visionFallbackEnabled = false
+                queueSave()
             }
         } catch {
             configurationLoadFailed = true
@@ -151,8 +156,6 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         bridgeServer = nil
         statusItem?.stop()
         statusItem = nil
-        deepSeekStatsWindow?.close()
-        deepSeekStatsWindow = nil
         overlay?.hideAll()
         overlay = nil
         do {
@@ -164,7 +167,6 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
 
     func pushConfigurationState() {
         viewModel.selectedBackend = configuration.backend
-        viewModel.visionFallbackEnabled = configuration.visionFallbackEnabled
         viewModel.localBaseURL = configuration.localBaseURL.absoluteString
         viewModel.localModel = configuration.localModel
         viewModel.translatedApplications = configuration.translatedBundleIDs.map { id in
@@ -450,7 +452,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             backends: [overlay],
             backend: expected.backend,
             model: modelIdentifier,
-            visionFallbackEnabled: expected.visionFallbackEnabled,
+            visionFallbackEnabled: false,
             bridgeBackends: [bridge],
             selectionBackends: [selection]
         )
@@ -569,7 +571,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             viewModel.healthMessage = health.message
         case .modelUnavailable where cloudModelReady:
             viewModel.backendReady = true
-            viewModel.healthMessage = "DeepSeek backend is ready"
+            viewModel.healthMessage = "DeepSeek 后端已就绪"
         case .unavailable, .invalidCredentials, .modelUnavailable, .invalidConfiguration:
             viewModel.backendReady = false
             viewModel.healthMessage = health.status.uiSafeFailureMessage

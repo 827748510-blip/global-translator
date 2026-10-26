@@ -155,7 +155,11 @@ extension ApplicationController {
     }
 
     public func chooseScreenshotSaveDirectory() {
-        guard started, screenshotDirectoryPicker == nil else { return }
+        guard started else { return }
+        if let existing = screenshotDirectoryPicker, existing.isVisible { return }
+        // A previous picker may have been dismissed without its completion
+        // running (for example when the dropdown panel lost key status).
+        screenshotDirectoryPicker = nil
         let panel = NSOpenPanel()
         panel.title = "选择截图保存位置"
         panel.message = "截图翻译保存的图片会放到这个文件夹；不存在时会自动创建。"
@@ -169,15 +173,17 @@ extension ApplicationController {
         screenshotDirectoryPicker = panel
         let completion: (NSApplication.ModalResponse) -> Void = { [weak self, panel] response in
             guard let self else { return }
-            self.screenshotDirectoryPicker = nil
+            if self.screenshotDirectoryPicker === panel {
+                self.screenshotDirectoryPicker = nil
+            }
             guard self.started, response == .OK, let url = panel.urls.first else { return }
             self.setScreenshotSaveDirectory(url.path)
         }
-        if let window = NSApplication.shared.keyWindow {
-            panel.beginSheetModal(for: window, completionHandler: completion)
-        } else {
-            panel.begin(completionHandler: completion)
-        }
+        // The settings surface is a nonactivating panel. Attaching a sheet to
+        // it can fail and leave the picker state stuck; present a standalone
+        // open panel instead.
+        NSApplication.shared.activate()
+        panel.begin(completionHandler: completion)
     }
 
     public func setScreenshotSaveDirectory(_ path: String) {
@@ -310,7 +316,7 @@ extension ApplicationController {
         if health.status == .healthy {
             viewModel.healthMessage = health.message
         } else if viewModel.backendReady {
-            viewModel.healthMessage = "DeepSeek backend is ready"
+            viewModel.healthMessage = "DeepSeek 后端已就绪"
         } else {
             viewModel.healthMessage = health.status.uiSafeFailureMessage
         }
@@ -361,21 +367,6 @@ extension ApplicationController {
         let adopted = AppConfiguration.resolvedDeepSeekModel(configuration.deepSeekModel)
         guard session?.configuredModel != adopted else { return }
         rewireDeepSeekBackendsPreservingCapture()
-    }
-
-    public func setVisionFallback(_ enabled: Bool) {
-        configuration.visionFallbackEnabled = enabled
-        viewModel.visionFallbackEnabled = enabled
-        let previousSession = session
-        disableAutomaticTranslation()
-        Task { await previousSession?.clearCache() }
-        rebuildSession()
-        queueSave()
-        if configuration.backend == .deepSeekCloud {
-            applyDeepSeekSessionBackendsWithoutHealthCheck()
-        } else {
-            scheduleBackendRefresh()
-        }
     }
 
     public func setLocalConfiguration(baseURL: String, model: String) {
@@ -528,7 +519,11 @@ extension ApplicationController {
     }
 
     public func chooseTranslatedApplications() {
-        guard started, applicationPicker == nil else { return }
+        guard started else { return }
+        if let existing = applicationPicker, existing.isVisible { return }
+        // Recover from a picker whose completion never ran after the settings
+        // dropdown resigned key.
+        applicationPicker = nil
         let panel = NSOpenPanel()
         panel.title = "选择要翻译的应用"
         panel.message = "只有所选应用会被采集并翻译；未选择时不翻译任何应用。可按住 Command 多选。"
@@ -542,7 +537,9 @@ extension ApplicationController {
         applicationPicker = panel
         let completion: (NSApplication.ModalResponse) -> Void = { [weak self, panel] response in
             guard let self else { return }
-            self.applicationPicker = nil
+            if self.applicationPicker === panel {
+                self.applicationPicker = nil
+            }
             guard self.started, response == .OK else { return }
             let applications = panel.urls.compactMap { url -> TranslatedApplication? in
                 guard url.pathExtension.lowercased() == "app", let bundle = Bundle(url: url),
@@ -552,11 +549,11 @@ extension ApplicationController {
             }
             self.addApplications(applications)
         }
-        if let window = NSApplication.shared.keyWindow {
-            panel.beginSheetModal(for: window, completionHandler: completion)
-        } else {
-            panel.begin(completionHandler: completion)
-        }
+        // See chooseScreenshotSaveDirectory: a standalone panel works with the
+        // nonactivating settings surface, and a sheet attachment can silently
+        // leave the button unresponsive on later clicks.
+        NSApplication.shared.activate()
+        panel.begin(completionHandler: completion)
     }
 
     func addApplications(_ applications: [TranslatedApplication]) {
@@ -610,14 +607,6 @@ extension ApplicationController {
 
     public func openLogs() {
         NSWorkspace.shared.activateFileViewerSelecting([paths.logURL])
-    }
-
-    public func openDeepSeekStats() {
-        guard started else { return }
-        if deepSeekStatsWindow == nil {
-            deepSeekStatsWindow = DeepSeekStatsWindowController()
-        }
-        deepSeekStatsWindow?.present()
     }
 
     public func quit() {

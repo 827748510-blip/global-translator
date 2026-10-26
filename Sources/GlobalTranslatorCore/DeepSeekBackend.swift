@@ -57,7 +57,7 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
             guard models.contains(resolved) else {
                 return BackendHealth(status: .modelUnavailable, message: "Selected DeepSeek model is unavailable", availableModels: models)
             }
-            return BackendHealth(status: .healthy, message: "DeepSeek backend is ready", availableModels: models)
+            return BackendHealth(status: .healthy, message: "DeepSeek 后端已就绪", availableModels: models)
         } catch let error as TranslationError {
             return health(for: error)
         } catch {

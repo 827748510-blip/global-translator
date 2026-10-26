@@ -189,7 +189,6 @@ public protocol SettingsActions: AnyObject {
     func saveAPIKey(_ draft: String) async throws
     func deleteAPIKey() async throws
     func testConnection() async throws -> BackendHealth
-    func setVisionFallback(_ enabled: Bool)
     func setLocalConfiguration(baseURL: String, model: String)
     func setDeepSeekModel(_ model: String)
     func requestPermission(_ kind: PermissionKind)
@@ -203,7 +202,5 @@ public protocol SettingsActions: AnyObject {
     func removeTranslationApplication(bundleIdentifier: String)
     func clearCache() async throws
     func openLogs()
-    /// Opens the DeepSeek cost and token statistics window.
-    func openDeepSeekStats()
     func quit()
 }
