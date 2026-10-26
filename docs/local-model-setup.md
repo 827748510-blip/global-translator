@@ -50,7 +50,17 @@ brew services run ollama
 brew services stop ollama
 ```
 
-本次 `brew services info ollama --json` 实测 `running=true`、`registered=false`。不要用 `brew services start/restart` 代替上面的 `run`，前者会注册登录自启。
+本次 `brew services info ollama --json` 实测 `running=true`、`registered=true`。手工启动仍建议用 `brew services run`，避免新增登录自启；应用恢复服务时只在暂停前本来已注册的情况下用 `start` 还原原状态。
+
+### 切换后端时的自动启停
+
+设置页把翻译后端从 **本地模型** 切到 **DeepSeek 云端** 时，应用会执行 `brew services stop --keep ollama`；`--keep` 保留 `~/Library/LaunchAgents/homebrew.mxcl.ollama.plist`，因此无论应用是否在云端状态退出、重启，原登录注册状态都不会丢。切回本地模型前再启动服务并等待健康检查：
+
+- 暂停前/当前已注册（`registered=true`）：恢复用 `brew services start`。
+- 未注册：恢复用 `brew services run`，不新增登录项。
+- 切到云端时即使 DeepSeek Key 尚未配置也会停止 Ollama；这是“切云端即暂停本地模型”的明确语义。
+- 只处理默认回环地址 `:11434`、HTTP、且由 Homebrew 管理的服务。改用 LM Studio、HTTPS、非默认端口或手工 `ollama serve` 时，应用不会杀进程。
+- 详细边界与验证见 [Ollama 生命周期](ollama-lifecycle.md)。
 
 ## 接口与实测边界
 

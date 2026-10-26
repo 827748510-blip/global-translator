@@ -5,6 +5,7 @@ import Testing
 import GlobalTranslatorCore
 
 @MainActor
+@Suite(.serialized)
 struct SelectionTranslatePopoverTests {
     @Test
     func panelAcceptsClicksAndIsNonactivating() {
@@ -161,6 +162,65 @@ struct SelectionTranslatePopoverTests {
     }
 
     @Test
+    func longTranslationGrowsPanelThenScrollsInsideTheScreen() {
+        let shortContent = SelectionPopoverContent.translated(
+            original: "const answer = 42;",
+            translation: "把整数 42 保存到常量 answer。",
+            screenFrame: CGRect(x: 100, y: 300, width: 120, height: 18)
+        )
+        let longTranslation = (1...120)
+            .map { "第\($0)步：读取输入、计算中间结果并把结果写回调用方。" }
+            .joined(separator: "\n")
+        let longContent = SelectionPopoverContent.translated(
+            original: "const answer = compute(input);",
+            translation: longTranslation,
+            screenFrame: CGRect(x: 100, y: 300, width: 120, height: 18)
+        )
+        let maxPanelHeight = CGFloat(800 - 8 * 2)
+        let shortSizing = SelectionTranslatePanelController.sizing(
+            for: shortContent,
+            maxHeight: maxPanelHeight
+        )
+        let longSizing = SelectionTranslatePanelController.sizing(
+            for: longContent,
+            maxHeight: maxPanelHeight
+        )
+        let unboundedLongSize = SelectionTranslatePanelController.contentSize(for: longContent)
+        let tinySizing = SelectionTranslatePanelController.sizing(for: longContent, maxHeight: 100)
+        #expect(!shortSizing.isResultScrollable)
+        #expect(longSizing.isResultScrollable)
+        #expect(longSizing.contentSize.height <= maxPanelHeight + 0.5)
+        #expect(longSizing.contentSize.height > shortSizing.contentSize.height)
+        #expect(unboundedLongSize.height > longSizing.contentSize.height)
+        #expect(longSizing.resultHeight < unboundedLongSize.height)
+        #expect(longSizing.resultHeight > 0)
+        #expect(tinySizing.isResultScrollable)
+        #expect(tinySizing.contentSize.height <= 100.5)
+    }
+
+    @Test
+    func codeContentShowsTranslateAndCopyWithoutOptimizePicker() {
+        let content = SelectionPopoverContent.translated(
+            original: "func greet(name: String) -> String {\n    return \"Hello, \\(name)\"\n}",
+            translation: "定义 greet，接收 name 并返回问候语。",
+            screenFrame: .zero
+        )
+        #expect(content.isCodeSnippet)
+        #expect(!content.showsOptimizeAction)
+        #expect(content.showsTranslateAction)
+        #expect(content.allowsCopy)
+        let size = SelectionTranslatePanelController.contentSize(for: content)
+        let prose = SelectionPopoverContent.translated(
+            original: "Please review this pull request.",
+            translation: "请审阅这个拉取请求。",
+            screenFrame: .zero
+        )
+        let proseSize = SelectionTranslatePanelController.contentSize(for: prose)
+        #expect(size.width == GTSelectionMetrics.width)
+        #expect(size.height < proseSize.height)
+    }
+
+    @Test
     func selectionMetricsUseDedicatedPaddingAndWidth() {
         #expect(GTSelectionMetrics.width >= 300)
         #expect(GTSelectionMetrics.width <= 320)
@@ -213,13 +273,13 @@ struct SelectionTranslatePopoverTests {
         let status = OverlayLayout.estimatedTextSize(
             for: content.displayTranslation,
             maxWidth: textWidth,
-            maxLines: GTSelectionMetrics.maxTranslationLines,
+            maxLines: Int.max,
             font: SelectionPopoverLayout.resultMeasuringFont(for: .alreadyChinese)
         )
         let body = OverlayLayout.estimatedTextSize(
             for: content.displayTranslation,
             maxWidth: textWidth,
-            maxLines: GTSelectionMetrics.maxTranslationLines,
+            maxLines: Int.max,
             font: NSFont.preferredFont(forTextStyle: .body)
         )
         #expect(status.height > body.height)
@@ -265,18 +325,17 @@ struct SelectionTranslatePopoverTests {
     func contentSizeUsesBodyFontSoTranslationDoesNotClipCopy() {
         let text = String(repeating: "这是一段需要换行的译文内容，", count: 8)
         let textWidth = GTSelectionMetrics.width - GTSelectionMetrics.horizontalPadding * 2
-        let callout = OverlayLayout.estimatedTextSize(
+        let body = SelectionPopoverLayout.measuredWrappedHeight(
             for: text,
-            maxWidth: textWidth,
-            maxLines: GTSelectionMetrics.maxTranslationLines
-        )
-        let body = OverlayLayout.estimatedTextSize(
-            for: text,
-            maxWidth: textWidth,
-            maxLines: GTSelectionMetrics.maxTranslationLines,
+            width: textWidth,
             font: NSFont.preferredFont(forTextStyle: .body)
         )
-        #expect(body.height > callout.height)
+        let callout = SelectionPopoverLayout.measuredWrappedHeight(
+            for: text,
+            width: textWidth,
+            font: NSFont.preferredFont(forTextStyle: .callout)
+        )
+        #expect(body > callout)
         let content = SelectionPopoverContent.translated(
             original: "Hello",
             translation: text,
@@ -292,7 +351,7 @@ struct SelectionTranslatePopoverTests {
         let expectedMin = GTSelectionMetrics.verticalPadding * 2
             + originalHeight
             + GTSelectionMetrics.textBlockSpacing
-            + body.height
+            + body
             + GTSelectionMetrics.sectionSpacing
             + GTSelectionMetrics.modePickerHeight
             + GTSelectionMetrics.actionsSpacing

@@ -38,6 +38,10 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
     var permissionRefreshTask: Task<Void, Never>?
     var backendRetryTask: Task<Void, Never>?
     var backendRetryAttempt = 0
+    /// Serial reconciler for the Homebrew Ollama service. The latest backend
+    /// selection wins, so a fast cloud→local toggle cannot leave it stopped.
+    var ollamaLifecycleTask: Task<Void, Never>?
+    var pendingOllamaBackend: BackendKind?
     /// Interval between startup health-check retries; tests shrink it.
     var backendRetryInterval: TimeInterval = 10
     /// Cold local backends (model unloaded after sleep) can flunk the startup
@@ -123,6 +127,9 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         backendRetryTask?.cancel()
         backendRetryTask = nil
         backendRetryAttempt = 0
+        ollamaLifecycleTask?.cancel()
+        ollamaLifecycleTask = nil
+        pendingOllamaBackend = nil
         automaticEnableTask?.cancel()
         automaticEnableTask = nil
         permissionRefreshTask?.cancel()
@@ -446,6 +453,75 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         )
     }
 
+    /// Stops the Homebrew Ollama service when the active backend is cloud and
+    /// starts it when local is selected. A single serial loop means the latest
+    /// selection always wins even if the user toggles quickly.
+    func scheduleOllamaLifecycleSync() {
+        pendingOllamaBackend = configuration.backend
+        guard ollamaLifecycleTask == nil else { return }
+        ollamaLifecycleTask = Task { @MainActor [weak self] in
+            await self?.reconcileOllamaLifecycle()
+        }
+    }
+
+    private func reconcileOllamaLifecycle() async {
+        while let desired = pendingOllamaBackend {
+            pendingOllamaBackend = nil
+            guard !Task.isCancelled, started else { break }
+
+            guard Self.shouldManageOllama(for: configuration) else {
+                components.logger.event(
+                    "ollama_lifecycle_skipped",
+                    fields: ["reason": "endpoint_not_ollama", "backend": desired.rawValue]
+                )
+                if desired == .local, pendingOllamaBackend == nil, configuration.backend == .local {
+                    scheduleBackendRefresh()
+                }
+                continue
+            }
+
+            let action = desired == .deepSeekCloud ? "suspend" : "resume"
+            let outcome: OllamaLifecycleOutcome
+            if desired == .deepSeekCloud {
+                outcome = await components.ollamaLifecycle.suspend()
+            } else {
+                outcome = await components.ollamaLifecycle.resume(
+                    baseURL: configuration.localBaseURL
+                )
+            }
+            guard !Task.isCancelled else { break }
+            components.logger.event(
+                "ollama_lifecycle",
+                fields: ["action": action, "result": outcome.logValue]
+            )
+
+            // Do not start a health check against a backend that the user has
+            // already switched away from while brew was running.
+            if desired == .local, pendingOllamaBackend == nil, configuration.backend == .local {
+                scheduleBackendRefresh()
+            }
+        }
+
+        ollamaLifecycleTask = nil
+        if pendingOllamaBackend != nil {
+            scheduleOllamaLifecycleSync()
+        }
+    }
+
+    /// Only the default Ollama HTTP endpoint on loopback is managed. A custom
+    /// local OpenAI-compatible endpoint (LM Studio, a remote tunnel, another
+    /// port) must never cause us to stop a Homebrew service.
+    static func shouldManageOllama(for configuration: AppConfiguration) -> Bool {
+        guard let scheme = configuration.localBaseURL.scheme?.lowercased(),
+              scheme == "http",
+              let host = configuration.localBaseURL.host?.lowercased() else {
+            return false
+        }
+        let loopbackHosts: Set<String> = ["127.0.0.1", "localhost", "::1"]
+        guard loopbackHosts.contains(host) else { return false }
+        return configuration.localBaseURL.port == 11434
+    }
+
     func scheduleBackendRefresh(startPersistedSession: Bool = false) {
         backendRefreshTask?.cancel()
         backendRetryTask?.cancel()
@@ -472,15 +548,16 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
 
     func applyHealth(_ health: BackendHealth) {
         migrateDeepSeekAPIKeyConfiguredIfNeeded(from: health)
-        if !health.availableModels.isEmpty {
-            viewModel.availableModels = health.availableModels
+        let supportedModels = health.availableModels.filter(AppConfiguration.isSupportedDeepSeekModel)
+        if !supportedModels.isEmpty {
+            viewModel.availableModels = supportedModels
             if configuration.backend == .deepSeekCloud {
-                adoptDeepSeekModel(from: health.availableModels)
+                adoptDeepSeekModel(from: supportedModels)
             }
         }
         let cloudModelReady = configuration.backend == .deepSeekCloud
-            && !health.availableModels.isEmpty
-            && health.availableModels.contains(AppConfiguration.resolvedDeepSeekModel(configuration.deepSeekModel))
+            && !supportedModels.isEmpty
+            && supportedModels.contains(AppConfiguration.resolvedDeepSeekModel(configuration.deepSeekModel))
         switch health.status {
         case .healthy:
             viewModel.backendReady = true

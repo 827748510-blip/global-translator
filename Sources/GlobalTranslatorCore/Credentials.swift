@@ -18,6 +18,23 @@ public enum CredentialStoreError: Error, Equatable, Sendable {
     case invalidValue
 }
 
+/// DeepSeek keys are opaque ASCII tokens. Normalizing here prevents accidental
+/// leading/trailing whitespace and rejects header-breaking control characters
+/// before the value can reach a Keychain item or an Authorization header.
+public enum DeepSeekAPIKeyValidator {
+    public static let maximumLength = 4_096
+
+    public static func normalized(_ raw: String) throws -> String {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty,
+              value.count <= maximumLength,
+              value.unicodeScalars.allSatisfy({ $0.value >= 0x21 && $0.value <= 0x7E }) else {
+            throw CredentialStoreError.invalidValue
+        }
+        return value
+    }
+}
+
 public struct MacOSKeychainStore: CredentialStoring, Sendable {
     public static let defaultService = "com.maodashu.global-translator.deepseek"
     public static let defaultAccount = "default"
@@ -34,18 +51,22 @@ public struct MacOSKeychainStore: CredentialStoring, Sendable {
     }
 
     public func save(apiKey: String) throws {
-        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              apiKey.count <= 4_096,
-              let data = apiKey.data(using: .utf8) else {
+        let normalized = try DeepSeekAPIKeyValidator.normalized(apiKey)
+        guard let data = normalized.data(using: .utf8) else {
             throw CredentialStoreError.invalidValue
         }
         let query = baseQuery(useDataProtection: true)
-        let valueAttributes = [kSecValueData as String: data] as CFDictionary
-        let updateStatus = SecItemUpdate(query as CFDictionary, valueAttributes)
+        let valueAttributes: [String: Any] = [
+            kSecValueData as String: data,
+            // Enforce device-bound, unlocked-only access even when replacing an
+            // item created by a previous build with a weaker accessibility.
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        ]
+        let updateStatus = SecItemUpdate(query as CFDictionary, valueAttributes as CFDictionary)
         if updateStatus == errSecItemNotFound {
             var addQuery = query
             addQuery[kSecValueData as String] = data
-            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
             let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
             guard addStatus == errSecSuccess else {
                 throw CredentialStoreError.keychainFailure(status: addStatus)
@@ -88,7 +109,8 @@ public struct MacOSKeychainStore: CredentialStoring, Sendable {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account
+            kSecAttrAccount as String: account,
+            kSecAttrSynchronizable as String: false
         ]
         if useDataProtection {
             query[kSecUseDataProtectionKeychain as String] = true

@@ -162,7 +162,7 @@ private final class ShowcaseActions: SettingsActions {
     func saveAPIKey(_ draft: String) async throws {}
     func deleteAPIKey() async throws {}
     func testConnection() async throws -> BackendHealth {
-        BackendHealth(status: .healthy, message: "示例：连接正常", availableModels: ["deepseek-chat"])
+        BackendHealth(status: .healthy, message: "示例：连接正常", availableModels: ["deepseek-flash"])
     }
     func setVisionFallback(_ enabled: Bool) {}
     func setLocalConfiguration(baseURL: String, model: String) {}

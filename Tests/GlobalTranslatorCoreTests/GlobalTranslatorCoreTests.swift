@@ -11,7 +11,7 @@ struct GlobalTranslatorCoreTests {
         #expect(!configuration.visionFallbackEnabled)
         #expect(configuration.localBaseURL.absoluteString == "http://127.0.0.1:11434/v1")
         #expect(configuration.localModel.isEmpty)
-        #expect(configuration.deepSeekModel == "deepseek-chat")
+        #expect(configuration.deepSeekModel == "deepseek-flash")
         #expect(!configuration.deepSeekAPIKeyConfigured)
         #expect(configuration.translatedBundleIDs.isEmpty)
         #expect(configuration.selectionTranslateEnabled)
@@ -38,7 +38,7 @@ struct GlobalTranslatorCoreTests {
         #expect(decoded.selectionTranslateEnabled)
         #expect(!decoded.videoTranslateEnabled)
         #expect(decoded.promptOptimizeMode == .communicationPolish)
-        #expect(decoded.deepSeekModel == "deepseek-chat")
+        #expect(decoded.deepSeekModel == "deepseek-flash")
         #expect(!decoded.deepSeekAPIKeyConfigured)
         #expect(decoded.screenshotTranslateHotkey == .screenshotTranslateDefault)
         #expect(!decoded.autoCopyScreenshotTranslation)
@@ -71,7 +71,7 @@ struct GlobalTranslatorCoreTests {
         let encoded = try JSONEncoder().encode(AppConfiguration(promptOptimizeMode: .communicationPolish))
         let object = try #require(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         #expect(object["promptOptimizeMode"] as? String == "communicationPolish")
-        #expect(object["deepSeekModel"] as? String == "deepseek-chat")
+        #expect(object["deepSeekModel"] as? String == "deepseek-flash")
         #expect(object["deepSeekAPIKeyConfigured"] as? Bool == false)
         #expect(object["apiKey"] == nil)
     }
@@ -80,6 +80,7 @@ struct GlobalTranslatorCoreTests {
     func missingDeepSeekKeyConfiguredFlagDefaultsFalseAndNeverEncodesSecret() throws {
         let legacyJSON = Data(#"{"backend":"deepSeekCloud","deepSeekModel":"deepseek-chat"}"#.utf8)
         let decoded = try JSONDecoder().decode(AppConfiguration.self, from: legacyJSON)
+        #expect(decoded.deepSeekModel == "deepseek-flash")
         #expect(!decoded.deepSeekAPIKeyConfigured)
         let encoded = try JSONEncoder().encode(AppConfiguration(deepSeekAPIKeyConfigured: true))
         let object = try #require(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
@@ -89,21 +90,38 @@ struct GlobalTranslatorCoreTests {
     }
 
     @Test
-    func deepSeekModelPrefersConfiguredThenDefaultThenFirstAvailable() {
-        #expect(AppConfiguration.resolvedDeepSeekModel("  ") == "deepseek-chat")
-        #expect(AppConfiguration.resolvedDeepSeekModel("deepseek-reasoner") == "deepseek-reasoner")
+    func deepSeekModelIsAlwaysNormalizedToFlash() {
+        #expect(AppConfiguration.supportedDeepSeekModels == ["deepseek-flash"])
+        #expect(AppConfiguration.resolvedDeepSeekModel("  ") == "deepseek-flash")
+        #expect(AppConfiguration.resolvedDeepSeekModel("deepseek-chat") == "deepseek-flash")
+        #expect(AppConfiguration.resolvedDeepSeekModel("deepseek-v4-flash") == "deepseek-flash")
+        #expect(AppConfiguration.resolvedDeepSeekModel("deepseek-reasoner") == "deepseek-flash")
+        #expect(AppConfiguration.resolvedDeepSeekModel("deepseek-v4-pro") == "deepseek-flash")
+        #expect(AppConfiguration.resolvedDeepSeekModel("future-model") == "deepseek-flash")
         #expect(AppConfiguration.preferredDeepSeekModel(
             current: "deepseek-reasoner",
-            available: ["deepseek-chat", "deepseek-reasoner"]
-        ) == "deepseek-reasoner")
+            available: ["deepseek-flash", "deepseek-v4-pro"]
+        ) == "deepseek-flash")
         #expect(AppConfiguration.preferredDeepSeekModel(
             current: "gone",
-            available: ["other", "deepseek-chat"]
-        ) == "deepseek-chat")
+            available: ["other"]
+        ) == "deepseek-flash")
         #expect(AppConfiguration.preferredDeepSeekModel(
-            current: "gone",
-            available: ["only-this"]
-        ) == "only-this")
+            current: "deepseek-v4-pro",
+            available: []
+        ) == "deepseek-flash")
+    }
+
+    @Test
+    func retiredDeepSeekModelsMigrateToFlashOnConfigurationDecode() throws {
+        let json = Data(#"{"backend":"deepSeekCloud","deepSeekModel":"deepseek-chat"}"#.utf8)
+        #expect(try JSONDecoder().decode(AppConfiguration.self, from: json).deepSeekModel == "deepseek-flash")
+        let reasoner = Data(#"{"backend":"deepSeekCloud","deepSeekModel":"deepseek-reasoner"}"#.utf8)
+        #expect(try JSONDecoder().decode(AppConfiguration.self, from: reasoner).deepSeekModel == "deepseek-flash")
+        let pro = Data(#"{"backend":"deepSeekCloud","deepSeekModel":"deepseek-v4-pro"}"#.utf8)
+        #expect(try JSONDecoder().decode(AppConfiguration.self, from: pro).deepSeekModel == "deepseek-flash")
+        let vision = Data(#"{"backend":"deepSeekCloud","deepSeekModel":"deepseek-v4-flash-vision-exp"}"#.utf8)
+        #expect(try JSONDecoder().decode(AppConfiguration.self, from: vision).deepSeekModel == "deepseek-flash")
     }
 
     @Test

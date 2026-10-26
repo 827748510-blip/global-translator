@@ -22,6 +22,7 @@ extension ApplicationControllerComponents {
             backendFactory: LiveTranslationBackendFactory(
                 localTransport: URLSessionHTTPTransport(requestTimeout: 90, resourceTimeout: 180)
             ),
+            ollamaLifecycle: HomebrewOllamaLifecycle(),
             monitorFactory: { allowed in
                 ActiveWindowMonitorAdapter(
                     ownBundleIdentifier: Bundle.main.bundleIdentifier,

@@ -378,6 +378,9 @@ public struct ApplicationControllerComponents {
     public let credentialStore: any CredentialStoring
     public let permissionController: any PermissionControlling
     public let backendFactory: any TranslationBackendFactory
+    /// Optional Homebrew Ollama lifecycle control. Tests and CLI paths use the
+    /// no-op implementation so they never touch a real local service.
+    public let ollamaLifecycle: any OllamaLifecycleControlling
     public let monitorFactory: MonitorFactory
     public let capturePipelineFactory: CaptureFactory
     public let statusItemFactory: StatusFactory
@@ -401,6 +404,7 @@ public struct ApplicationControllerComponents {
         credentialStore: any CredentialStoring,
         permissionController: any PermissionControlling,
         backendFactory: any TranslationBackendFactory,
+        ollamaLifecycle: any OllamaLifecycleControlling = NoopOllamaLifecycle(),
         monitorFactory: @escaping MonitorFactory,
         capturePipelineFactory: @escaping CaptureFactory,
         statusItemFactory: @escaping StatusFactory,
@@ -422,6 +426,7 @@ public struct ApplicationControllerComponents {
         self.credentialStore = credentialStore
         self.permissionController = permissionController
         self.backendFactory = backendFactory
+        self.ollamaLifecycle = ollamaLifecycle
         self.monitorFactory = monitorFactory
         self.capturePipelineFactory = capturePipelineFactory
         self.statusItemFactory = statusItemFactory

@@ -24,6 +24,8 @@ public final class SelectionPopoverChrome: ObservableObject {
 public struct SelectionTranslatePopoverView: View {
     let content: SelectionPopoverContent
     @ObservedObject var chrome: SelectionPopoverChrome
+    var resultHeight: CGFloat? = nil
+    var isResultScrollable: Bool = false
     var onCopy: () -> Void = {}
     var onTranslate: () -> Void = {}
     var onOptimize: () -> Void = {}
@@ -32,6 +34,8 @@ public struct SelectionTranslatePopoverView: View {
     public init(
         content: SelectionPopoverContent,
         chrome: SelectionPopoverChrome,
+        resultHeight: CGFloat? = nil,
+        isResultScrollable: Bool = false,
         onCopy: @escaping () -> Void = {},
         onTranslate: @escaping () -> Void = {},
         onOptimize: @escaping () -> Void = {},
@@ -39,6 +43,8 @@ public struct SelectionTranslatePopoverView: View {
     ) {
         self.content = content
         self.chrome = chrome
+        self.resultHeight = resultHeight
+        self.isResultScrollable = isResultScrollable
         self.onCopy = onCopy
         self.onTranslate = onTranslate
         self.onOptimize = onOptimize
@@ -90,18 +96,42 @@ public struct SelectionTranslatePopoverView: View {
                     .accessibilityLabel("原文")
                     .accessibilityValue(content.originalPreview)
             }
-            Text(content.displayTranslation)
-                .font(resultFont)
-                .foregroundStyle(resultColor)
-                .lineLimit(GTSelectionMetrics.maxTranslationLines)
-                .truncationMode(.tail)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
-                .accessibilityLabel(resultAccessibilityLabel)
-                .accessibilityValue(content.displayTranslation)
+            resultBlock
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var resultBlock: some View {
+        if isResultScrollable, let resultHeight {
+            ScrollView(.vertical) {
+                resultText
+                    .frame(width: textWidth, alignment: .leading)
+            }
+            .frame(width: textWidth, height: resultHeight, alignment: .leading)
+            .scrollIndicators(.automatic)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(resultAccessibilityLabel)
+            .accessibilityValue(content.displayTranslation)
+            .accessibilityHint("内容较长，可上下滚动查看完整译文")
+        } else {
+            resultText
+        }
+    }
+
+    private var resultText: some View {
+        Text(content.displayTranslation)
+            .font(resultFont)
+            .foregroundStyle(resultColor)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
+            .accessibilityLabel(resultAccessibilityLabel)
+            .accessibilityValue(content.displayTranslation)
+    }
+
+    private var textWidth: CGFloat {
+        GTSelectionMetrics.width - GTSelectionMetrics.horizontalPadding * 2
     }
 
     private var actionsGroup: some View {
@@ -113,24 +143,46 @@ public struct SelectionTranslatePopoverView: View {
                 )
             }
             if content.showsActionButtons {
+                // Plain style is required: the default macOS button bezel sits
+                // underneath `.glassEffect`, producing a visible double fill.
                 HStack(spacing: GTSpacing.xSmall) {
                     if content.showsTranslateAction {
-                        Button("翻译", action: onTranslate)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
-                            .disabled(content.status == .loading)
-                            .accessibilityHint("按内容自动翻译选区：中文译成英文，其他译成简体中文")
+                        Button(action: onTranslate) {
+                            Text("翻译")
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.75)
+                                .foregroundStyle(
+                                    content.status == .loading ? GTColor.secondaryText : GTColor.primaryText
+                                )
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+                        .disabled(content.status == .loading)
+                        .accessibilityHint(
+                            content.isCodeSnippet
+                                ? "自动识别并解释所选代码"
+                                : "按内容自动翻译选区：中文译成英文，其他译成简体中文"
+                        )
                     }
                     if content.showsOptimizeAction {
-                        Button("优化提示词", action: onOptimize)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
-                            .disabled(content.status == .optimizing)
-                            .accessibilityHint(chrome.optimizeMode.optimizeAccessibilityHint)
+                        Button(action: onOptimize) {
+                            Text("优化提示词")
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.75)
+                                .foregroundStyle(
+                                    content.status == .optimizing ? GTColor.secondaryText : GTColor.primaryText
+                                )
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+                        .disabled(content.status == .optimizing)
+                        .accessibilityHint(chrome.optimizeMode.optimizeAccessibilityHint)
                     }
                     if content.allowsCopy {
                         Button(action: onCopy) {
@@ -143,7 +195,10 @@ public struct SelectionTranslatePopoverView: View {
                             }
                             .lineLimit(1)
                             .minimumScaleFactor(0.75)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
                         .accessibilityLabel(chrome.copyFeedback.title)
@@ -180,6 +235,7 @@ public struct SelectionTranslatePopoverView: View {
     }
 
     private var resultAccessibilityLabel: String {
+        if content.isCodeSnippet { return "代码翻译结果" }
         switch content.status {
         case .optimized, .optimizing:
             return "优化后的提示词"
@@ -217,5 +273,32 @@ enum SelectionPopoverLayout {
     static var statusResultMeasuringFont: NSFont {
         let size = NSFont.preferredFont(forTextStyle: .title3).pointSize
         return NSFont.systemFont(ofSize: size, weight: .semibold)
+    }
+
+    /// `NSString.boundingRect` is pathologically slow for a few thousand CJK
+    /// characters (measured ~1.6s for 120 lines), which would freeze the panel
+    /// after a long code explanation. TextKit gives the same wrapped height in
+    /// tens of milliseconds.
+    static func measuredWrappedHeight(
+        for text: String,
+        width: CGFloat,
+        font: NSFont
+    ) -> CGFloat {
+        let lineHeight = OverlayLayout.estimatedLineHeight(for: font)
+        guard !text.isEmpty else { return lineHeight }
+        let storage = NSTextStorage(
+            string: text,
+            attributes: [.font: font]
+        )
+        let manager = NSLayoutManager()
+        let container = NSTextContainer(
+            size: CGSize(width: width, height: .greatestFiniteMagnitude)
+        )
+        container.lineFragmentPadding = 0
+        container.widthTracksTextView = false
+        manager.addTextContainer(container)
+        storage.addLayoutManager(manager)
+        manager.ensureLayout(for: container)
+        return max(lineHeight, ceil(manager.usedRect(for: container).height))
     }
 }

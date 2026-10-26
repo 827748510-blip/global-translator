@@ -409,6 +409,11 @@ actor RecordingPlainCoordinator: TranslationCoordinating {
     private(set) var completePlainBackends: [BackendKind] = []
     private(set) var translateBackends: [BackendKind] = []
     private(set) var sources: [[String]] = []
+    private var plainResult = "rewritten"
+
+    func setPlainResult(_ value: String) {
+        plainResult = value
+    }
 
     func selectBackend(kind: BackendKind, modelIdentifier: String) async { selectedKinds.append(kind) }
     func clearCache() async {}
@@ -443,7 +448,7 @@ actor RecordingPlainCoordinator: TranslationCoordinating {
         systems.append(system)
         users.append(user)
         completePlainBackends.append(backend)
-        return "rewritten"
+        return plainResult
     }
 }
 

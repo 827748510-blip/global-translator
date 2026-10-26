@@ -263,14 +263,17 @@ extension ApplicationController {
         ) {
             applySessionBackends(overlay: backend, configuration: configuration)
         }
-        if kind != .deepSeekCloud {
-            scheduleBackendRefresh()
-        }
+        // Homebrew Ollama is stopped when moving to cloud and started before
+        // the local health check when moving back. The reconciler is async so
+        // brew never blocks the settings UI.
+        scheduleOllamaLifecycleSync()
     }
 
     public func saveAPIKey(_ draft: String) async throws {
-        let value = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty, value.count <= 4_096 else {
+        let value: String
+        do {
+            value = try DeepSeekAPIKeyValidator.normalized(draft)
+        } catch {
             throw ApplicationActionError.invalidAPIKey
         }
         guard configuration.backend == .deepSeekCloud else {
@@ -290,17 +293,18 @@ extension ApplicationController {
         persistDeepSeekAPIKeyConfigured(true)
         viewModel.isReplacingKey = false
         viewModel.keyDraft = ""
-        viewModel.availableModels = health.availableModels
-        if !health.availableModels.isEmpty {
+        let supportedModels = health.availableModels.filter(AppConfiguration.isSupportedDeepSeekModel)
+        viewModel.availableModels = supportedModels
+        if !supportedModels.isEmpty {
             let picked = AppConfiguration.preferredDeepSeekModel(
                 current: configuration.deepSeekModel,
-                available: health.availableModels
+                available: supportedModels
             )
             configuration.deepSeekModel = picked
             viewModel.deepSeekModel = picked
         }
         viewModel.backendReady = health.status == .healthy
-            || viewModel.availableModels.contains(
+            || supportedModels.contains(
                 AppConfiguration.resolvedDeepSeekModel(configuration.deepSeekModel)
             )
         if health.status == .healthy {

@@ -18,7 +18,8 @@ struct ReviewFixTests {
         #expect(requests[0].url?.absoluteString == "https://api.deepseek.com/responses")
         let body = try #require(requests[0].httpBody)
         let payload = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
-        #expect(payload["model"] as? String == "deepseek-chat")
+        #expect(payload["model"] as? String == "deepseek-flash")
+        #expect(payload["max_output_tokens"] as? Int == 8_192)
         let input = try #require(payload["input"] as? [[String: Any]])
         #expect(input.count == 2)
         #expect(input[0]["role"] as? String == "system")
@@ -29,6 +30,11 @@ struct ReviewFixTests {
         #expect(userItems.count == 1)
         #expect(Set(userItems[0].keys) == Set(["segmentId", "sourceText"]))
         expectNestedReasoningNone(payload)
+        let text = try #require(payload["text"] as? [String: Any])
+        let format = try #require(text["format"] as? [String: Any])
+        #expect(Set(format.keys) == Set(["type", "name", "schema"]))
+        #expect(format["type"] as? String == "json_schema")
+        #expect(format["name"] as? String == "translation_result")
         if let temperature = payload["temperature"] as? Double {
             #expect(abs(temperature - 0.1) < 0.001)
         } else {
@@ -70,8 +76,8 @@ struct ReviewFixTests {
     }
 
     @Test
-    func deepSeekResponsesPayloadsEncodeNestedReasoningNoneForChatAndV4() async throws {
-        let models = ["deepseek-chat", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"]
+    func deepSeekResponsesPayloadsEncodeNestedReasoningNoneForCurrentModels() async throws {
+        let models = ["deepseek-flash"]
         let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         let translateOutput = #"{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"translations\":[{\"segmentId\":\"00000000-0000-0000-0000-000000000001\",\"text\":\"你好\"}]}"}]}]}"#
         let plainOutput = #"{"output":[{"type":"message","content":[{"type":"output_text","text":"优化后"}]}]}"#
@@ -130,7 +136,8 @@ struct ReviewFixTests {
             )
             let visionBody = try #require(await visionTransport.requests.first?.httpBody)
             let visionPayload = try #require(try JSONSerialization.jsonObject(with: visionBody) as? [String: Any])
-            #expect(visionPayload["model"] as? String == model)
+            #expect(visionPayload["model"] as? String == DeepSeekBackend.visionModel)
+            #expect(DeepSeekBackend.visionModel == "deepseek-flash")
             expectNestedReasoningNone(visionPayload)
             let serialized = String(decoding: try JSONSerialization.data(withJSONObject: visionPayload), as: UTF8.self)
             #expect(serialized.contains("input_image"))
@@ -139,11 +146,12 @@ struct ReviewFixTests {
 
     @Test
     func deepSeekHealthDiscoversFixedModelAndReadFailureIsUnavailable() async {
-        let models = Data(#"{"data":[{"id":"deepseek-chat"}]}"#.utf8)
+        let models = Data(#"{"data":[{"id":"deepseek-flash"},{"id":"deepseek-v4-pro"}]}"#.utf8)
         let transport = ReviewTransport(responses: [HTTPResponse(statusCode: 200, headers: [:], body: models)])
         let backend = DeepSeekBackend(transport: transport, credentialStore: ReviewCredentials(value: "key"))
         let healthy = await backend.healthCheck()
         #expect(healthy.status == .healthy)
+        #expect(healthy.availableModels == ["deepseek-flash"])
         let requests = await transport.requests
         #expect(requests.count == 1)
         #expect(requests[0].url?.absoluteString == "https://api.deepseek.com/models")
@@ -154,7 +162,53 @@ struct ReviewFixTests {
     }
 
     @Test
-    func deepSeekUsesConfiguredModelAndHealthDoesNotRequireLegacyVisionId() async throws {
+    func retiredDeepSeekAliasesNormalizeBeforeTheWireRequest() async throws {
+        let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let output = #"{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"translations\":[{\"segmentId\":\"00000000-0000-0000-0000-000000000001\",\"text\":\"你好\"}]}"}]}]}"#
+        let expectations = [
+            "deepseek-chat": "deepseek-flash",
+            "deepseek-v4-flash": "deepseek-flash",
+            "deepseek-reasoner": "deepseek-flash",
+            "deepseek-v4-pro": "deepseek-flash",
+            "future-model": "deepseek-flash"
+        ]
+        for (legacy, canonical) in expectations {
+            let transport = ReviewTransport(responses: [
+                HTTPResponse(statusCode: 200, headers: [:], body: Data(output.utf8))
+            ])
+            let backend = DeepSeekBackend(
+                transport: transport,
+                credentialStore: ReviewCredentials(value: "key"),
+                model: legacy
+            )
+            _ = try await backend.translate(
+                TranslationRequest(windowRevision: 1, items: [TranslationItem(id: id, sourceText: "hello")])
+            )
+            let body = try #require(await transport.requests.first?.httpBody)
+            let payload = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+            #expect(payload["model"] as? String == canonical)
+        }
+    }
+
+    @Test
+    func deepSeekAPIKeyValidationTrimsAndRejectsHeaderBreakingValues() throws {
+        #expect(try DeepSeekAPIKeyValidator.normalized("  sk-test-key\n") == "sk-test-key")
+        #expect(throws: CredentialStoreError.invalidValue) {
+            try DeepSeekAPIKeyValidator.normalized("sk-\nsecret")
+        }
+        #expect(throws: CredentialStoreError.invalidValue) {
+            try DeepSeekAPIKeyValidator.normalized("sk key with spaces")
+        }
+        #expect(throws: CredentialStoreError.invalidValue) {
+            try DeepSeekAPIKeyValidator.normalized("sk-中文")
+        }
+        #expect(throws: CredentialStoreError.invalidValue) {
+            try DeepSeekAPIKeyValidator.normalized(String(repeating: "x", count: 4_097))
+        }
+    }
+
+    @Test
+    func unsupportedConfiguredModelCollapsesToFlash() async throws {
         let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         let output = #"{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"translations\":[{\"segmentId\":\"00000000-0000-0000-0000-000000000001\",\"text\":\"你好\"}]}"}]}]}"#
         let transport = ReviewTransport(responses: [
@@ -163,14 +217,14 @@ struct ReviewFixTests {
         let backend = DeepSeekBackend(
             transport: transport,
             credentialStore: ReviewCredentials(value: "key"),
-            model: "deepseek-reasoner"
+            model: "deepseek-v4-pro"
         )
         _ = try await backend.translate(TranslationRequest(windowRevision: 1, items: [TranslationItem(id: id, sourceText: "hello")]))
         let body = try #require(await transport.requests.first?.httpBody)
         let payload = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
-        #expect(payload["model"] as? String == "deepseek-reasoner")
+        #expect(payload["model"] as? String == "deepseek-flash")
 
-        let listed = Data(#"{"data":[{"id":"deepseek-chat"},{"id":"deepseek-reasoner"}]}"#.utf8)
+        let listed = Data(#"{"data":[{"id":"deepseek-flash"},{"id":"deepseek-v4-pro"}]}"#.utf8)
         let healthTransport = ReviewTransport(responses: [HTTPResponse(statusCode: 200, headers: [:], body: listed)])
         let defaultBackend = DeepSeekBackend(
             transport: healthTransport,
@@ -178,7 +232,7 @@ struct ReviewFixTests {
         )
         let healthy = await defaultBackend.healthCheck()
         #expect(healthy.status == .healthy)
-        #expect(healthy.availableModels == ["deepseek-chat", "deepseek-reasoner"])
+        #expect(healthy.availableModels == ["deepseek-flash"])
     }
 
     @Test

@@ -1,6 +1,6 @@
 # Global Translator
 
-macOS 27+ 的全局翻译工具，提供可双击的 `Global Translator.app`、独立设置窗口、菜单栏图标及命令行入口。启动后处理当前活动窗口，通过 Accessibility 优先提取文本，必要时使用 Vision OCR，并用鼠标穿透的透明覆盖层显示简体中文。设置页与划词/截图弹层使用系统原生 Liquid Glass 与 `glass` 按钮样式。划选文字（滑词翻译）可在任意 App 的选区附近弹出译文（双向互译：英文等→简体中文，简体中文→英文），并可一键按场景优化提示词（默认沟通润色）；默认开启、可在设置中关闭。授予屏幕录制权限且自动翻译开启时，ScreenCaptureKit 对当前窗口持续进行最高 4 帧/秒、256×256 的本地变化检测，包括 Accessibility 能读取文字的窗口；检测帧不保存、不上传。**截图翻译**：默认快捷键 ⌃⇧T 拖选区域，本机 Vision OCR（中/英）后走当前翻译后端（中文识别结果译成英文，其余译成简体中文），浮窗显示原文与译文并可拷贝；自动复制默认关闭；可选把截图保存为 PNG 到本机目录（默认 `~/Pictures/Global Translator 截图`，可改并展示路径）或复制到剪贴板。详见 [截图翻译](docs/screenshot-translate.md)。
+macOS 27+ 的全局翻译工具，提供可双击的 `Global Translator.app`、独立设置窗口、菜单栏图标及命令行入口。启动后处理当前活动窗口，通过 Accessibility 优先提取文本，必要时使用 Vision OCR，并用鼠标穿透的透明覆盖层显示简体中文。设置页与划词/截图弹层使用系统原生 Liquid Glass 与 `glass` 按钮样式。划选文字（滑词翻译）可在任意 App 的选区附近弹出译文（双向互译：英文等→简体中文，简体中文→英文），并可一键按场景优化提示词（默认沟通润色）；默认开启、可在设置中关闭。划词内容若被识别为代码（JavaScript、Python、Java、Swift、SQL 等），自动改走「代码解释」提示词，用目标语言说明代码作用、输入输出、控制流、副作用与错误处理，不把代码改写成另一种编程语言；代码结果弹层按实际高度展开，超出屏幕时只滚动结果区。授予屏幕录制权限且自动翻译开启时，ScreenCaptureKit 对当前窗口持续进行最高 4 帧/秒、256×256 的本地变化检测，包括 Accessibility 能读取文字的窗口；检测帧不保存、不上传。**截图翻译**：默认快捷键 ⌃⇧T 拖选区域，本机 Vision OCR（中/英）后走当前翻译后端（中文识别结果译成英文，其余译成简体中文），浮窗显示原文与译文并可拷贝；自动复制默认关闭；可选把截图保存为 PNG 到本机目录（默认 `~/Pictures/Global Translator 截图`，可改并展示路径）或复制到剪贴板。详见 [截图翻译](docs/screenshot-translate.md)。
 
 ## 环境要求
 
@@ -51,13 +51,15 @@ global-translator run --foreground
 
 ### DeepSeek 云端
 
-- 固定官方基址：`https://api.deepseek.com`
-- 模型可从 `/models` 选择，写入 `config.json` 的 `deepSeekModel`，默认 `deepseek-chat`
-- Key 只保存在 macOS 登录 Keychain，Service 为 `com.maodashu.global-translator.deepseek`；已配置时设置显示「已配置 · 钥匙串保存」，不会在切换后端时再弹出空密钥框
+- 固定官方基址：`https://api.deepseek.com`；使用官方 OpenAI 兼容 Responses API（`/responses`、`/models`）
+- 本应用只适配官方 `deepseek-flash`（V4.1 Flash，支持视觉）；官网即使还列出 `deepseek-v4-pro` 也不在设置页展示、不会发送。模型列表从 `/models` 过滤后写入
+- 所有旧模型/未知模型统一归一为 `deepseek-flash`：`deepseek-chat`、`deepseek-reasoner`、`deepseek-v4-flash`、`deepseek-v4-flash-vision-exp`、`deepseek-v4-pro`
+- 视觉兜底与文本翻译都使用 `deepseek-flash`
+- Key 只保存在 macOS 数据保护 Keychain（`com.maodashu.global-translator.deepseek`，`WhenUnlockedThisDeviceOnly`，禁止 iCloud 同步）；配置里只有非敏感的“已配置”布尔值，不进入参数、环境、日志或缓存
 - 默认只发送待翻译文字；局部截图视觉兜底必须在弹窗中明确授权
 - 不自动切换到本地后端，不自动重放状态不确定的请求
 
-选择云端后端启动时，会探测账号 `/models` 列表并使用已选（或默认）模型。已在用户授权下验证真实 DeepSeek 接口；自动化测试使用 mock，不自动调用计费接口。详细结果见 [真实云端验收记录](docs/real-acceptance-2026-09-05.md)。
+官方配置来源：[API 首页](https://api-docs.deepseek.com/)、[模型与价格](https://api-docs.deepseek.com/quick_start/pricing/)、[Responses API](https://api-docs.deepseek.com/api/create-response/)。本轮适配与密钥审计见 [DeepSeek V4.1 适配](docs/deepseek-v4-2026-10.md)。历史真实接口验收记录见 [真实云端验收记录](docs/real-acceptance-2026-09-05.md)。
 
 ### 本地模型
 
@@ -65,7 +67,8 @@ global-translator run --foreground
 - 只接受 `localhost`、`127.0.0.1` 或 `::1` 的 HTTP 地址
 - 支持 Ollama 等 OpenAI 风格的 `/models` 与 `/chat/completions`
 - 健康检查会验证服务、已选模型和一次结构化翻译样例
-- 工具不下载模型、不启动模型服务，也不发送截图给本地模型
+- 不下载、不安装模型。使用默认地址且 Ollama 由 Homebrew 管理时，切到 DeepSeek 云端会执行 `brew services stop --keep ollama`，保留原登录注册状态；切回本地模型会按当前注册状态用 `start` 或 `run` 启动，不会新增登录自启。停的是全局服务，会影响其他依赖 Ollama 的应用；自定义端口或其他本地服务不处理。详见 [Ollama 生命周期](docs/ollama-lifecycle.md)
+- 不向本地模型发送截图
 
 ## 数据与安全
 
@@ -73,6 +76,7 @@ global-translator run --foreground
 - PID/socket：`~/Library/Application Support/GlobalTranslator/runtime/`
 - 脱敏日志：`~/Library/Logs/GlobalTranslator/`，权限 `0600`
 - API Key 不进入配置、参数、环境、日志或翻译缓存
+- Keychain 项使用数据保护钥匙串、`kSecAttrAccessibleWhenUnlockedThisDeviceOnly` 和 `kSecAttrSynchronizable=false`；保存前去除首尾空白并拒绝控制字符/非 ASCII 值，防止请求头注入；Settings 里只编辑临时草稿，保存成功后立刻清空
 - 截图、原文、译文和翻译缓存均不持久化
 - 滑词翻译仅监听鼠标左键抬起以读取 Accessibility 选区；不注入键盘。AX 读不到字时，仅在真实拖选后（或 AX 报告有选区范围却无字符串）、且剪贴板能完整备份时才临时 ⌘C 并立即恢复；单击不拖选不发 ⌘C。备份不全、密码框、本应用窗口则跳过。⌘C 兜底异步等待目标 App（最多 200ms，不阻塞主线程；等待不可被取消打断，取消后仍恢复原剪贴板）。结构化翻译失败（回声原文 / JSON 解析失败）时对 ≤600 字选区做一次纯文本兜底：品牌名给中文注释（如 `Figma（设计工具）`）；仍回声且像专有名词时显示「专有名词，无需翻译」，句子回声仍报「翻译失败」。弹层提供翻译与「优化提示词」（沟通润色 / 任务指令 / 用词修正，默认沟通润色；拷贝成功显示「已拷贝」）
 - 截图翻译只在用户按下快捷键并拖选区域后截一次屏，用本机 Vision 识别中/英文，不把截图发给本地或云端模型；译文可拷贝，自动复制默认关；「保存截图」开启时才会把区域图写成 PNG 到设置里的目录（默认关，落盘位置在设置中展示并可改），「复制截图」开启时把区域图复制到剪贴板（默认关）

@@ -225,6 +225,11 @@ struct BackendPickerSection: View {
                 accessibilityLabelText: "翻译后端"
             )
 
+            Text("默认 Ollama 地址且由 Homebrew 管理时：切到 DeepSeek 云端会停止 Ollama 服务（进行中的本地翻译会中断），切回本地模型会自动启动并等接口就绪。其他本地服务不受影响。")
+                .font(GTType.caption)
+                .foregroundStyle(GTColor.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
             GTLabeledControl(title: "窗口/网页目标语言") {
                 GTReadOnlyField(value: viewModel.targetLanguageDisplayName)
                     .accessibilityLabel("窗口覆盖层与网页整页翻译固定为简体中文；划词与截图自动判断中英互译方向")

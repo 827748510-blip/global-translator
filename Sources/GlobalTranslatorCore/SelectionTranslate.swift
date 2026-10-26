@@ -309,6 +309,9 @@ public struct SelectionPopoverContent: Equatable, Sendable {
     public var allowsRetranslate: Bool
     /// 截图翻译把区域图保存到文件后，弹层展示的路径提示（~ 缩写）。滑词没有。
     public var savedImagePath: String?
+    /// Frozen at content creation so a long code selection is not re-detected
+    /// on every SwiftUI body pass.
+    public let isCodeSnippet: Bool
 
     public init(
         original: String,
@@ -319,7 +322,8 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         sourceWasTruncated: Bool = false,
         allowsPromptOptimize: Bool = true,
         allowsRetranslate: Bool = true,
-        savedImagePath: String? = nil
+        savedImagePath: String? = nil,
+        isCodeSnippet: Bool? = nil
     ) {
         self.original = original
         self.originalPreview = originalPreview
@@ -330,6 +334,7 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         self.allowsPromptOptimize = allowsPromptOptimize
         self.allowsRetranslate = allowsRetranslate
         self.savedImagePath = savedImagePath
+        self.isCodeSnippet = isCodeSnippet ?? CodeSnippetDetector.isCode(original)
     }
 
     public var displayTranslation: String {
@@ -374,7 +379,7 @@ public struct SelectionPopoverContent: Equatable, Sendable {
     }
 
     public var showsOptimizeAction: Bool {
-        allowsPromptOptimize && !original.isEmpty && status != .unavailable
+        allowsPromptOptimize && !isCodeSnippet && !original.isEmpty && status != .unavailable
     }
 
     public func asScreenshotResult() -> SelectionPopoverContent {

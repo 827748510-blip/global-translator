@@ -278,20 +278,31 @@ public final class TranslationSession {
     /// Single-string 滑词翻译. Not gated on overlay `isRunning` or the
     /// extension-bridge master switch; uses a dedicated coordinator so Chrome
     /// overlay-skip and bridge batches cannot stale this request.
+    ///
+    /// A detected code snippet is explained (not transpiled) through a separate
+    /// plain-completion prompt before the prose filter runs. Some valid
+    /// snippets (`foo()`, `x = 1`) look like identifiers to `TextFilter` and
+    /// would otherwise be skipped without a popover.
     public func translateSelection(_ text: String) async throws -> SelectionTranslationOutcome {
         guard let coordinator = selectionCoordinator else { throw SelectionTranslateError.translatorUnavailable }
+        let limited = SelectionTranslateSupport.limitSelectionSource(text)
+        if let detection = CodeSnippetDetector.detect(limited.text) {
+            return try await translateCodeSelection(
+                text,
+                detection: detection,
+                coordinator: coordinator
+            )
+        }
         let plan = SelectionTranslateSupport.prepareSource(text)
         // 双向互译：简体中文源 → 英文；其余可翻译文本 → 简体中文。标识符 / URL
         // 仍然不弹层。
-        switch TextFilter.selectionDecision(SelectionTranslateSupport.limitSelectionSource(text).text) {
+        switch TextFilter.selectionDecision(limited.text) {
         case .translate, .noTranslationNeeded, .alreadyTargetLanguage:
             break
         case .skip:
             throw SelectionTranslateError.emptyResult
         }
-        let direction = TextFilter.selectionDirection(
-            SelectionTranslateSupport.limitSelectionSource(text).text
-        ) ?? .toChinese
+        let direction = TextFilter.selectionDirection(limited.text) ?? .toChinese
         guard !plan.chunks.isEmpty else { throw SelectionTranslateError.emptyResult }
         await coordinator.selectBackend(kind: backend, modelIdentifier: model)
         var parts: [String] = []
@@ -315,6 +326,60 @@ public final class TranslationSession {
         }
         let joined = SelectionTranslateSupport.joinTranslatedChunks(parts)
         guard !joined.isEmpty else { throw SelectionTranslateError.emptyResult }
+        return SelectionTranslationOutcome(text: joined, sourceWasTruncated: plan.didTruncate)
+    }
+
+    /// Code selections use plain completion: the prose JSON schema and the
+    /// copied-source quality gate are wrong for an explanation. Chunking is
+    /// line-aware so a long snippet is not cut through the middle of a token.
+    private func translateCodeSelection(
+        _ text: String,
+        detection: CodeSnippetDetection,
+        coordinator: any TranslationCoordinating
+    ) async throws -> SelectionTranslationOutcome {
+        let plan = CodeTranslationSupport.prepareSource(text)
+        guard !plan.chunks.isEmpty else { throw SelectionTranslateError.emptyResult }
+        // Code has no reliable natural-language direction: a Chinese comment
+        // does not make an English-language snippet a Chinese source. Use the
+        // app's Simplified Chinese target instead of the prose auto-direction.
+        let direction = SelectionTranslationDirection.toChinese
+        logger.event("selection_code_detected", fields: ["language": detection.language.displayName])
+        await coordinator.selectBackend(kind: backend, modelIdentifier: model)
+        var parts: [String] = []
+        parts.reserveCapacity(plan.chunks.count)
+        for (index, chunk) in plan.chunks.enumerated() {
+            try Task.checkCancellation()
+            let raw = try await coordinator.completePlain(
+                system: CodeTranslationInstructions.system(
+                    for: direction,
+                    language: detection.language
+                ),
+                user: CodeTranslationInstructions.userContent(
+                    for: chunk,
+                    language: detection.language,
+                    partIndex: index + 1,
+                    partCount: plan.chunks.count
+                ),
+                backend: backend
+            )
+            try Task.checkCancellation()
+            let explanation = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !explanation.isEmpty else { throw SelectionTranslateError.emptyResult }
+            let source = chunk.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard explanation.caseInsensitiveCompare(source) != .orderedSame else {
+                // An echoed snippet is not an explanation. Fail honestly rather
+                // than showing raw code as the translated result.
+                throw SelectionTranslateError.emptyResult
+            }
+            parts.append(explanation)
+        }
+        let joined = SelectionTranslateSupport.joinTranslatedChunks(parts)
+        guard !joined.isEmpty else { throw SelectionTranslateError.emptyResult }
+        logger.event("selection_code_translated", fields: [
+            "language": detection.language.displayName,
+            "status": "success",
+            "part_count": String(plan.chunks.count)
+        ])
         return SelectionTranslationOutcome(text: joined, sourceWasTruncated: plan.didTruncate)
     }
 
