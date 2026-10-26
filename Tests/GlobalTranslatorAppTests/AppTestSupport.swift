@@ -150,6 +150,28 @@ actor CompletionProbe {
     func markCompleted() { completed = true }
 }
 
+/// Exercises the real local health adapter without contacting a model service.
+actor LocalModelCatalogTransport: HTTPTransport {
+    private(set) var paths: [String] = []
+
+    func send(_ request: URLRequest) async throws -> HTTPResponse {
+        let path = request.url?.path ?? ""
+        paths.append(path)
+        let body: Data
+        switch path {
+        case "/v1/models":
+            body = Data(#"{"data":[{"id":"qwen3:8b"},{"id":"llama3.2:latest"}]}"#.utf8)
+        case "/v1/chat/completions":
+            body = try JSONSerialization.data(withJSONObject: [
+                "choices": [["message": ["content": #"{"0":"你好"}"#]]]
+            ])
+        default:
+            throw TranslationError.invalidRequest("Unexpected test endpoint")
+        }
+        return HTTPResponse(statusCode: 200, headers: [:], body: body)
+    }
+}
+
 actor DelayedEchoTransport: HTTPTransport {
     private(set) var calls = 0
     func send(_: URLRequest) async throws -> HTTPResponse {

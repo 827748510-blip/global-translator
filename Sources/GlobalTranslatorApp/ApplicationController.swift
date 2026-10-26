@@ -548,7 +548,9 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
 
     func applyHealth(_ health: BackendHealth) {
         migrateDeepSeekAPIKeyConfiguredIfNeeded(from: health)
-        let supportedModels = health.availableModels.filter(AppConfiguration.isSupportedDeepSeekModel)
+        let supportedModels = configuration.backend == .deepSeekCloud
+            ? health.availableModels.filter(AppConfiguration.isSupportedDeepSeekModel)
+            : health.availableModels
         if !supportedModels.isEmpty {
             viewModel.availableModels = supportedModels
             if configuration.backend == .deepSeekCloud {

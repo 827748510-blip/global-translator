@@ -566,6 +566,44 @@ struct SettingsViewModelTests {
         #expect(viewModel.backendReady)
     }
 
+    @Test(arguments: [BackendHealthStatus.healthy, .invalidConfiguration, .modelUnavailable, .unavailable])
+    func localConnectionTestKeepsDiscoveredModels(status: BackendHealthStatus) async {
+        let (viewModel, actions) = makeViewModel(backend: .local)
+        viewModel.localBaseURL = "http://127.0.0.1:11434/v1"
+        viewModel.localModel = status == .invalidConfiguration ? "" : "removed-model"
+        viewModel.availableModels = ["stale-model"]
+        let models = ["qwen3:8b", "llama3.2:latest"]
+        actions.health = BackendHealth(status: status, message: "local health", availableModels: models)
+
+        await viewModel.testConnection()
+
+        #expect(viewModel.availableModels == models)
+        #expect(viewModel.backendReady == (status == .healthy))
+        #expect(actions.deepSeekModels.isEmpty)
+        #expect(viewModel.localModel == (status == .invalidConfiguration ? "" : "removed-model"))
+        if status != .healthy {
+            #expect(viewModel.connectionTest == .failed(status.uiSafeFailureMessage))
+        }
+        viewModel.localModel = "qwen3:8b"
+        viewModel.commitLocalConfiguration()
+        #expect(actions.localConfigurations.last?.model == "qwen3:8b")
+        #expect(!viewModel.backendReady)
+    }
+
+    @Test(arguments: [BackendHealthStatus.healthy, .modelUnavailable, .invalidConfiguration])
+    func cloudConnectionTestFiltersNonFlashModels(status: BackendHealthStatus) async {
+        let (viewModel, actions) = makeViewModel(keyConfigured: true)
+        actions.health = BackendHealth(
+            status: status, message: "cloud health",
+            availableModels: ["qwen3:8b", "deepseek-v4-pro", "deepseek-flash", "llama3.2:latest"]
+        )
+
+        await viewModel.testConnection()
+
+        #expect(viewModel.availableModels == ["deepseek-flash"])
+        #expect(viewModel.backendReady == (status != .invalidConfiguration))
+    }
+
     @Test
     func failedConnectionTestSurfacesErrorState() async {
         let (viewModel, actions) = makeViewModel(keyConfigured: true)
