@@ -76,6 +76,12 @@ public struct DeepSeekUsageSnapshot: Equatable, Sendable {
         guard generationSeconds > 0 else { return 0 }
         return Double(outputTokens) / generationSeconds
     }
+
+    /// Display-only RMB estimate. DeepSeek bills in USD; the actual card
+    /// settlement uses the issuer's exchange rate.
+    public var estimatedCostCNY: Double {
+        estimatedCostUSD * DeepSeekPricing.usdToCNY
+    }
 }
 
 public extension Notification.Name {
@@ -156,6 +162,9 @@ public final class DeepSeekUsageStore: @unchecked Sendable {
 /// Published deepseek-flash prices, USD per 1M tokens.
 /// https://api-docs.deepseek.com/quick_start/pricing/
 public enum DeepSeekPricing {
+    /// Fixed display rate for the in-app RMB estimate, not a billing rate.
+    public static let usdToCNY: Double = 7.2
+
     private struct Rates {
         let cacheHit: Double
         let cacheMiss: Double

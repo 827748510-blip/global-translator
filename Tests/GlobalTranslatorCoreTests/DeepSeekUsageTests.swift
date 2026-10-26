@@ -211,6 +211,33 @@ struct DeepSeekUsageTests {
         #expect(first != other)
     }
 
+    @Test
+    func snapshotConvertsUSDToRMBAtDisplayRate() {
+        let snapshot = DeepSeekUsageSnapshot(estimatedCostUSD: 0.001796)
+        #expect(abs(snapshot.estimatedCostCNY - 0.0129312) < 0.000_000_1)
+    }
+
+    @Test
+    func translationPromptKeepsALongSharedPrefixAcrossDirections() {
+        let chinese = TranslationInstructions.system(for: .toChinese)
+        let english = TranslationInstructions.system(for: .toEnglish)
+        let shared = commonPrefix(chinese, english)
+        #expect(shared.count >= 400)
+        #expect(shared.contains("untrusted data"))
+        #expect(shared.contains("segmentId"))
+        #expect(chinese.hasSuffix("Simplified Chinese"))
+        #expect(english.hasSuffix("English"))
+    }
+
+    private func commonPrefix(_ lhs: String, _ rhs: String) -> String {
+        var prefix = ""
+        for (left, right) in zip(lhs, rhs) {
+            guard left == right else { break }
+            prefix.append(left)
+        }
+        return prefix
+    }
+
     private func responseBody(
         segmentID: UUID,
         translation: String,

@@ -46,16 +46,16 @@ page, and no custom artwork. Material, color, type, and motion all come from the
 
 1. **State is textual.** Every state the tool can be in is named in words (menu-bar tooltip /
    accessibility label, popover header). Color and symbols are reinforcement, never the carrier.
-2. **Privacy is visible.** Key entry never echoes or prefills; the vision fallback states
-   plainly that a cropped screenshot is uploaded to DeepSeek before it can be enabled;
-   permissions show their real status.
+2. **Privacy is visible.** Key entry never echoes or prefills; permissions show their real
+   status. The app sends only text for translation and no longer uploads cropped screenshots.
 3. **System first.** Semantic colors, system materials, SF Symbols, SF Pro via system text
    styles. No raw hex, no custom art, no emojis, no gradients.
 4. **Compact but touchable.** 4px spacing grid, small system type. Floating selection
    actions keep ≥44pt targets; desktop settings rows use a compact 30pt rhythm with full
    keyboard and VoiceOver operability.
 5. **The overlay is a guest.** Click-through, nonactivating, never shadowed or keyed; it sits
-   below menu/status chrome, vanishes instantly on demand, and never shows stale text.
+   below menu/status chrome, covers the source text as a compact patch, vanishes instantly on
+   demand, and never shows stale text.
 
 ## 3. Design Tokens (system semantic mappings)
 
@@ -69,16 +69,16 @@ All tokens resolve to system semantics in `DesignTokens.swift`; no raw values.
 - **Compact rows:** 72pt label column, 30pt field/row height, 28pt segmented control,
   28pt menu rows. `GTPopoverMetrics.minRowHitHeight` (44pt) remains for floating selection
   surfaces, not for the desktop settings panel.
-- **Corner radius:** `row 6` (small controls), `card 10` (grouped sections), `overlay 8`.
+- **Corner radius:** `row 6` (small controls), `card 10` (grouped sections), `overlay patch 4`.
 - **Color:** `Color.primary` / `Color.secondary` for text hierarchy; `Color.accentColor` for
   the single primary action; `Color(nsColor: .systemRed)` reserved for destructive labels and
   error text; `Color(nsColor: .controlBackgroundColor)` for filled section backgrounds.
   Popup chrome (`GTColor.panelBackground`) is **solid white** in light appearance and the
   system window background in dark appearance — never `.regularMaterial` / grey tint.
 - **Material / tonal depth:** settings and 滑词 popovers use the solid panel token so they
-  follow System Settings light/dark automatically. Overlay translation bubbles keep
-  `.regularMaterial` over `.thinMaterial` vibrancy with the same solid panel fallback when
-  Reduce Transparency is on.
+  follow System Settings light/dark automatically. Overlay translation patches also use the
+  solid panel token: they must fully cover the source text, so a translucent material would let
+  the original English show through.
 - **Status tokens:** state → SF Symbol + text mapping is centralized (`MenuBarStatus`), so the
   status item, popover header, and VoiceOver always agree.
 

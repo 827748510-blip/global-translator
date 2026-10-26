@@ -146,10 +146,6 @@ public final class TranslationSession {
         statusHandler(.off)
     }
 
-    public func setVisionFallback(_ enabled: Bool) {
-        visionFallbackEnabled = enabled
-    }
-
     /// The extension bridge follows the menu-bar master switch, not window
     /// capture. `stop()` / `start()` only pause overlay tracking.
     public func setBridgeActive(_ active: Bool) {

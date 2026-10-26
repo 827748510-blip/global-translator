@@ -60,7 +60,7 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
                     availableModels: models
                 )
             }
-            return BackendHealth(status: .healthy, message: "Local backend is ready", availableModels: models)
+            return BackendHealth(status: .healthy, message: "本地后端已就绪", availableModels: models)
         } catch let error as TranslationError {
             let failure = health(for: error)
             return BackendHealth(status: failure.status, message: failure.message, availableModels: models)

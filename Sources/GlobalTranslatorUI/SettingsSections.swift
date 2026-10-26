@@ -344,25 +344,11 @@ struct CloudBackendSection: View {
                 }
             }
 
-            GTSettingsToggleRow(
-                title: "视觉兜底",
-                isOn: Binding(
-                    get: { viewModel.visionFallbackEnabled },
-                    set: { viewModel.setVisionFallbackEnabled($0) }
-                ),
-                hint: "辅助功能无法读取文本时，将局部截图上传 DeepSeek 识别，开启前需确认"
-            )
+            ConnectionTestRow(viewModel: viewModel)
 
-            ConnectionTestRow(viewModel: viewModel, fillsWidth: true)
+            Divider()
 
-            Button("费用与 Token 统计…") {
-                viewModel.openDeepSeekStats()
-            }
-            .buttonStyle(.glass)
-            .controlSize(.small)
-            .frame(maxWidth: .infinity)
-            .frame(minHeight: GTControlMetrics.settingRowHeight)
-            .accessibilityHint("查看 DeepSeek 请求费用、输入输出 tokens、缓存命中率和输出速度")
+            DeepSeekStatsSection()
         }
     }
 }
@@ -435,10 +421,9 @@ struct LocalBackendSection: View {
 
 struct ConnectionTestRow: View {
     @ObservedObject var viewModel: SettingsViewModel
-    var fillsWidth: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: GTSpacing.xxSmall) {
+        HStack(alignment: .center, spacing: GTSpacing.xSmall) {
             Button(action: { Task { await viewModel.testConnection() } }) {
                 if viewModel.connectionTest == .testing {
                     ProgressView()
@@ -449,13 +434,14 @@ struct ConnectionTestRow: View {
             }
             .buttonStyle(.glass)
             .controlSize(.small)
-            .frame(maxWidth: fillsWidth ? .infinity : nil)
             .disabled(!viewModel.canTestConnection)
             .accessibilityHint(Self.testHint(for: viewModel))
             .frame(minHeight: GTControlMetrics.settingRowHeight)
 
             ConnectionTestStatus(viewModel: viewModel)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     static func testHint(for viewModel: SettingsViewModel) -> String {

@@ -25,7 +25,6 @@ private final class StatusItemTestActions: SettingsActions {
     func testConnection() async throws -> BackendHealth {
         BackendHealth(status: .healthy, message: "ok")
     }
-    func setVisionFallback(_ enabled: Bool) {}
     func setLocalConfiguration(baseURL: String, model: String) {}
     func setDeepSeekModel(_ model: String) {}
     func requestPermission(_ kind: PermissionKind) {}
@@ -36,7 +35,6 @@ private final class StatusItemTestActions: SettingsActions {
     func removeTranslationApplication(bundleIdentifier: String) {}
     func clearCache() async throws {}
     func openLogs() {}
-    func openDeepSeekStats() {}
     func quit() {}
 }
 

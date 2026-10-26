@@ -25,7 +25,6 @@ private final class RenderActions: SettingsActions {
     func testConnection() async throws -> BackendHealth {
         BackendHealth(status: .healthy, message: "ok")
     }
-    func setVisionFallback(_ enabled: Bool) {}
     func setLocalConfiguration(baseURL: String, model: String) {}
     func setDeepSeekModel(_ model: String) {}
     func requestPermission(_ kind: PermissionKind) {}
@@ -36,7 +35,6 @@ private final class RenderActions: SettingsActions {
     func removeTranslationApplication(bundleIdentifier: String) {}
     func clearCache() async throws {}
     func openLogs() {}
-    func openDeepSeekStats() {}
     func quit() {}
 }
 
@@ -80,7 +78,7 @@ struct GlassUIRenderTests {
     }
 
     @Test
-    func deepSeekStatsViewRendersLiveTotals() throws {
+    func deepSeekStatsSectionRendersLiveTotalsInsideSettingsWidth() throws {
         let store = DeepSeekUsageStore()
         store.record(
             usage: DeepSeekTokenUsage(inputTokens: 1_200, cachedInputTokens: 900, outputTokens: 300),
@@ -88,12 +86,52 @@ struct GlassUIRenderTests {
             durationSeconds: 2,
             requestedAt: Date(timeIntervalSince1970: 1_760_000_000)
         )
-        let view = DeepSeekStatsView(viewModel: DeepSeekStatsViewModel(store: store))
-            .frame(width: 420, height: 520)
+        let view = VStack(alignment: .leading) {
+            DeepSeekStatsSection(store: store)
+        }
+        .padding(GTControlMetrics.cardHorizontalPadding)
+        .frame(width: GTPopoverMetrics.width)
+        .background(GTColor.panelBackground)
         let image = try Self.renderHostingView(view)
-        #expect(image.size.width == 420)
-        #expect(image.size.height == 520)
+        #expect(image.size.width == GTPopoverMetrics.width)
+        #expect(image.size.height > 0)
         try Self.writeIfRequested(image, named: "gt-deepseek-stats.png")
+    }
+
+    @Test
+    func overlayPatchCoversSourceTextWithoutReadingAsAPopup() throws {
+        let view = ZStack(alignment: .topLeading) {
+            Color(red: 0.08, green: 0.08, blue: 0.10)
+            Text("Ask anything, @ mention, or run actions")
+                .font(.system(size: 13))
+                .foregroundStyle(.white)
+                .padding(.leading, 6)
+                .padding(.top, 4)
+            OverlayView(text: "询问任何内容，@ 提及，或执行操作")
+                .frame(width: 320, height: 26)
+        }
+        .frame(width: 336, height: 64)
+        let image = try Self.renderHostingView(view)
+        #expect(image.size.width == 336)
+        #expect(image.size.height == 64)
+        try Self.writeIfRequested(image, named: "gt-overlay-patch.png")
+    }
+
+    @Test
+    func cloudBackendSectionRendersInlineStatsWithoutVisionToggle() throws {
+        let viewModel = SettingsViewModel(actions: RenderActions())
+        viewModel.keyConfigured = true
+        viewModel.availableModels = [AppConfiguration.defaultDeepSeekModel]
+        viewModel.deepSeekModel = AppConfiguration.defaultDeepSeekModel
+        viewModel.connectionTest = .healthy("DeepSeek 后端已就绪")
+        let view = CloudBackendSection(viewModel: viewModel)
+            .padding(GTControlMetrics.cardHorizontalPadding)
+            .frame(width: GTPopoverMetrics.width)
+            .background(GTColor.panelBackground)
+        let image = try Self.renderHostingView(view)
+        #expect(image.size.width == GTPopoverMetrics.width)
+        #expect(image.size.height > 0)
+        try Self.writeIfRequested(image, named: "gt-cloud-backend-inline-stats.png")
     }
 
     @Test
