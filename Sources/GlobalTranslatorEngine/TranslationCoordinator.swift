@@ -165,7 +165,8 @@ public actor TranslationCoordinator {
         emit(.snapshotReceived(regionCount: snapshot.regions.count, windowRevision: revision))
         let startedAt = clock.now()
 
-        let plan = batcher.plan(regions: snapshot.regions, requireTranslatable: !includeIneligibleText)
+        let sourceLanguage = snapshot.source == .pageText ? snapshot.sourceLanguage : nil
+        let plan = batcher.plan(regions: snapshot.regions, requireTranslatable: !includeIneligibleText, sourceLanguage: sourceLanguage)
         var textByRegionID: [UUID: String] = [:]
         var pendingEntries: [TranslationBatchEntry] = []
         var cacheHitCount = 0
@@ -175,7 +176,8 @@ public actor TranslationCoordinator {
                 source: entry.sourceText,
                 backend: kind,
                 model: model,
-                targetLanguage: effectiveTargetLanguage
+                targetLanguage: effectiveTargetLanguage,
+                sourceLanguage: sourceLanguage
             )
             if let cached = await cache.value(for: key) {
                 try ensureCurrent(revision: revision, generation: generation)
@@ -206,7 +208,8 @@ public actor TranslationCoordinator {
             copiedSourcePolicy: Self.copiedSourcePolicy(for: snapshot),
             // 只有显式覆盖（划词中文→英文）才把 targetLanguage 写进请求；默认
             // 请求保持 nil，让后端走原本的简体中文 prompt。
-            targetLanguage: targetLanguage
+            targetLanguage: targetLanguage,
+            sourceLanguage: sourceLanguage
         )
         let vision = makeVisionImages(
             snapshot: snapshot,
@@ -277,7 +280,8 @@ public actor TranslationCoordinator {
                     source: entry.sourceText,
                     backend: kind,
                     model: model,
-                    targetLanguage: effectiveTargetLanguage
+                    targetLanguage: effectiveTargetLanguage,
+                    sourceLanguage: sourceLanguage
                 )
                 try ensureCurrent(revision: revision, generation: generation)
                 await cache.insert(translated, for: key)

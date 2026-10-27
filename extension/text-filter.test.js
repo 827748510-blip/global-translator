@@ -75,3 +75,14 @@ assertEqual(filter.shouldTranslate("timeout_ms"), false, "snake");
 assertEqual(filter.shouldTranslate("Hello world"), true, "sentence");
 
 console.log("extension/text-filter.test.js ok");
+
+for (const tag of ["ja", "JA-jp", "ko-KR", "zh-TW", "zh-Hant-HK"]) {
+  assertEqual(filter.shouldSendForPageTranslate("切手", tag), true, "Han source context " + tag);
+}
+for (const tag of [undefined, "java", "ja!", "ja_JP", "ja\n", "zh-Hans-TW", "zh-x-tw", "zh-CN"]) {
+  assertEqual(filter.shouldSendForPageTranslate("普通中文", tag), false, "no prefix/invalid override " + tag);
+}
+for (const tag of ["", "ja\n", "ja_JP", null, {}, "ja-", "ja--JP", "a".repeat(64)]) {
+  assertEqual(filter.normalizeSourceLanguage(tag), undefined, "invalid tag not relayed");
+}
+assertEqual(filter.normalizeSourceLanguage("JA-jp"), "ja-jp", "canonical hint");

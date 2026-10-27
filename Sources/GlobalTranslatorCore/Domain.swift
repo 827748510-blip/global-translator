@@ -152,17 +152,20 @@ public struct TranslationRequest: Codable, Equatable, Sendable {
     /// (Simplified Chinese), so the overlay and the extension bridge are
     /// unchanged. The 划词 / 截图 path sets it to `en` for Chinese sources.
     public let targetLanguage: String?
+    public let sourceLanguage: TranslationSourceLanguage?
 
     public init(
         windowRevision: UInt64,
         items: [TranslationItem],
         copiedSourcePolicy: CopiedSourcePolicy = .reject,
-        targetLanguage: String? = nil
+        targetLanguage: String? = nil,
+        sourceLanguage: TranslationSourceLanguage? = nil
     ) {
         self.windowRevision = windowRevision
         self.items = items
         self.copiedSourcePolicy = copiedSourcePolicy
         self.targetLanguage = targetLanguage
+        self.sourceLanguage = sourceLanguage
     }
 
     public init(from decoder: Decoder) throws {
@@ -171,6 +174,7 @@ public struct TranslationRequest: Codable, Equatable, Sendable {
         items = try container.decode([TranslationItem].self, forKey: .items)
         copiedSourcePolicy = try container.decodeIfPresent(CopiedSourcePolicy.self, forKey: .copiedSourcePolicy) ?? .reject
         targetLanguage = try container.decodeIfPresent(String.self, forKey: .targetLanguage)
+        sourceLanguage = try container.decodeIfPresent(TranslationSourceLanguage.self, forKey: .sourceLanguage)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -179,10 +183,11 @@ public struct TranslationRequest: Codable, Equatable, Sendable {
         try container.encode(items, forKey: .items)
         try container.encode(copiedSourcePolicy, forKey: .copiedSourcePolicy)
         try container.encodeIfPresent(targetLanguage, forKey: .targetLanguage)
+        try container.encodeIfPresent(sourceLanguage, forKey: .sourceLanguage)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case windowRevision, items, copiedSourcePolicy, targetLanguage
+        case windowRevision, items, copiedSourcePolicy, targetLanguage, sourceLanguage
     }
 }
 

@@ -84,7 +84,7 @@ assert(videoJs.indexOf("asrStatus") !== -1, "overlay receives asr status");
 assert(manifest.indexOf("video-asr.js") !== -1, "manifest loads asr helper");
 assert(manifest.indexOf("microphone") === -1, "no microphone permission");
 
-assert(manifest.indexOf("\"version\": \"1.0.11\"") !== -1, "manifest version");
+assert(manifest.indexOf("\"version\": \"1.0.12\"") !== -1, "manifest version");
 assert(background.indexOf("importScripts(\"bridge-queue.js\")") !== -1, "background loads bridge queue");
 assert(background.indexOf("message.lane === \"video\"") !== -1, "background honors video lane");
 assert(background.indexOf("message.type === \"ping\"") !== -1, "background health ping");

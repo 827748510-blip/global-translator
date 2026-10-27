@@ -5,12 +5,14 @@ public struct TranslationCacheKey: Hashable, Sendable {
     public let backend: BackendKind
     public let model: String
     public let targetLanguage: String
+    public let sourceLanguage: TranslationSourceLanguage?
 
-    public init(source: String, backend: BackendKind, model: String, targetLanguage: String) {
+    public init(source: String, backend: BackendKind, model: String, targetLanguage: String, sourceLanguage: TranslationSourceLanguage? = nil) {
         self.source = source
         self.backend = backend
         self.model = model
         self.targetLanguage = targetLanguage
+        self.sourceLanguage = sourceLanguage
     }
 
     public init(sourceText: String, backend: BackendKind, model: String, targetLanguage: String) {

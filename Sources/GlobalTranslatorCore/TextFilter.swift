@@ -64,8 +64,8 @@ public enum TextFilter {
         "PNG", "JPG", "JPEG", "URL", "IP", "DNS", "RAM", "SSD", "SDK", "CLI", "SQL", "UTF"
     ]
 
-    public static func shouldTranslate(_ text: String) -> Bool {
-        switch selectionDecision(text) {
+    public static func shouldTranslate(_ text: String, sourceLanguage: TranslationSourceLanguage? = nil) -> Bool {
+        switch selectionDecision(text, sourceLanguage: sourceLanguage) {
         case .translate:
             return true
         case .skip, .alreadyTargetLanguage, .noTranslationNeeded:
@@ -99,7 +99,8 @@ public enum TextFilter {
 
     public static func selectionDecision(
         _ text: String,
-        targetLanguage: String = SelectionTranslateSupport.defaultTargetLanguage
+        targetLanguage: String = SelectionTranslateSupport.defaultTargetLanguage,
+        sourceLanguage: TranslationSourceLanguage? = nil
     ) -> SelectionTranslationDecision {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return .skip }
@@ -109,7 +110,8 @@ public enum TextFilter {
         guard value.unicodeScalars.contains(where: { CharacterSet.letters.contains($0) }) else {
             return .skip
         }
-        if SelectionTranslateSupport.isChineseTarget(targetLanguage), isAlreadySimplifiedChinese(value) {
+        if SelectionTranslateSupport.isChineseTarget(targetLanguage),
+           sourceLanguage?.requiresCJKTranslation != true, isAlreadySimplifiedChinese(value) {
             return .alreadyTargetLanguage
         }
         if isTechnicalTokenPhrase(value) {

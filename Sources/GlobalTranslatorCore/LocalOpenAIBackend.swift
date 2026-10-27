@@ -176,7 +176,7 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
         let payload = ChatPayload(
             model: model,
             messages: [
-                ChatPrompt(role: "system", content: LocalTranslationPrompt.system(for: direction)),
+                ChatPrompt(role: "system", content: LocalTranslationPrompt.system(for: direction, sourceLanguage: request.sourceLanguage)),
                 ChatPrompt(role: "user", content: LocalTranslationPrompt.userContent(
                     for: request.items,
                     direction: direction
