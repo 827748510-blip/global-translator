@@ -392,9 +392,9 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             videoASRSetNeeded: { [weak self] needed in
                 self?.videoASR?.setCaptionsNeeded(needed)
             }
-        ) { [weak self] texts in
+        ) { [weak self] texts, sourceLanguage in
             guard let session = self?.session else { throw ExtensionBridgeError.translatorUnavailable }
-            return try await session.translateBridgeTexts(texts)
+            return try await session.translateBridgeTexts(texts, sourceLanguage: sourceLanguage)
         }
         server.start()
         bridgeServer = server

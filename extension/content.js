@@ -34,7 +34,9 @@
   }
 
   function pageLanguage() {
-    return String((document.documentElement && document.documentElement.lang) || "").toLowerCase();
+    return GlobalTranslatorTextFilter.normalizeSourceLanguage(
+      (document.documentElement && document.documentElement.lang) || ""
+    );
   }
 
   function isEligible(node) {
@@ -77,6 +79,9 @@
       const id = nodeId(node);
       const entry = store.entries.get(id);
       const text = textOf(node);
+      // Page language is a source hint, even after we replace the DOM. Never
+      // submit our own output again on ja/ko/Traditional Chinese pages.
+      if (entry.translation === text) continue;
       if (entry.source === text && entry.translation) {
         node.nodeValue = node.nodeValue.replace(text, entry.translation);
         continue;
@@ -90,7 +95,7 @@
 
   function translateChunk(texts) {
     return new Promise((resolve) => {
-      chrome.runtime.sendMessage({ type: "translate", texts }, (response) => {
+      chrome.runtime.sendMessage({ type: "translate", texts, sourceLanguage: pageLanguage() || undefined }, (response) => {
         if (chrome.runtime.lastError || !response || response.error) {
           resolve(null);
           return;

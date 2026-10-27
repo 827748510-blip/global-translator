@@ -220,7 +220,7 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         let payload = ResponsesPayload(
             model: model,
             input: [
-                ResponseInputMessage(role: "system", content: TranslationInstructions.system(for: direction)),
+                ResponseInputMessage(role: "system", content: TranslationInstructions.system(for: direction, sourceLanguage: request.sourceLanguage)),
                 ResponseInputMessage(role: "user", content: userContent)
             ],
             text: ResponsesText(format: JSONSchemaFormat(schema: TranslationSchema.object))
@@ -296,7 +296,7 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         let payload = VisionResponsesPayload(
             model: Self.visionModel,
             input: [
-                VisionResponseInputMessage(role: "system", content: [.inputText(TranslationInstructions.system(for: direction))]),
+                VisionResponseInputMessage(role: "system", content: [.inputText(TranslationInstructions.system(for: direction, sourceLanguage: request.sourceLanguage))]),
                 VisionResponseInputMessage(role: "user", content: userContent)
             ],
             text: ResponsesText(format: JSONSchemaFormat(schema: TranslationSchema.object))

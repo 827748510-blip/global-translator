@@ -193,7 +193,7 @@ public final class TranslationSession {
     /// `TranslationCoordinator.localPageTextBatchSize` and the extension
     /// `CHUNK_SIZE`. Transient chunk failures do not 500 the whole HTTP
     /// request; those indexes go back to the extension as `retry`.
-    public func translateBridgeTexts(_ texts: [String]) async throws -> ExtensionBridgeTranslation {
+    public func translateBridgeTexts(_ texts: [String], sourceLanguage: TranslationSourceLanguage? = nil) async throws -> ExtensionBridgeTranslation {
         guard isBridgeActive else { throw ExtensionBridgeError.translatorInactive }
         guard bridgeCoordinator != nil else { throw ExtensionBridgeError.translatorUnavailable }
         let capped = Array(texts.prefix(400))
@@ -208,7 +208,7 @@ public final class TranslationSession {
                 let end = min(index + chunkSize, capped.count)
                 let slice = Array(capped[index..<end])
                 do {
-                    let part = try await translateBridgeSlice(slice)
+                    let part = try await translateBridgeSlice(slice, sourceLanguage: sourceLanguage)
                     results.append(contentsOf: part)
                 } catch let error as ExtensionBridgeError {
                     throw error
@@ -224,7 +224,7 @@ public final class TranslationSession {
             return ExtensionBridgeTranslation(translations: results, retryIndexes: retryIndexes)
         }
         do {
-            return ExtensionBridgeTranslation(translations: try await translateBridgeSlice(capped))
+            return ExtensionBridgeTranslation(translations: try await translateBridgeSlice(capped, sourceLanguage: sourceLanguage))
         } catch let error as ExtensionBridgeError {
             throw error
         } catch {
@@ -240,19 +240,22 @@ public final class TranslationSession {
         }
     }
 
-    private func translateBridgeSlice(_ texts: [String]) async throws -> [String?] {
+    private func translateBridgeSlice(_ texts: [String], sourceLanguage: TranslationSourceLanguage?) async throws -> [String?] {
         guard let coordinator = bridgeCoordinator else { throw ExtensionBridgeError.translatorUnavailable }
         let regions = texts.map { text in
             TextRegion(id: UUID(), sourceText: text, screenFrame: .zero,
                        confidence: 1, source: .accessibility, windowRevision: 0)
         }
-        let eligible = regions.filter { TextFilter.shouldTranslate($0.sourceText) && $0.sourceText.count <= 4_000 }
+        let eligible = regions.filter { TextFilter.shouldTranslate($0.sourceText, sourceLanguage: sourceLanguage) && $0.sourceText.count <= 4_000 }
         let eligibleIDs = Set(eligible.map(\.id))
         guard !eligible.isEmpty else { return texts.map { $0 as String? } }
         let descriptor = ActiveWindowDescriptor(
             pid: 0, bundleIdentifier: "extension.bridge", windowID: nil,
             frame: .zero, revision: 0, invalidatesOverlay: false)
-        let snapshot = CaptureSnapshot(window: CapturedWindow(descriptor: descriptor, regions: eligible, source: .pageText))
+        let snapshot = CaptureSnapshot(
+            window: CapturedWindow(descriptor: descriptor, regions: eligible, source: .pageText),
+            sourceLanguage: sourceLanguage
+        )
         await coordinator.selectBackend(kind: backend, modelIdentifier: model)
         let output = try await coordinator.translate(
             snapshot: snapshot,

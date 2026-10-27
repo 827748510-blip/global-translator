@@ -149,8 +149,23 @@
 
   // Pages that declare a CJK-but-not-Simplified-Chinese language still need
   // kanji-only nodes translated: 東京 (ja), hanja (ko), 繁體 (zh-TW).
+  function normalizeSourceLanguage(value) {
+    if (typeof value !== "string" || value.length > 63) return undefined;
+    const match = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*$/.exec(value);
+    if (!match || match[0] !== value) return undefined;
+    return value.toLowerCase();
+  }
+
   function isForeignCJKPage(pageLanguage) {
-    return /^(?:ja|ko|zh-(?:hant|tw|hk|mo))/i.test(String(pageLanguage || "").trim());
+    const tag = normalizeSourceLanguage(pageLanguage);
+    if (!tag) return false;
+    const parts = tag.split("-");
+    if (parts[0] === "ja" || parts[0] === "ko") return true;
+    if (parts[0] !== "zh" || parts.length < 2) return false;
+    const script = parts[1].length === 4 ? parts[1] : null;
+    if (script === "hans") return false;
+    if (script === "hant") return true;
+    return ["tw", "hk", "mo"].includes(parts[script ? 2 : 1]);
   }
 
   // Simplified-Chinese detection for the page bridge. Kana/hangul always mean
@@ -195,6 +210,7 @@
   }
 
   const api = {
+    normalizeSourceLanguage,
     shouldTranslate,
     shouldSendForPageTranslate
   };

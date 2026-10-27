@@ -22,14 +22,16 @@ public struct TranslationBatch: Equatable, Sendable {
         entries: [TranslationBatchEntry],
         windowRevision: UInt64,
         copiedSourcePolicy: CopiedSourcePolicy = .reject,
-        targetLanguage: String? = nil
+        targetLanguage: String? = nil,
+        sourceLanguage: TranslationSourceLanguage? = nil
     ) {
         self.entries = entries
         request = TranslationRequest(
             windowRevision: windowRevision,
             items: entries.map(\.item),
             copiedSourcePolicy: copiedSourcePolicy,
-            targetLanguage: targetLanguage
+            targetLanguage: targetLanguage,
+            sourceLanguage: sourceLanguage
         )
         sourceCharacterCount = entries.reduce(into: 0) { result, entry in
             result += entry.sourceText.count
@@ -66,7 +68,7 @@ public struct TranslationBatcher: Sendable {
         self.maximumSourceCharacters = min(max(maximumSourceCharacters, 1), 4_000)
     }
 
-    public func plan(regions: [TextRegion], requireTranslatable: Bool = true) -> TranslationBatchPlan {
+    public func plan(regions: [TextRegion], requireTranslatable: Bool = true, sourceLanguage: TranslationSourceLanguage? = nil) -> TranslationBatchPlan {
         let sorted = regions.sorted(by: Self.readingOrder)
         var groups: [String: TranslationBatchEntry] = [:]
         var order: [String] = []
@@ -74,7 +76,7 @@ public struct TranslationBatcher: Sendable {
 
         for region in sorted {
             let source = region.sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
-            let translatable = !requireTranslatable || TextFilter.shouldTranslate(source)
+            let translatable = !requireTranslatable || TextFilter.shouldTranslate(source, sourceLanguage: sourceLanguage)
             guard translatable, source.count <= maximumSourceCharacters else {
                 filteredCount += 1
                 continue
@@ -108,7 +110,8 @@ public struct TranslationBatcher: Sendable {
         from entries: [TranslationBatchEntry],
         windowRevision: UInt64,
         copiedSourcePolicy: CopiedSourcePolicy = .reject,
-        targetLanguage: String? = nil
+        targetLanguage: String? = nil,
+        sourceLanguage: TranslationSourceLanguage? = nil
     ) -> [TranslationBatch] {
         var batches: [TranslationBatch] = []
         var current: [TranslationBatchEntry] = []
@@ -122,7 +125,8 @@ public struct TranslationBatcher: Sendable {
                     entries: current,
                     windowRevision: windowRevision,
                     copiedSourcePolicy: copiedSourcePolicy,
-                    targetLanguage: targetLanguage
+                    targetLanguage: targetLanguage,
+                    sourceLanguage: sourceLanguage
                 ))
                 current.removeAll(keepingCapacity: true)
                 currentCharacters = 0
@@ -135,7 +139,8 @@ public struct TranslationBatcher: Sendable {
                 entries: current,
                 windowRevision: windowRevision,
                 copiedSourcePolicy: copiedSourcePolicy,
-                targetLanguage: targetLanguage
+                targetLanguage: targetLanguage,
+                sourceLanguage: sourceLanguage
             ))
         }
         return batches
@@ -145,14 +150,16 @@ public struct TranslationBatcher: Sendable {
         from regions: [TextRegion],
         windowRevision: UInt64,
         copiedSourcePolicy: CopiedSourcePolicy = .reject,
-        targetLanguage: String? = nil
+        targetLanguage: String? = nil,
+        sourceLanguage: TranslationSourceLanguage? = nil
     ) -> [TranslationBatch] {
-        let plan = plan(regions: regions)
+        let plan = plan(regions: regions, sourceLanguage: sourceLanguage)
         return makeBatches(
             from: plan.entries,
             windowRevision: windowRevision,
             copiedSourcePolicy: copiedSourcePolicy,
-            targetLanguage: targetLanguage
+            targetLanguage: targetLanguage,
+            sourceLanguage: sourceLanguage
         )
     }
 

@@ -1,5 +1,6 @@
 import Foundation
 import GlobalTranslatorCapture
+import GlobalTranslatorCore
 import Network
 
 public enum ExtensionBridgeError: Error, Equatable, Sendable {
@@ -30,7 +31,7 @@ public struct ExtensionBridgeTranslation: Equatable, Sendable {
 ///
 /// Protocol:
 ///   GET  /health     -> 200 {"ok":true,"videoTranslateEnabled":Bool,"videoAsrStatus":String}
-///   POST /translate  {"texts":[String]} -> 200
+///   POST /translate  {"texts":[String],"sourceLanguage"?:String} -> 200
 ///                     {"translations":[String?], "retry":[Int]}
 ///                     null is a deliberate skip; `retry` lists indexes
 ///                     that failed transiently and should be asked again.
@@ -40,6 +41,7 @@ public struct ExtensionBridgeTranslation: Equatable, Sendable {
 ///   OPTIONS *        -> 204 with CORS headers for the extension origin.
 public final class ExtensionBridgeServer: @unchecked Sendable {
     public typealias TranslateHandler = @MainActor @Sendable ([String]) async throws -> ExtensionBridgeTranslation
+    public typealias ContextualTranslateHandler = @MainActor @Sendable ([String], TranslationSourceLanguage?) async throws -> ExtensionBridgeTranslation
     public typealias VideoTranslateEnabledHandler = @MainActor @Sendable () -> Bool
     public typealias VideoASRSnapshotHandler = @MainActor @Sendable () -> VideoASRSnapshot
     public typealias VideoASRNeededHandler = @MainActor @Sendable (Bool) -> Void
@@ -65,7 +67,7 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
     private let videoTranslateEnabled: VideoTranslateEnabledHandler
     private let videoASRSnapshot: VideoASRSnapshotHandler
     private let videoASRSetNeeded: VideoASRNeededHandler
-    private let handler: TranslateHandler
+    private let handler: ContextualTranslateHandler
     private let queue = DispatchQueue(label: "global-translator.extension-bridge")
     private var listener: NWListener?
     /// Token bucket: burst 30, refilled at 10/s. Normal page/video traffic stays
@@ -83,7 +85,7 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         videoTranslateEnabled: @escaping VideoTranslateEnabledHandler = { false },
         videoASRSnapshot: @escaping VideoASRSnapshotHandler = { .idle },
         videoASRSetNeeded: @escaping VideoASRNeededHandler = { _ in },
-        handler: @escaping TranslateHandler
+        handler: @escaping ContextualTranslateHandler
     ) {
         self.requestedPort = port
         self.logger = logger
@@ -91,6 +93,22 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         self.videoASRSnapshot = videoASRSnapshot
         self.videoASRSetNeeded = videoASRSetNeeded
         self.handler = handler
+    }
+
+    /// Preserve callers of the original texts-only Swift API as well as the
+    /// original HTTP payload. The application uses the contextual overload.
+    public convenience init(
+        port: UInt16 = ExtensionBridgeServer.defaultPort,
+        logger: (any AppRuntimeLogger)? = nil,
+        videoTranslateEnabled: @escaping VideoTranslateEnabledHandler = { false },
+        videoASRSnapshot: @escaping VideoASRSnapshotHandler = { .idle },
+        videoASRSetNeeded: @escaping VideoASRNeededHandler = { _ in },
+        handler: @escaping TranslateHandler
+    ) {
+        self.init(
+            port: port, logger: logger, videoTranslateEnabled: videoTranslateEnabled,
+            videoASRSnapshot: videoASRSnapshot, videoASRSetNeeded: videoASRSetNeeded
+        ) { texts, _ in try await handler(texts) }
     }
 
     public func start() {
@@ -246,12 +264,23 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
             send(.json(status: 400, object: ["error": "bad request"]), on: connection, origin: origin)
             return
         }
+        // Missing hints retain the legacy protocol. Present hints must be
+        // bounded tags, including their JSON type; null/objects are invalid.
+        var sourceLanguage: TranslationSourceLanguage?
+        if let raw = payload["sourceLanguage"] {
+            guard let tag = raw as? String, let language = TranslationSourceLanguage(tag) else {
+                send(.json(status: 400, object: ["error": "bad request"]), on: connection, origin: origin)
+                return
+            }
+            sourceLanguage = language
+        }
+        let validatedLanguage = sourceLanguage
         logger?.event("bridge_translate", fields: ["count": String(texts.count)])
         Task { [weak self] in
             guard let self else { return }
             let response: Response
             do {
-                let result = try await self.handler(texts)
+                let result = try await self.handler(texts, validatedLanguage)
                 response = .json(status: 200, object: [
                     "translations": result.translations.map { $0 as Any },
                     "retry": result.retryIndexes
