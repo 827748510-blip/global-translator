@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Global Translator Bridge",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "description": "网页整页原地翻译，并可选用视频字幕叠中文。配合 macOS 菜单栏的 Global Translator 使用。",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApcSBT0NZiD+vOtenAI084IJdKpO1pJBzF77lPO0Q/04hbuCb5QRtZGNdiYsPvR8BFqdDC7fM4NsZ1MFwfYUJhDeckcQnh+r4WqlkyRw3Y+UOMOQjRPZH8mDyEALc1W5bUaeS1LMWY4qXDBc0fhGhlMcOebQm5L0KDNwBswMNCkvB/Iyn4jB+CYxN6FvXh2iMTsGrvjGdB28+PE8xpsmkXvxbsLvTJtBjNhNSEYSG4AIFsJsia4/zGLvTU2QUjPh0t91sRpKJaaAsEszavEzf/IofsaDo7oN4Ba9uMUmUEKrhbpAX/2QA7suWXOMDXUqvX05a5+unFlZCV9dYEjORmwIDAQAB",
   "permissions": ["storage"],

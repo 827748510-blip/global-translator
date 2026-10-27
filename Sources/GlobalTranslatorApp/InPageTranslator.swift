@@ -285,7 +285,13 @@ public actor CDPInPageTranslator: InPageTranslating {
         const original = node.nodeValue || '';
         const text = original.trim();
         if (text.length < 2) continue;
-        if (!/[A-Za-z]/.test(text) || /[\\u4e00-\\u9fff]/.test(text)) continue;
+        if (!/\\p{L}/u.test(text)) continue;
+        const kana = /[\\u3040-\\u30FF\\u31F0-\\u31FF]/.test(text);
+        const hangul = /[\\u1100-\\u11FF\\u3130-\\u318F\\uAC00-\\uD7AF]/.test(text);
+        const cjk = /[\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF]/.test(text);
+        const pageLang = (document.documentElement.lang || '').toLowerCase();
+        const foreignCJKPage = /^(?:ja|ko|zh-(?:hant|tw|hk|mo))/i.test(pageLang);
+        if (cjk && !kana && !hangul && !foreignCJKPage && !/[A-Za-z]/.test(text)) continue;
         const element = node.parentElement;
         if (!element || skipped.indexOf(element.tagName) !== -1) continue;
         if (element.closest && element.closest('[contenteditable="true"], [contenteditable=""]')) continue;

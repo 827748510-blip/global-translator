@@ -174,7 +174,7 @@ struct ScreenshotTranslateCoreTests {
                 == ScreenshotTranslateSupport.ocrFailedCopy)
         #expect(ScreenshotTranslateSupport.missingDeepSeekKeyCopy
                 == SelectionTranslateSupport.missingDeepSeekKeyCopy)
-        #expect(!ScreenshotTranslateSupport.recognitionLanguages.contains(where: { $0.contains("openapi") }))
+        #expect(ScreenshotTranslateSupport.recognitionLanguages.isEmpty)
     }
 
     @Test

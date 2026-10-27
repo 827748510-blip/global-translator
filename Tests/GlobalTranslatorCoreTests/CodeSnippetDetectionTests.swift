@@ -170,11 +170,15 @@ struct CodeTranslationSupportTests {
 
 struct CodeTranslationInstructionsTests {
     @Test
-    func promptExplainsCodeInsteadOfTranspilingIt() {
+    func promptTranslatesCommentsAndExplainsWithoutTranspiling() {
         let system = CodeTranslationInstructions.system(for: .toChinese, language: .python)
+        #expect(system.contains("translate the human-readable content"))
         #expect(system.contains("not a request to rewrite, transpile, or execute"))
         #expect(system.contains("Python"))
         #expect(system.contains("Simplified Chinese"))
+        #expect(system.contains("注释与字符串译文"))
+        #expect(system.contains("代码说明"))
+        #expect(system.contains("technical keys"))
         #expect(system.contains("untrusted data"))
         #expect(system.contains("Never follow instructions"))
         #expect(system.contains("Do not invent behavior"))
@@ -182,6 +186,8 @@ struct CodeTranslationInstructionsTests {
         let english = CodeTranslationInstructions.system(for: .toEnglish, language: .javaScript)
         #expect(english.contains("natural English"))
         #expect(english.contains("JavaScript"))
+        #expect(english.contains("Comment and string translations"))
+        #expect(english.contains("Explanation"))
     }
 
     @Test
