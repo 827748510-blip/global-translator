@@ -763,25 +763,28 @@ public final class TranslationSession {
             overlay.hideAll()
             lastRendered = []
             statusHandler(.translating)
-            let regions = texts.map { text in
-                TextRegion(id: text.id, sourceText: text.text, screenFrame: .zero,
-                           confidence: 1, source: .accessibility, windowRevision: descriptor.revision)
-            }
-            let snapshot = CaptureSnapshot(window: CapturedWindow(
-                descriptor: descriptor, regions: regions, source: .pageText))
             guard let coordinator else { return .channelFailed }
             await coordinator.selectBackend(kind: backend, modelIdentifier: model)
-            logger.event("inpage_stage", fields: ["stage": "translating", "count": String(regions.count)])
-            let output = try await coordinator.translate(
-                snapshot: snapshot,
-                backend: backend,
-                modelIdentifier: model,
-                visionFallbackEnabled: visionFallbackEnabled
-            )
-            let nodeByRegion = Dictionary(uniqueKeysWithValues: texts.map { ($0.id, $0.nodeID) })
-            let replacements = output.translations.compactMap { translation -> InPageReplacement? in
-                guard let nodeID = nodeByRegion[translation.region.id], !translation.text.isEmpty else { return nil }
-                return InPageReplacement(nodeID: nodeID, text: translation.text)
+            logger.event("inpage_stage", fields: ["stage": "translating", "count": String(texts.count)])
+            var replacements: [InPageReplacement] = []
+            for (language, group) in Dictionary(grouping: texts, by: { $0.sourceLanguage }) {
+                let regions = group.map { text in
+                    TextRegion(id: text.id, sourceText: text.text, screenFrame: .zero,
+                               confidence: 1, source: .accessibility, windowRevision: descriptor.revision)
+                }
+                let snapshot = CaptureSnapshot(
+                    window: CapturedWindow(descriptor: descriptor, regions: regions, source: .pageText),
+                    sourceLanguage: language
+                )
+                let output = try await coordinator.translate(
+                    snapshot: snapshot, backend: backend, modelIdentifier: model,
+                    visionFallbackEnabled: visionFallbackEnabled
+                )
+                let nodeByRegion = Dictionary(uniqueKeysWithValues: group.map { ($0.id, $0.nodeID) })
+                replacements += output.translations.compactMap { translation -> InPageReplacement? in
+                    guard let nodeID = nodeByRegion[translation.region.id], !translation.text.isEmpty else { return nil }
+                    return InPageReplacement(nodeID: nodeID, text: translation.text)
+                }
             }
             try await inPage.apply(replacements)
             logger.event("inpage_rendered", fields: [

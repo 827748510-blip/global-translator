@@ -123,8 +123,10 @@
       // DOM mutation does not re-request them forever.
       if (retry.has(i)) continue;
       entry.source = items[i].text;
-      const translated = translations[i];
-      if (!translated || typeof translated !== "string") continue;
+      const rawTranslation = translations[i];
+      if (typeof rawTranslation !== "string") continue;
+      const translated = rawTranslation.trim();
+      if (!translated) continue;
       node.nodeValue = original.replace(trimmed, translated);
       entry.translation = translated;
       applied++;

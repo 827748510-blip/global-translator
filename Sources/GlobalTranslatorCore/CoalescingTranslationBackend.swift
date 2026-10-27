@@ -7,8 +7,16 @@ public actor CoalescingTranslationBackend: TranslationBackend {
         let token: UUID
         let task: Task<[String: String], Error>
     }
-    private var pending: [[String]: Flight] = [:]
-    private var completed: (key: [String], values: [String: String])?
+    // IDs and revisions are remapped for each waiter. Every field that can
+    // change translation content or acceptance must stay in the flight key.
+    private struct Key: Hashable {
+        let sources: [String]
+        let sourceLanguage: TranslationSourceLanguage?
+        let targetLanguage: String?
+        let copiedSourcePolicy: String
+    }
+    private var pending: [Key: Flight] = [:]
+    private var completed: (key: Key, values: [String: String])?
 
     public init(base: any TranslationBackend) {
         self.base = base
@@ -27,7 +35,12 @@ public actor CoalescingTranslationBackend: TranslationBackend {
     public func translate(_ request: TranslationRequest) async throws -> TranslationResult {
         try TranslationRequestValidator.validate(request)
         try Task.checkCancellation()
-        let key = request.items.map(\.sourceText).sorted()
+        let key = Key(
+            sources: request.items.map(\.sourceText).sorted(),
+            sourceLanguage: request.sourceLanguage,
+            targetLanguage: request.targetLanguage,
+            copiedSourcePolicy: request.copiedSourcePolicy.rawValue
+        )
         if let completed, completed.key == key {
             return try remap(completed.values, to: request)
         }

@@ -1,15 +1,18 @@
 import Foundation
+import GlobalTranslatorCore
 
 /// One translatable text node discovered inside a web page.
 public struct InPageText: Equatable, Sendable {
     public let nodeID: String
     public let id: UUID
     public let text: String
+    public let sourceLanguage: TranslationSourceLanguage?
 
-    public init(nodeID: String, id: UUID, text: String) {
+    public init(nodeID: String, id: UUID, text: String, sourceLanguage: TranslationSourceLanguage? = nil) {
         self.nodeID = nodeID
         self.id = id
         self.text = text
+        self.sourceLanguage = sourceLanguage
     }
 }
 
@@ -139,7 +142,8 @@ public actor CDPInPageTranslator: InPageTranslating {
             guard let nodeID = entry["id"] as? String,
                   let text = entry["text"] as? String, !text.isEmpty else { return nil }
             let id = nodeIdentifier(for: nodeID)
-            return InPageText(nodeID: nodeID, id: id, text: text)
+            return InPageText(nodeID: nodeID, id: id, text: text,
+                              sourceLanguage: (entry["sourceLanguage"] as? String).flatMap(TranslationSourceLanguage.init))
         }
     }
 
@@ -150,14 +154,19 @@ public actor CDPInPageTranslator: InPageTranslating {
             ?? targets.first { $0.url == extractionTargetURL }
             ?? targets.first
         guard let page else { return }
-        let map = Dictionary(uniqueKeysWithValues: replacements.map { ($0.nodeID, $0.text) })
+        let map = Dictionary(uniqueKeysWithValues: replacements.compactMap { replacement -> (String, String)? in
+            let text = replacement.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : (replacement.nodeID, text)
+        })
         let json = try JSONSerialization.data(withJSONObject: map)
         let expression = "(() => { const m = \(String(decoding: json, as: UTF8.self));"
             + " let applied = 0;"
             + " if (window.__gtTranslator) { for (const id in m) {"
             + " const node = window.__gtTranslator.nodes[id];"
             + " if (node && node.isConnected) { const original = node.nodeValue; const trimmed = original.trim();"
-            + " if (trimmed) { node.nodeValue = original.replace(trimmed, m[id]); applied++; } } } }"
+            + " if (trimmed && window.__gtTranslator.requested[id] === trimmed) {"
+            + " window.__gtTranslator.entries[id] = { source: trimmed, translation: m[id] };"
+            + " node.nodeValue = original.replace(trimmed, m[id]); applied++; } } } }"
             + " return String(applied); })()"
         let payload = try await rpc(page: page, method: "Runtime.evaluate", params: [
             "expression": expression,
@@ -277,6 +286,16 @@ public actor CDPInPageTranslator: InPageTranslating {
       try {
       if (!window.__gtTranslator) window.__gtTranslator = { nodes: {}, next: 0 };
       const store = window.__gtTranslator;
+      if (!store.entries) store.entries = {};
+      if (!store.requested) store.requested = {};
+      const rawLang = document.documentElement.lang || '';
+      const match = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*$/.exec(rawLang);
+      const pageLang = rawLang.length <= 63 && match && match[0] === rawLang ? rawLang.toLowerCase() : null;
+      const parts = (pageLang || '').split('-');
+      const script = parts[1] && parts[1].length === 4 ? parts[1] : null;
+      const foreignCJKPage = parts[0] === 'ja' || parts[0] === 'ko' ||
+        (parts[0] === 'zh' && script !== 'hans' &&
+          (script === 'hant' || ['tw', 'hk', 'mo'].includes(parts[script ? 2 : 1])));
       const results = [];
       const skipped = ['SCRIPT', 'STYLE', 'NOSCRIPT', 'CODE', 'PRE', 'TEXTAREA'];
       const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
@@ -289,8 +308,6 @@ public actor CDPInPageTranslator: InPageTranslating {
         const kana = /[\\u3040-\\u30FF\\u31F0-\\u31FF]/.test(text);
         const hangul = /[\\u1100-\\u11FF\\u3130-\\u318F\\uAC00-\\uD7AF]/.test(text);
         const cjk = /[\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF]/.test(text);
-        const pageLang = (document.documentElement.lang || '').toLowerCase();
-        const foreignCJKPage = /^(?:ja|ko|zh-(?:hant|tw|hk|mo))/i.test(pageLang);
         if (cjk && !kana && !hangul && !foreignCJKPage && !/[A-Za-z]/.test(text)) continue;
         const element = node.parentElement;
         if (!element || skipped.indexOf(element.tagName) !== -1) continue;
@@ -302,7 +319,14 @@ public actor CDPInPageTranslator: InPageTranslating {
         let id = null;
         for (const existing in store.nodes) if (store.nodes[existing] === node) { id = existing; break; }
         if (id == null) { id = String(store.next++); store.nodes[id] = node; }
-        results.push({ id: id, text: text });
+        const entry = store.entries[id];
+        if (entry && entry.translation === text) continue;
+        if (entry && entry.source === text) {
+          node.nodeValue = original.replace(text, entry.translation);
+          continue;
+        }
+        store.requested[id] = text;
+        results.push({ id: id, text: text, sourceLanguage: pageLang });
         if (results.length >= 200) break;
       }
       return JSON.stringify(results);

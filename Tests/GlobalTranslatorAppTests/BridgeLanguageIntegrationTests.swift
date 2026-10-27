@@ -8,12 +8,16 @@ import GlobalTranslatorEngine
 /// Exercises the real HTTP bridge, session, coordinator, batcher, cache and
 /// local/cloud adapter payloads. Only the model transport is replaced: these
 /// tests cannot contact a model, Keychain, or any user page.
-private actor BridgeModelTransport: HTTPTransport {
+actor BridgeModelTransport: HTTPTransport {
     struct Call: Sendable {
         let system: String
         let sources: [String]
     }
     private(set) var calls: [Call] = []
+    var echoTranslations = false
+    func echoResponses() { echoTranslations = true }
+    var padTranslations = false
+    func padResponses() { padTranslations = true }
     var failNext = false
 
     func failOneCall() { failNext = true }
@@ -39,8 +43,9 @@ private actor BridgeModelTransport: HTTPTransport {
             failNext = false
             throw HTTPTransportError.networkFailure
         }
-        let dictionary = ["切手": "邮票", "大丈夫": "没关系", "歡迎使用": "欢迎使用", "國際新聞": "国际新闻", "Hello world": "你好世界"]
-        let values = segments.map { ($0.0, dictionary[$0.1] ?? "译文：" + $0.1) }
+        var dictionary = ["切手": "邮票", "大丈夫": "没关系", "歡迎使用": "欢迎使用", "國際新聞": "国际新闻", "Hello world": "你好世界"]
+        if system.contains("hint: ko.") { dictionary["大丈夫"] = "男子汉" }
+        let values = segments.map { ($0.0, (echoTranslations ? $0.1 : (dictionary[$0.1] ?? "译文：" + $0.1)) + (padTranslations ? " \n" : "")) }
         let content: Data
         let body: Data
         if local {
@@ -55,13 +60,13 @@ private actor BridgeModelTransport: HTTPTransport {
 }
 
 @MainActor
-private final class BridgeLanguageFixture {
+final class BridgeLanguageFixture {
     let transport = BridgeModelTransport()
     let permissions = FakePermissionController(snapshot: PermissionSnapshot(accessibilityTrusted: false, screenCaptureAuthorized: false, secureInputEnabled: false, sessionLocked: false))
     let session: TranslationSession
     let server: ExtensionBridgeServer
 
-    init(kind: BackendKind = .local, videoEnabled: Bool = false) throws {
+    init(kind: BackendKind = .local, videoEnabled: Bool = false, inPage: (any InPageTranslating)? = nil) throws {
         let permissions = self.permissions
         session = TranslationSession(
             monitor: FakeWindowMonitor(), capture: FakeCapturePipeline(), overlay: FakeOverlay(),
@@ -70,15 +75,18 @@ private final class BridgeLanguageFixture {
                 TranslationCoordinator(backends: backends, eventSink: sink, permissions: permissions)
             },
             schedulerFactory: { _, _, _ in NoopTranslationScheduler() },
-            logger: NullAppRuntimeLogger(), statusHandler: { _ in }
+            logger: NullAppRuntimeLogger(), statusHandler: { _ in },
+            inPage: inPage, translatedBundleIdentifiers: ["com.google.Chrome"]
         )
-        let backend: any TranslationBackend
-        if kind == .local {
-            backend = try LocalOpenAIBackend(baseURL: URL(string: "http://127.0.0.1:1/v1")!, model: "fake", transport: transport)
-        } else {
-            backend = DeepSeekBackend(transport: transport, credentialStore: RecordingCredentialStore(value: "fake-test-key"))
-        }
-        session.configure(backends: [backend], backend: kind, model: "fake", visionFallbackEnabled: false)
+        let factory = LiveTranslationBackendFactory(transport: transport)
+        let configuration = AppConfiguration(backend: kind, localBaseURL: URL(string: "http://127.0.0.1:1/v1")!, localModel: "fake")
+        let credentials = RecordingCredentialStore(value: "fake-test-key")
+        session.configure(
+            backends: [try factory.makeBackend(kind: kind, configuration: configuration, credentials: credentials)],
+            backend: kind, model: "fake", visionFallbackEnabled: false,
+            bridgeBackends: [try factory.makeBackend(kind: kind, configuration: configuration, credentials: credentials)],
+            selectionBackends: [try factory.makeBackend(kind: kind, configuration: configuration, credentials: credentials)]
+        )
         session.setBridgeActive(true)
         let session = self.session
         server = ExtensionBridgeServer(port: 0, videoTranslateEnabled: { videoEnabled }) { texts, language in
@@ -205,6 +213,36 @@ struct BridgeLanguageIntegrationTests {
     }
 
     @Test
+    func productionFactoryDoesNotReuseAnotherLanguageCompletedRequest() async throws {
+        let fixture = try BridgeLanguageFixture()
+        defer { fixture.server.stop() }
+        let (_, japanese) = try await fixture.post(["texts": ["大丈夫"], "sourceLanguage": "ja"])
+        let (_, korean) = try await fixture.post(["texts": ["大丈夫"], "sourceLanguage": "ko"])
+        #expect(japanese["translations"] as? [String] == ["没关系"])
+        #expect(korean["translations"] as? [String] == ["男子汉"])
+        #expect(await fixture.transport.calls.count == 2)
+    }
+
+    @Test
+    func productionCoalescerPreservesTargetAndCopiedSourcePolicies() async throws {
+        let transport = BridgeModelTransport()
+        let factory = LiveTranslationBackendFactory(transport: transport)
+        let configuration = AppConfiguration(backend: .local, localBaseURL: URL(string: "http://127.0.0.1:1/v1")!, localModel: "fake")
+        let backend = try factory.makeBackend(kind: .local, configuration: configuration, credentials: RecordingCredentialStore(value: nil))
+        let items = [TranslationItem(id: UUID(), sourceText: "Hello world")]
+        _ = try await backend.translate(TranslationRequest(windowRevision: 1, items: items, copiedSourcePolicy: .keep))
+        _ = try await backend.translate(TranslationRequest(windowRevision: 2, items: items, copiedSourcePolicy: .keep, targetLanguage: "en"))
+        #expect(await transport.calls.count == 2)
+        #expect(await transport.calls.last?.system.contains("English values only") == true)
+        await backend.cancelOutstandingRequests()
+        await transport.echoResponses()
+        _ = try await backend.translate(TranslationRequest(windowRevision: 3, items: items, copiedSourcePolicy: .keep))
+        await #expect(throws: TranslationError.invalidResponse("translation copied the source")) {
+            _ = try await backend.translate(TranslationRequest(windowRevision: 4, items: items, copiedSourcePolicy: .reject))
+        }
+    }
+
+    @Test
     func languageSurvivesCloudBatchSplits() async throws {
         let fixture = try BridgeLanguageFixture(kind: .deepSeekCloud)
         defer { fixture.server.stop() }
@@ -217,9 +255,10 @@ struct BridgeLanguageIntegrationTests {
         #expect(calls.allSatisfy { $0.system.contains("hint: ja.") })
     }
 
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["GT_BRIDGE_BROWSER"] == "1"))
-    func isolatedChromiumExtensionRoundTripsPageAndNativeSubtitles() async throws {
-        let fixture = try BridgeLanguageFixture(videoEnabled: true)
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["GT_BRIDGE_BROWSER"] == "1"), arguments: [BackendKind.local, .deepSeekCloud])
+    func isolatedChromiumExtensionRoundTripsPageAndNativeSubtitles(_ kind: BackendKind) async throws {
+        let fixture = try BridgeLanguageFixture(kind: kind, videoEnabled: true)
+        await fixture.transport.padResponses()
         defer { fixture.server.stop() }
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let process = Process()
