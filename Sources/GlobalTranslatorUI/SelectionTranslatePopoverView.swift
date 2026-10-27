@@ -163,7 +163,7 @@ public struct SelectionTranslatePopoverView: View {
                         .disabled(content.status == .loading)
                         .accessibilityHint(
                             content.isCodeSnippet
-                                ? "自动识别并解释所选代码"
+                                ? "自动翻译代码中的注释和字符串，并解释代码"
                                 : "按内容自动翻译选区：中文译成英文，其他译成简体中文"
                         )
                     }

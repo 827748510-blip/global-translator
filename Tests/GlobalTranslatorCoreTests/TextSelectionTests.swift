@@ -26,4 +26,22 @@ struct TextSelectionTests {
     func meaningfulForeignLabelsAndSentencesStillTranslate(_ text: String) {
         #expect(TextFilter.shouldTranslate(text))
     }
+
+    @Test(arguments: [
+        "Bonjour le monde",
+        "Guten Morgen, wie geht es dir?",
+        "Hola mundo",
+        "こんにちは世界",
+        "안녕하세요 세계",
+        "Привет, мир",
+        "مرحبا بالعالم",
+        "שלום עולם",
+        "Γειά σου κόσμε",
+        "สวัสดีชาวโลก",
+        "Xin chào thế giới"
+    ])
+    func everyForeignLanguageIsTranslatedIntoChinese(_ text: String) {
+        #expect(TextFilter.shouldTranslate(text))
+        #expect(TextFilter.selectionDirection(text) == .toChinese)
+    }
 }

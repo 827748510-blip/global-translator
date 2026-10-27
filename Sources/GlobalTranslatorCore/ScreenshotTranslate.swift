@@ -38,7 +38,9 @@ public enum ScreenshotTranslateSupport {
     public static let translatorUnavailableCopy = "翻译服务未就绪"
     public static let overlayHintCopy = "拖选要翻译的区域，Esc 取消"
     public static let minRegionSize: CGFloat = 8
-    public static let recognitionLanguages = ["zh-Hans", "en-US"]
+    /// Empty means Vision auto-detects the script/language, so screenshot
+    /// translation is not limited to Chinese and English sources.
+    public static let recognitionLanguages: [String] = []
     public static let hotkeyID: UInt32 = 1
 
     public static func isUsableRegion(_ rect: CGRect) -> Bool {

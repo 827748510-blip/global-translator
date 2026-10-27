@@ -1,5 +1,5 @@
 // Global Translator Bridge — content script.
-// Extracts visible Latin text nodes, asks the desktop app (via the
+// Extracts visible text nodes in any language, asks the desktop app (via the
 // background worker) for translations and replaces the DOM text in place.
 // Mirrors the extraction/apply rules of the CDP in-page pipeline.
 (() => {
@@ -33,11 +33,15 @@
     return (node.nodeValue || "").trim();
   }
 
+  function pageLanguage() {
+    return String((document.documentElement && document.documentElement.lang) || "").toLowerCase();
+  }
+
   function isEligible(node) {
     const text = textOf(node);
     // Skip URLs, emails, identifiers, already-Chinese, and other fragments
     // Core.TextFilter would drop — they stay as original and never hit Ollama.
-    if (!GlobalTranslatorTextFilter.shouldSendForPageTranslate(text)) return false;
+    if (!GlobalTranslatorTextFilter.shouldSendForPageTranslate(text, pageLanguage())) return false;
     const element = node.parentElement;
     if (!element || SKIPPED_TAGS.indexOf(element.tagName) !== -1) return false;
     if (element.closest && element.closest('[contenteditable="true"], [contenteditable=""]')) return false;

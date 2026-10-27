@@ -62,7 +62,7 @@ B2 **默认关闭**，与 B1 共用菜单栏「视频翻译」开关：只有显
 
 1. 本机构建并运行 Global Translator，翻译后端健康（DeepSeek 或本地 Ollama）。
 2. 菜单栏设置打开 **视频翻译**（与滑词翻译同一行；默认关）。
-3. Chrome 加载仓库 `extension/`（manifest 1.0.10+），刷新视频标签页。
+3. Chrome 加载仓库 `extension/`（manifest 1.0.11+），刷新视频标签页。
 4. 播放 **没有可用外语字幕** 的页面（关 CC 的 HTML5 / YouTube，或无轨站点）。
 
 ### 权限（macOS）

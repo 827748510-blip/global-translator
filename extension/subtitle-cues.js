@@ -124,7 +124,7 @@
   }
 
   function hasLetterLikeScript(value) {
-    return /[A-Za-z\u00C0-\u024F\u0400-\u04FF\u0600-\u06FF\u3040-\u30FF\u1100-\u11FF\uAC00-\uD7AF\u0E00-\u0E7F]/.test(value);
+    return /\p{L}/u.test(value);
   }
 
   function isMostlySimplifiedChinese(value) {

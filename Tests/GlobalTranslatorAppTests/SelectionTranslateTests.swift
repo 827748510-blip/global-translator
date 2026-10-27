@@ -1101,7 +1101,7 @@ extension ApplicationControllerTests {
     }
 
     @Test
-    func codeSelectionUsesCodeExplanationPromptInsteadOfProseTranslation() async throws {
+    func codeSelectionUsesCodeContentPromptInsteadOfProseTranslation() async throws {
         let coordinator = RecordingPlainCoordinator()
         let store = RecordingConfigurationStore(configuration: AppConfiguration(
             autoTranslateEnabled: false, backend: .local, localModel: "test"))
@@ -1122,7 +1122,9 @@ extension ApplicationControllerTests {
         #expect(await coordinator.sources.isEmpty)
         let systems = await coordinator.systems
         #expect(systems.count == 3)
-        #expect(systems.allSatisfy { $0.contains("explain source code by translating") })
+        #expect(systems.allSatisfy { $0.contains("translate the human-readable content") })
+        #expect(systems.allSatisfy { $0.contains("注释与字符串译文") })
+        #expect(systems.allSatisfy { $0.contains("代码说明") })
         #expect(systems.allSatisfy { $0.contains("Simplified Chinese") })
         #expect(systems.allSatisfy { !$0.contains("natural English") })
         #expect(systems.allSatisfy { $0.contains("untrusted data") })
