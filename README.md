@@ -35,6 +35,10 @@ global-translator logs --follow
 global-translator stop
 ```
 
+**用 launchd 托管（可选）**：`packaging/com.maodashu.global-translator.daemon.plist` 是模板，把 `__HOME__` 换成你的主目录后放进 `~/Library/LaunchAgents/`，再执行 `launchctl bootstrap gui/$(id -u) …`。模板用 `run --daemon-child` 而不是 `start`：在 launchd job 里 `start` 会改为前台运行 worker，这是刻意的 —— 否则 job 立刻退出，KeepAlive 与退出码记录都会失效。
+
+每条命令的退出码都会追加到 `~/Library/Logs/GlobalTranslator/cli.log`，含 `command`、`pid`、`managedByLaunchd` 与 `xpcServiceName`。异常退出时先看这个文件：有记录说明是本程序返回的（码值可直接归因），没有记录说明进程在 `main` 之前就被系统拦下了。
+
 ## Chrome 扩展
 
 仓库 `extension/` 是配套的 **Global Translator Bridge**。整页翻译默认开启；**视频翻译** 在菜单栏设置里与「滑词翻译」同一行，默认关闭。启用后把 HTML5 `video.textTracks`、可选本地 SRT/VTT，或 YouTube 用户已打开的字幕 / 本会话 timedtext 译成简体中文叠在画面上；已是简体中文的轨会跳过 `/translate`。没有外语字幕时走本机 ScreenCaptureKit 系统/窗口音频 + Whisper.cpp，再经已有 `POST /translate`。页面不采麦克风、不上传音频。加载方式、权限、Whisper 安装与验收步骤见 [视频翻译](docs/video-translate.md)。

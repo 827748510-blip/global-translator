@@ -49,6 +49,16 @@ public final class RuntimeManager: @unchecked Sendable {
 
     public func start() throws -> StartOutcome {
         try paths.prepareDirectories()
+        // Under launchd the job owns the process lifecycle. Forking a `nohup`
+        // child from inside it makes the job exit immediately: the child is
+        // reparented, KeepAlive never fires, and the job's exit code stops
+        // describing the worker at all — which is exactly how a failure ends up
+        // unattributable. Run in the foreground instead so the job stays alive
+        // and `launchctl print` records the real status.
+        if Self.isManagedByLaunchd() {
+            try run(mode: .daemonChild)
+            return .started(pid: ProcessInfo.processInfo.processIdentifier)
+        }
         let client = controlClientFactory(0.2)
         if let response = try? client.request(.status), response.running || response.state != .stopped {
             return .alreadyRunning(pid: response.pid)
@@ -191,6 +201,21 @@ public final class RuntimeManager: @unchecked Sendable {
         let socketExists = FileManager.default.fileExists(atPath: paths.socketURL.path)
         let pidAlive = PIDFileLock.readPID(from: paths.pidURL).map(PIDFileLock.isProcessAlive) ?? false
         return socketExists || pidAlive
+    }
+
+    /// Whether this process was started by launchd as a job.
+    ///
+    /// Job processes carry `XPC_SERVICE_NAME`. A GUI app launched by
+    /// LaunchServices also carries one, but its value is namespaced as
+    /// `application.<bundle-id>.<...>`; those are not job-managed and must keep
+    /// the normal detach path, so they are excluded explicitly.
+    public static func isManagedByLaunchd(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        guard let name = environment["XPC_SERVICE_NAME"], !name.isEmpty, name != "0" else {
+            return false
+        }
+        return !name.hasPrefix("application.")
     }
 
     private static func resolveExecutable() -> URL {
