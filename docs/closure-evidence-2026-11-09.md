@@ -125,9 +125,11 @@ swift test -Xswiftc -warnings-as-errors
 
 修完键名后全量 `swift test -Xswiftc -warnings-as-errors`：**634 tests / 62 suites 通过**（较上轮新增 1 个键名用例）。
 
-## 六、隔离启动链退出 71：未复现，待确认原始命令
+## 六、隔离启动链退出 71：三层排查均无法产生该码，已改为可诊断
 
-在隔离 root 上逐项实测，**未出现 71**：
+结论先行：**71 既不是本程序返回的，也无法从 `launchctl` 或常用系统工具撞出来**。本轮把排查从「猜命令」改成「穷举退出码来源」，并为后续任何异常退出补上了审计与 launchd 监管。
+
+### 6.1 应用自身（九种变体，全部无 71）
 
 | 变体 | 命令 | 退出码 |
 | --- | --- | --- |
@@ -141,9 +143,53 @@ swift test -Xswiftc -warnings-as-errors
 | 相对路径 | `--runtime-root .build/iso-rel status` | 2（参数无效，符合设计） |
 | `/tmp` 路径 | `--runtime-root /tmp/gt-iso-test status` | 1（未运行；本版未因符号链接拒绝） |
 
-CLI 显式退出码只有 0 / 1 / 2（`Sources/GlobalTranslatorCLI/main.swift:27,32`），源码里不存在 `exit(71)`。因此 71 只能来自外部：`launchctl` 在受限会话下的 `bootstrap` 失败（EX_OSERR / EPERM 封装）、被 Gatekeeper 或 TCC 拒绝的 `exec`、或某条自定义 shell 链路的 `set -e` 透传。
+CLI 显式退出码只有 0 / 1 / 2，源码里不存在 `exit(71)`。
 
-**需要 BOSS 提供当时那条隔离启动链的完整命令与上下文**（是否经过 `launchctl`、是否在 SSH/无 GUI 会话、是否用了已经失效的二进制路径），才能定位到具体环节；在拿到原始命令前不臆测根因。
+### 6.2 launchd 三探针：发现的是监管盲区，不是 71
+
+用临时 LaunchAgent（`gui/$UID` 域，测后 bootout 并删除）分别以 `status`、`start`、`run --daemon-child` 加载：
+
+| 探针 | bootstrap 退出码 | job 状态 | 关键观测 |
+| --- | --- | --- | --- |
+| `status` | 0 | `not running`，last exit **1** | 与设计一致（未运行） |
+| `start`（修复前） | 0 | `not running`，last exit **0** | **job 立刻退出，daemon 被收养成 PID 1 的孤儿** |
+| `start`（修复后） | 0 | **`running`，pid 有值，last exit `(never exited)`** | launchd 真正托管 |
+
+修复前的行为是一个真实缺陷：在 launchd 里执行 `start`，它派生 `nohup` 子进程后 job 立即结束。结果是 KeepAlive 永远不会触发、崩溃不会重启、`launchctl print` 的退出码描述不了 worker —— 任何异常退出（包括 71）都会失去上下文。
+
+### 6.3 错误码对照：71 不在这些层
+
+| 场景 | 退出码 |
+| --- | --- |
+| plist 缺 `Label` / 空 `ProgramArguments` / 文件不存在 / 重复 bootstrap | **5**（EIO） |
+| bootout 不存在的 label | **3**（ESRCH） |
+| kickstart 不存在的 label | **113**（EHOSTDOWN，launchctl 自定义） |
+| Program 路径不存在时的 job 退出码 | **78**（EX_CONFIG） |
+| `launchctl bootstrap user/$UID` | **5** |
+| 系统工具普查：`open` / `ditto` / `codesign` / `plutil` / `xattr` / `pkgutil` / `hdiutil` / `spctl` / `osascript` / `swift` | **1** |
+| `security` / `stapler` / `xcrun` / `git` / `dscl` | **50 / 66 / 72 / 128 / 185** |
+
+`71` 在 sysexits 里是 `EX_OSERR`，在 errno 里是 `EPROTO`。上述三层都不产生它。
+
+### 6.4 本轮修复：把「不可定位」变成「可定位」
+
+1. **launchd 托管时不再派生**（`RuntimeManager.start`）：检测到 `XPC_SERVICE_NAME` 且不是 LaunchServices 的 `application.*` 命名时，直接前台运行 worker。job 因此常驻、KeepAlive 生效、退出码由 launchd 记录。
+2. **CLI 退出审计**（`CLIExitAudit`）：每条命令结束都向 `~/Library/Logs/GlobalTranslator/cli.log` 追加一行 JSON，含 `code`、`command`、`pid`、`managedByLaunchd`、`xpcServiceName`、`runtimeRoot`、`timestamp`。路径固定在用户日志目录，即使 `--runtime-root` 解析失败也能写入。
+3. **launchd 模板**（`packaging/com.maodashu.global-translator.daemon.plist`）：`run --daemon-child` + `KeepAlive` + `ThrottleInterval`，不自动安装。
+
+验证：全量 `swift test -Xswiftc -warnings-as-errors` → **638 tests / 64 suites 通过**（新增 `LaunchdDetectionTests` 1 项、`CLIExitAuditTests` 3 项）。端到端实测：修复后 launchd job `state=running` / `pid` 有值 / `last exit (never exited)`；bootout 后 `cli.log` 留下 `code:0, managedByLaunchd:true, xpcServiceName:com.maodashu.gtprobe.startfix`；普通 shell 的 `start → status → stop` 仍返回 0/0/0，行为未回归。
+
+### 6.5 下次出现 71 时怎么判
+
+| `cli.log` 是否有 `cli_exit` | 含义 | 该查哪里 |
+| --- | --- | --- |
+| 有，`code=71` | 是本程序退出的 | 日志里的 `command` 直接指出哪条命令 |
+| 有，`code` 不是 71 | 71 来自包裹它的脚本 / 管道 | 查调用方的 `set -e` 与 `$?` 传递 |
+| **没有** | 进程在 `main` 之前就死了 | Gatekeeper、TCC、`posix_spawn`、launchd 域限制 |
+
+### 6.6 仍未确认的部分
+
+上述结论覆盖「应用 / launchd / 常用系统工具」三条路径。原始那条命令的具体形态（是否在 SSH 等无 GUI 会话、是否经过 `sudo launchctl bootstrap system`）无法测到：前者需要另一台无可视会话的机器，后者需要 root 与交互式密码。若 71 再次出现，`cli.log` 与 `launchctl print … | grep "last exit"` 两条证据足以定位。
 
 ## 七、开源发布与发行包：准备完成，公开动作待授权
 
@@ -188,5 +234,5 @@ CLI 显式退出码只有 0 / 1 / 2（`Sources/GlobalTranslatorCLI/main.swift:27
 | 菜单栏面板冷启动不显示 | 已修复并实测通过（PR #35，merge `db31daa`） |
 | 键盘切换不关面板 / 正常图标被误判 | 已修复并实测通过（PR #37，merge `3c45379`） |
 | 截图热键显示为 `⌥Key50` | 已修复（补齐 ANSI 标点键名），测试覆盖 |
-| 隔离启动退出 71 | 九种变体均未复现，待原始命令 |
+| 隔离启动退出 71 | 应用 / launchd / 系统工具三层均不产生该码；launchd 监管盲区已修，退出码已可审计 |
 | 开源发布 / 发行包 | 许可证与 zip 发行包已就绪；转公开与 Release 上传待授权 |

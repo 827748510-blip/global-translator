@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Optional launchd integration for Global Translator.
+
+  Setup:
+    1. Replace every __HOME__ with your home directory. launchd does not expand "~".
+    2. cp packaging/com.maodashu.global-translator.daemon.plist \
+          ~/Library/LaunchAgents/com.maodashu.global-translator.daemon.plist
+    3. launchctl bootstrap gui/$(id -u) \
+          ~/Library/LaunchAgents/com.maodashu.global-translator.daemon.plist
+    4. launchctl print gui/$(id -u)/com.maodashu.global-translator.daemon
+
+  Why "run --daemon-child" and not "start":
+    Inside a launchd job, `start` runs the worker in the foreground on purpose.
+    Forking a detached child would let the job exit immediately, which silently
+    disables KeepAlive and leaves the job's exit code describing nothing.
+
+  Note: this template is not installed automatically and does not enable the
+  app at login by itself. Remove the plist and bootout the job to undo.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.maodashu.global-translator.daemon</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Applications/Global Translator.app/Contents/MacOS/global-translator</string>
+		<string>run</string>
+		<string>--daemon-child</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/GlobalTranslator/launchd.out</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/GlobalTranslator/launchd.err</string>
+</dict>
+</plist>

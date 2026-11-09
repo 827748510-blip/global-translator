@@ -12,6 +12,7 @@ struct GlobalTranslatorCLI {
         do {
             if desktopLaunch {
                 try await GlobalTranslatorApplication.launchDesktop(paths: RuntimePaths.fromEnvironment())
+                CLIExitAudit.recordExit(0, arguments: arguments)
                 return
             }
             let invocation = try CLIParser.parseInvocation(arguments)
@@ -21,25 +22,29 @@ struct GlobalTranslatorCLI {
             } else {
                 paths = try RuntimePaths.fromEnvironment()
             }
-            try await dispatch(invocation.command, paths: paths)
+            try await dispatch(invocation.command, paths: paths, arguments: arguments)
+            CLIExitAudit.recordExit(0, arguments: arguments, paths: paths)
         } catch let error as CLIParseError {
             writeStderr(error.description + "\n")
+            CLIExitAudit.recordExit(2, arguments: arguments)
             exit(2)
         } catch {
             let message = CLIErrorFormatter.message(for: error)
             if desktopLaunch { GlobalTranslatorApplication.showLaunchError(message) }
             writeStderr(message + "\n")
+            CLIExitAudit.recordExit(1, arguments: arguments)
             exit(1)
         }
     }
 
-    private static func dispatch(_ command: CLICommand, paths: RuntimePaths) async throws {
+    private static func dispatch(_ command: CLICommand, paths: RuntimePaths, arguments: [String]) async throws {
         let manager = RuntimeManager(paths: paths)
         switch command {
         case .doctor:
             let report = Doctor(paths: paths).run()
             writeStdout(report.renderChinese())
             if report.hasFailure {
+                CLIExitAudit.recordExit(1, arguments: arguments, paths: paths)
                 exit(1)
             }
         case .start:
@@ -52,7 +57,9 @@ struct GlobalTranslatorCLI {
         case .status:
             let response = manager.status()
             writeStdout(try encodeJSON(response))
-            exit(CLIExitCode.status(response))
+            let code = CLIExitCode.status(response)
+            CLIExitAudit.recordExit(code, arguments: arguments, paths: paths)
+            exit(code)
         case .settings:
             _ = try manager.start()
             writeStdout(try encodeJSON(try manager.showSettings()))
