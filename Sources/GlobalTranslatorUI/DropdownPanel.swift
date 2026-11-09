@@ -81,6 +81,44 @@ public enum DropdownFocusPolicy {
     }
 }
 
+/// Tracks the one-shot exemption that lets a cold launch survive the focus
+/// bounce back to the previously frontmost app.
+///
+/// The exemption must belong to the launch only. A panel that the user closes
+/// and reopens must never inherit it: otherwise a real app switch within the
+/// window would be ignored and the panel would keep floating over other apps.
+/// Every open therefore either arms (launch) or disarms (anything else), and
+/// closing always disarms.
+public struct LaunchFocusExemption: Equatable, Sendable {
+    public private(set) var isArmed = false
+    public let window: TimeInterval
+
+    public init(window: TimeInterval = 5) {
+        self.window = window
+    }
+
+    /// Arms for a cold-launch request.
+    public mutating func armForLaunch() {
+        isArmed = true
+    }
+
+    /// Disarms for a normal open or a dismissal.
+    public mutating func disarm() {
+        isArmed = false
+    }
+
+    /// Returns true when this activation is the launch focus bounce.
+    ///
+    /// Consulted on every foreign activation and always consumes the exemption,
+    /// so a stale arm cannot survive into a later interaction.
+    public mutating func consumeIfBounce(shownAt: Date?, now: Date) -> Bool {
+        guard isArmed else { return false }
+        isArmed = false
+        guard let shownAt, now.timeIntervalSince(shownAt) < window else { return false }
+        return true
+    }
+}
+
 /// Borderless dropdown panel that can appear above fullscreen apps.
 /// `canJoinAllSpaces + fullScreenAuxiliary` puts it on the fullscreen space;
 /// `nonactivatingPanel` keeps the frontmost app focused. The panel may become

@@ -41,9 +41,9 @@ public final class StatusItemController: NSObject {
     private var statusCancellable: AnyCancellable?
     private var dropdownShownAt: Date?
     private var workspaceObservers: [NSObjectProtocol] = []
-    /// Set by a cold-launch request; consumed by the first activation of
-    /// another app so the launch focus bounce does not close the panel.
-    private var ignoresNextForeignActivation = false
+    /// Owns the cold-launch focus exemption. Reopening or closing the panel
+    /// disarms it, so a stale exemption cannot swallow a later app switch.
+    private var launchExemption = LaunchFocusExemption()
 
     private(set) var isStopped = false
 
@@ -114,10 +114,15 @@ public final class StatusItemController: NSObject {
 
     /// - Parameter fromLaunch: marks a cold-launch request. The first foreign
     ///   app activation afterwards is the launch focus bounce, not a user
-    ///   decision, so it is ignored once.
+    ///   decision, so it is ignored once. Any other open explicitly disarms the
+    ///   exemption: a panel the user closed and reopened must not inherit it.
     public func showSettings(fromLaunch: Bool) {
         guard !isStopped, !isDropdownShown else { return }
-        if fromLaunch { ignoresNextForeignActivation = true }
+        if fromLaunch {
+            launchExemption.armForLaunch()
+        } else {
+            launchExemption.disarm()
+        }
         showDropdown()
     }
 
@@ -218,15 +223,15 @@ public final class StatusItemController: NSObject {
             let isOwn = activated?.bundleIdentifier == Bundle.main.bundleIdentifier
             guard !isOwn else { return }
             // A cold launch hands focus back to the previously frontmost app
-            // once; that bounce is not the user leaving. Only honour the
-            // exemption for a few seconds so it cannot mask a real switch later.
-            if self.ignoresNextForeignActivation,
-               let shownAt = self.dropdownShownAt,
-               Date().timeIntervalSince(shownAt) < 5 {
-                self.ignoresNextForeignActivation = false
+            // once; that bounce is not the user leaving. The exemption is
+            // consumed on the first consultation and expires after a few
+            // seconds, so it cannot mask a real switch later.
+            if self.launchExemption.consumeIfBounce(
+                shownAt: self.dropdownShownAt,
+                now: Date()
+            ) {
                 return
             }
-            self.ignoresNextForeignActivation = false
             guard DropdownFocusPolicy.shouldDismiss(
                 shownAt: self.dropdownShownAt,
                 now: Date(),
@@ -248,6 +253,9 @@ public final class StatusItemController: NSObject {
 
     private func dismissForOutsideInteraction() {
         guard !isStopped, dropdownPanel.isVisible else { return }
+        // Closing ends whatever the launch exemption was protecting: the next
+        // open is a deliberate user action and must be dismissible at once.
+        launchExemption.disarm()
         lastDismissDate = Date()
         buttonAccessibilityExpanded(false)
         dropdownPanel.dismiss(animated: true)

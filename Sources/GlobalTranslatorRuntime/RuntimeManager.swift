@@ -49,16 +49,6 @@ public final class RuntimeManager: @unchecked Sendable {
 
     public func start() throws -> StartOutcome {
         try paths.prepareDirectories()
-        // Under launchd the job owns the process lifecycle. Forking a `nohup`
-        // child from inside it makes the job exit immediately: the child is
-        // reparented, KeepAlive never fires, and the job's exit code stops
-        // describing the worker at all — which is exactly how a failure ends up
-        // unattributable. Run in the foreground instead so the job stays alive
-        // and `launchctl print` records the real status.
-        if Self.isManagedByLaunchd() {
-            try run(mode: .daemonChild)
-            return .started(pid: ProcessInfo.processInfo.processIdentifier)
-        }
         let client = controlClientFactory(0.2)
         if let response = try? client.request(.status), response.running || response.state != .stopped {
             return .alreadyRunning(pid: response.pid)
