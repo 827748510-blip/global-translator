@@ -39,7 +39,6 @@ public final class StatusItemController: NSObject {
     /// so the icon behaves as a toggle instead of flickering.
     private var lastDismissDate: Date?
     private var statusCancellable: AnyCancellable?
-    private var resignActiveObserver: NSObjectProtocol?
 
     private(set) var isStopped = false
 
@@ -60,20 +59,6 @@ public final class StatusItemController: NSObject {
         statusItem.isVisible = true
         configureDropdownPanel()
         configureStatusItem()
-        // Fallback dismissal: if the user switches to another app through a
-        // path that bypasses the mouse monitors (Mission Control, etc.), the
-        // panel still folds away.
-        resignActiveObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didResignActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, self.dropdownPanel.isVisible else { return }
-                self.lastDismissDate = Date()
-                self.dropdownPanel.dismiss(animated: true)
-            }
-        }
         statusCancellable = viewModel.$status
             .receive(on: RunLoop.main)
             .sink { [weak self] status in
@@ -103,10 +88,6 @@ public final class StatusItemController: NSObject {
         isStopped = true
         statusCancellable?.cancel()
         statusCancellable = nil
-        if let resignActiveObserver {
-            NotificationCenter.default.removeObserver(resignActiveObserver)
-            self.resignActiveObserver = nil
-        }
         dropdownPanel.onResignKey = nil
         dropdownPanel.onOutsideClick = nil
         dropdownPanel.dismiss(animated: false)
@@ -140,9 +121,11 @@ public final class StatusItemController: NSObject {
     }
 
     private func showDropdown() {
-        guard !isStopped, !isDropdownShown, let button = statusItem.button, let window = button.window else { return }
-        let screen = window.screen ?? NSScreen.main
-        let availableHeight = screen?.visibleFrame.height ?? 800
+        guard !isStopped, !isDropdownShown, let button = statusItem.button else { return }
+        let buttonWindow = button.window
+        let screen = buttonWindow?.screen ?? NSScreen.main
+        let visibleFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let availableHeight = visibleFrame.height
         let maxHeight = min(GTPopoverMetrics.defaultMaxHeight, max(240, availableHeight - 80))
         let root = makeDropdownRoot(maxHeight: maxHeight)
         dropdownContent.rootView = AnyView(root)
@@ -150,16 +133,14 @@ public final class StatusItemController: NSObject {
         let fitting = dropdownContent.view.fittingSize
         let size = NSSize(width: GTPopoverMetrics.width, height: max(240, min(fitting.height, maxHeight)))
 
-        let buttonFrame = window.convertToScreen(button.frame)
-        let originX = DropdownLayout.panelOriginX(
-            iconMidX: buttonFrame.midX,
-            panelWidth: size.width,
-            visibleFrame: screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(
-                x: 0, y: 0, width: 1440, height: 900
-            )
+        // A ControlCenter-hosted item may have no window or a zero-size frame;
+        // DropdownLayout falls back to the screen corner instead of bailing out.
+        let buttonFrame = buttonWindow.map { $0.convertToScreen(button.frame) }
+        let anchor = DropdownLayout.panelAnchor(
+            iconFrame: buttonFrame,
+            panelSize: size,
+            visibleFrame: visibleFrame
         )
-        // The panel hangs directly below the icon's bottom edge.
-        let anchor = NSPoint(x: originX, y: buttonFrame.minY)
         button.setAccessibilityExpanded(true)
         dropdownPanel.present(anchorTopLeft: anchor, size: size)
     }
@@ -185,14 +166,27 @@ public final class StatusItemController: NSObject {
     }
 
     private func configureDropdownPanel() {
-        let handleOutsideDismissal = { [weak self] in
-            guard let self, self.dropdownPanel.isVisible else { return }
-            self.lastDismissDate = Date()
-            self.buttonAccessibilityExpanded(false)
-            self.dropdownPanel.dismiss(animated: true)
+        dropdownPanel.onOutsideClick = { [weak self] in
+            self?.dismissForOutsideInteraction()
         }
-        dropdownPanel.onResignKey = handleOutsideDismissal
-        dropdownPanel.onOutsideClick = handleOutsideDismissal
+        // A non-activating panel resigns key whenever the app deactivates,
+        // which is normal and must not close it: on a cold launch the
+        // previously frontmost app often takes focus back a moment later. Only
+        // a key loss while the app is still frontmost means the user moved on.
+        dropdownPanel.onResignKey = { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self, self.dropdownPanel.isVisible, !self.dropdownPanel.isKeyWindow else { return }
+                guard NSApplication.shared.isActive else { return }
+                self.dismissForOutsideInteraction()
+            }
+        }
+    }
+
+    private func dismissForOutsideInteraction() {
+        guard !isStopped, dropdownPanel.isVisible else { return }
+        lastDismissDate = Date()
+        buttonAccessibilityExpanded(false)
+        dropdownPanel.dismiss(animated: true)
     }
 
     private func configureStatusItem() {

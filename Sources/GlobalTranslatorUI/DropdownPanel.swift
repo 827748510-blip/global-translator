@@ -14,6 +14,37 @@ public enum DropdownLayout {
         let highest = visibleFrame.maxX - width - screenMargin
         return min(max(preferred, lowest), max(highest, lowest))
     }
+
+    /// Top-left anchor for the dropdown panel.
+    ///
+    /// The status item can be hosted by ControlCenter with a zero-size frame:
+    /// macOS still reports the item as visible, but the icon has no pixels and
+    /// its geometry is unusable. Anchoring to such a frame placed the panel
+    /// off-screen, so callers without a usable icon frame fall back to the
+    /// top-right corner of the visible frame instead of giving up.
+    public static func panelAnchor(
+        iconFrame: CGRect?,
+        panelSize: CGSize,
+        visibleFrame: CGRect
+    ) -> CGPoint {
+        let usableIcon = iconFrame.flatMap { frame -> CGRect? in
+            guard frame.width > 0, frame.height > 0, frame.intersects(visibleFrame) else { return nil }
+            return frame
+        }
+        let panelWidth = min(panelSize.width, visibleFrame.width)
+        let iconMidX = usableIcon?.midX ?? (visibleFrame.maxX - screenMargin - panelWidth / 2)
+        let x = panelOriginX(iconMidX: iconMidX, panelWidth: panelSize.width, visibleFrame: visibleFrame)
+
+        // Pin the top edge under the icon, or just under the menu bar when the
+        // icon geometry is unavailable; never let the panel leave the screen.
+        let preferredTop = usableIcon.map { min($0.minY, visibleFrame.maxY) }
+            ?? (visibleFrame.maxY - screenMargin)
+        let top = min(
+            max(preferredTop, visibleFrame.minY + screenMargin + panelSize.height),
+            visibleFrame.maxY - screenMargin
+        )
+        return CGPoint(x: x, y: top)
+    }
 }
 
 /// Borderless dropdown panel that can appear above fullscreen apps.
@@ -62,7 +93,16 @@ public final class DropdownPanel: NSPanel {
     /// Presents the panel with a quick fade; keeps the top edge pinned so the
     /// dropdown visually grows out from under the menu bar icon.
     public func present(anchorTopLeft: CGPoint, size: CGSize) {
-        let finalFrame = NSRect(origin: anchorTopLeft, size: size)
+        // Window frames are bottom-left based while the anchor names the top
+        // edge; without this conversion the panel asked for a frame whose
+        // bottom sat at the menu bar and only stayed on screen because AppKit
+        // silently constrained it.
+        let finalFrame = NSRect(
+            x: anchorTopLeft.x,
+            y: anchorTopLeft.y - size.height,
+            width: size.width,
+            height: size.height
+        )
         let startFrame = NSRect(
             x: finalFrame.minX, y: finalFrame.minY,
             width: finalFrame.width, height: min(finalFrame.height, 8)
