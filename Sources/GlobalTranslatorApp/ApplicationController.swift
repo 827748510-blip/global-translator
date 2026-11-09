@@ -95,7 +95,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             components.logger.event("config_invalid", fields: ["status": "defaults"])
         }
         pushConfigurationState()
-        if settingsRequested { statusItem?.showSettings() }
+        if settingsRequested { statusItem?.showSettings(fromLaunch: true) }
         makeSession()
         makeSelectionTranslate()
         makeScreenshotTranslate()

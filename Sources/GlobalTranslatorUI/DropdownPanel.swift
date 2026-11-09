@@ -17,18 +17,30 @@ public enum DropdownLayout {
 
     /// Top-left anchor for the dropdown panel.
     ///
-    /// The status item can be hosted by ControlCenter with a zero-size frame:
-    /// macOS still reports the item as visible, but the icon has no pixels and
-    /// its geometry is unusable. Anchoring to such a frame placed the panel
-    /// off-screen, so callers without a usable icon frame fall back to the
+    /// The status item can be hosted by ControlCenter with a zero-size or
+    /// meaningless frame: macOS still reports the item as visible, but the icon
+    /// has no pixels and its geometry is either empty or parked at the screen
+    /// origin. Anchoring to such a frame placed the panel off-screen or in a
+    /// random corner, so callers without a usable icon frame fall back to the
     /// top-right corner of the visible frame instead of giving up.
+    ///
+    /// Ownership is decided against `screenFrame`, not `visibleFrame`: a real
+    /// menu bar icon sits entirely in the strip that `visibleFrame` excludes
+    /// (it only touches its top edge), so testing against the visible frame
+    /// reported every normal icon as unusable and pushed the panel to the
+    /// fallback corner. Placement is still clamped to `visibleFrame`.
     public static func panelAnchor(
         iconFrame: CGRect?,
         panelSize: CGSize,
-        visibleFrame: CGRect
+        visibleFrame: CGRect,
+        screenFrame: CGRect
     ) -> CGPoint {
+        // Menu bar height varies (24 pt classic, ~38 pt with a notch); 60 pt
+        // covers both without reaching any legitimate content area.
+        let menuBarBand: CGFloat = 60
         let usableIcon = iconFrame.flatMap { frame -> CGRect? in
-            guard frame.width > 0, frame.height > 0, frame.intersects(visibleFrame) else { return nil }
+            guard frame.width > 0, frame.height > 0, frame.intersects(screenFrame) else { return nil }
+            guard frame.maxY >= screenFrame.maxY - menuBarBand else { return nil }
             return frame
         }
         let panelWidth = min(panelSize.width, visibleFrame.width)
@@ -44,6 +56,28 @@ public enum DropdownLayout {
             visibleFrame.maxY - screenMargin
         )
         return CGPoint(x: x, y: top)
+    }
+}
+
+/// Decides whether an activation of another app should fold the dropdown away.
+///
+/// A cold launch shows the panel before activation settles: the previously
+/// frontmost app often takes focus back a moment later, and closing on that
+/// would hide the panel the launch asked for. Keyboard app switching later is
+/// a deliberate user action and must dismiss it.
+public enum DropdownFocusPolicy {
+    /// Grace period after the panel appears during which focus churn is
+    /// treated as launch noise rather than a user decision.
+    public static let settleWindow: TimeInterval = 1.2
+
+    public static func shouldDismiss(
+        shownAt: Date?,
+        now: Date,
+        isOwnApplication: Bool
+    ) -> Bool {
+        if isOwnApplication { return false }
+        guard let shownAt else { return true }
+        return now.timeIntervalSince(shownAt) >= settleWindow
     }
 }
 

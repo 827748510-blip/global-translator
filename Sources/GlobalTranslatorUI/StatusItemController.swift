@@ -39,6 +39,11 @@ public final class StatusItemController: NSObject {
     /// so the icon behaves as a toggle instead of flickering.
     private var lastDismissDate: Date?
     private var statusCancellable: AnyCancellable?
+    private var dropdownShownAt: Date?
+    private var workspaceObservers: [NSObjectProtocol] = []
+    /// Set by a cold-launch request; consumed by the first activation of
+    /// another app so the launch focus bounce does not close the panel.
+    private var ignoresNextForeignActivation = false
 
     private(set) var isStopped = false
 
@@ -88,6 +93,10 @@ public final class StatusItemController: NSObject {
         isStopped = true
         statusCancellable?.cancel()
         statusCancellable = nil
+        for observer in workspaceObservers {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+        workspaceObservers = []
         dropdownPanel.onResignKey = nil
         dropdownPanel.onOutsideClick = nil
         dropdownPanel.dismiss(animated: false)
@@ -100,7 +109,15 @@ public final class StatusItemController: NSObject {
     /// Opens the dropdown anchored below the icon; used by every external
     /// entry point (menu bar click, dock, CLI, activation requests).
     public func showSettings() {
+        showSettings(fromLaunch: false)
+    }
+
+    /// - Parameter fromLaunch: marks a cold-launch request. The first foreign
+    ///   app activation afterwards is the launch focus bounce, not a user
+    ///   decision, so it is ignored once.
+    public func showSettings(fromLaunch: Bool) {
         guard !isStopped, !isDropdownShown else { return }
+        if fromLaunch { ignoresNextForeignActivation = true }
         showDropdown()
     }
 
@@ -136,13 +153,16 @@ public final class StatusItemController: NSObject {
         // A ControlCenter-hosted item may have no window or a zero-size frame;
         // DropdownLayout falls back to the screen corner instead of bailing out.
         let buttonFrame = buttonWindow.map { $0.convertToScreen(button.frame) }
+        let screenFrame = screen?.frame ?? visibleFrame
         let anchor = DropdownLayout.panelAnchor(
             iconFrame: buttonFrame,
             panelSize: size,
-            visibleFrame: visibleFrame
+            visibleFrame: visibleFrame,
+            screenFrame: screenFrame
         )
         button.setAccessibilityExpanded(true)
         dropdownPanel.present(anchorTopLeft: anchor, size: size)
+        dropdownShownAt = Date()
     }
 
     private func dismissDropdown(animated: Bool) {
@@ -180,6 +200,50 @@ public final class StatusItemController: NSObject {
                 self.dismissForOutsideInteraction()
             }
         }
+        configureWorkspaceFocusObservers()
+    }
+
+    /// Cmd-Tab and space switching never produce a mouse-down, so the outside
+    /// click monitors cannot see them. Watch app activation and space changes
+    /// directly, while letting launch-time focus churn settle first.
+    private func configureWorkspaceFocusObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+        workspaceObservers.append(center.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self, self.dropdownPanel.isVisible else { return }
+            let activated = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            let isOwn = activated?.bundleIdentifier == Bundle.main.bundleIdentifier
+            guard !isOwn else { return }
+            // A cold launch hands focus back to the previously frontmost app
+            // once; that bounce is not the user leaving. Only honour the
+            // exemption for a few seconds so it cannot mask a real switch later.
+            if self.ignoresNextForeignActivation,
+               let shownAt = self.dropdownShownAt,
+               Date().timeIntervalSince(shownAt) < 5 {
+                self.ignoresNextForeignActivation = false
+                return
+            }
+            self.ignoresNextForeignActivation = false
+            guard DropdownFocusPolicy.shouldDismiss(
+                shownAt: self.dropdownShownAt,
+                now: Date(),
+                isOwnApplication: false
+            ) else { return }
+            self.dismissForOutsideInteraction()
+        })
+        workspaceObservers.append(center.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            // Switching spaces cannot be launch noise; the panel is allowed to
+            // follow spaces, but leaving one is a deliberate move away.
+            guard let self, self.dropdownPanel.isVisible else { return }
+            self.dismissForOutsideInteraction()
+        })
     }
 
     private func dismissForOutsideInteraction() {
