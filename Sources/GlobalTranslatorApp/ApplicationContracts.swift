@@ -187,7 +187,13 @@ extension CapturePipeline: CapturePipelining {}
 public protocol StatusItemControlling: AnyObject {
     func applyStatus(_ status: MenuBarStatus)
     func showSettings()
+    func showSettings(fromLaunch: Bool)
     func stop()
+}
+
+public extension StatusItemControlling {
+    /// Fakes and older call sites do not need to know about launch semantics.
+    func showSettings(fromLaunch: Bool) { showSettings() }
 }
 
 extension StatusItemController: StatusItemControlling {}

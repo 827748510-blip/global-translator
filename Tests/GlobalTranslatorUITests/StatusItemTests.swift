@@ -131,7 +131,8 @@ struct StatusItemTests {
         let withIcon = DropdownLayout.panelAnchor(
             iconFrame: CGRect(x: 1200, y: 876, width: 24, height: 24),
             panelSize: size,
-            visibleFrame: screen
+            visibleFrame: screen,
+            screenFrame: screen
         )
         #expect(withIcon.y == 876)
         #expect(withIcon.x == 1022)
@@ -140,7 +141,8 @@ struct StatusItemTests {
         let withoutWindow = DropdownLayout.panelAnchor(
             iconFrame: nil,
             panelSize: size,
-            visibleFrame: screen
+            visibleFrame: screen,
+            screenFrame: screen
         )
         #expect(withoutWindow.y == 892)
         #expect(withoutWindow.x == 1052)
@@ -150,7 +152,8 @@ struct StatusItemTests {
         let zeroSize = DropdownLayout.panelAnchor(
             iconFrame: CGRect(x: 900, y: 0, width: 0, height: 0),
             panelSize: size,
-            visibleFrame: screen
+            visibleFrame: screen,
+            screenFrame: screen
         )
         #expect(zeroSize == withoutWindow)
 
@@ -158,9 +161,80 @@ struct StatusItemTests {
         let offScreenIcon = DropdownLayout.panelAnchor(
             iconFrame: CGRect(x: 5000, y: 5000, width: 24, height: 24),
             panelSize: size,
-            visibleFrame: screen
+            visibleFrame: screen,
+            screenFrame: screen
         )
         #expect(offScreenIcon == withoutWindow)
+    }
+
+    @Test
+    func panelAnchorTreatsAMenuBarIconAsUsable() {
+        // A real status item lives entirely inside the strip that visibleFrame
+        // excludes: it only touches the visible frame's top edge. Ownership
+        // must be decided against the screen frame instead.
+        let screen = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let menuBar: CGFloat = 24
+        let visible = CGRect(x: 0, y: 0, width: 1920, height: screen.height - menuBar)
+        let icon = CGRect(x: 1500, y: 1056, width: 24, height: 24)
+        let size = CGSize(width: 360, height: 600)
+
+        let anchor = DropdownLayout.panelAnchor(
+            iconFrame: icon,
+            panelSize: size,
+            visibleFrame: visible,
+            screenFrame: screen
+        )
+        // Centered under the icon, not parked in the fallback corner.
+        let expectedX = icon.midX - size.width / 2
+        let fallbackX = visible.maxX - DropdownLayout.screenMargin - size.width
+        #expect(anchor.x == expectedX)
+        #expect(anchor.x != fallbackX)
+        // Top edge still clamped under the menu bar.
+        #expect(anchor.y == visible.maxY - DropdownLayout.screenMargin)
+    }
+
+    @Test
+    func panelAnchorRejectsAHostedFrameParkedAtTheScreenOrigin() {
+        // ControlCenter can report a non-empty frame that is not the icon at
+        // all — observed in the wild as (0, 0, 44, 24), which passed the old
+        // intersection check and anchored the panel to the bottom-left corner.
+        let screen = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let visible = CGRect(x: 0, y: 0, width: 1920, height: 1056)
+        let size = CGSize(width: 360, height: 600)
+        let anchor = DropdownLayout.panelAnchor(
+            iconFrame: CGRect(x: 0, y: 0, width: 44, height: 24),
+            panelSize: size,
+            visibleFrame: visible,
+            screenFrame: screen
+        )
+        let fallbackX = visible.maxX - DropdownLayout.screenMargin - size.width
+        #expect(anchor.x == fallbackX)
+        #expect(anchor.y == visible.maxY - DropdownLayout.screenMargin)
+    }
+
+    @Test
+    func focusPolicyIgnoresLaunchChurnButDismissesDeliberateSwitching() {
+        let shownAt = Date(timeIntervalSince1970: 1_000)
+        // Cold launch: another app takes focus back right after the panel shows.
+        #expect(!DropdownFocusPolicy.shouldDismiss(
+            shownAt: shownAt,
+            now: shownAt.addingTimeInterval(0.3),
+            isOwnApplication: false
+        ))
+        // Our own app activating never dismisses.
+        #expect(!DropdownFocusPolicy.shouldDismiss(
+            shownAt: shownAt,
+            now: shownAt.addingTimeInterval(5),
+            isOwnApplication: true
+        ))
+        // Cmd-Tab after the grace period is a user decision.
+        #expect(DropdownFocusPolicy.shouldDismiss(
+            shownAt: shownAt,
+            now: shownAt.addingTimeInterval(DropdownFocusPolicy.settleWindow + 0.1),
+            isOwnApplication: false
+        ))
+        // Unknown show time behaves conservatively.
+        #expect(DropdownFocusPolicy.shouldDismiss(shownAt: nil, now: shownAt, isOwnApplication: false))
     }
 
     @Test
@@ -170,7 +244,8 @@ struct StatusItemTests {
         let anchor = DropdownLayout.panelAnchor(
             iconFrame: CGRect(x: 1880, y: 676, width: 24, height: 24),
             panelSize: size,
-            visibleFrame: screen
+            visibleFrame: screen,
+            screenFrame: screen
         )
         // Top edge pins to the icon when it still fits; the panel never leaves
         // the visible frame even when it is nearly as tall as the screen.
