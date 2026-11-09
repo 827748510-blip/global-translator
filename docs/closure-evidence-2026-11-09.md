@@ -88,7 +88,7 @@ swift test -Xswiftc -warnings-as-errors
 
 - 顶部状态卡：自动翻译已关闭 / DeepSeek 后端已就绪；滑词翻译开关为开、视频翻译为关。
 - 优化场景分段控件：沟通润色（选中）/ 任务指令 / 用词修正。
-- 截图翻译组：快捷键 ⌃⇧T 与「录制」按钮、自动复制译文（关）、保存截图（关）、复制截图（关）。
+- 截图翻译组：快捷键 ⌃⇧T（隔离 root 无用户配置，取默认值；安装版读用户配置，实测为 ⌥`）与「录制」按钮、自动复制译文（关）、保存截图（关）、复制截图（关）。
 - 要翻译的应用：选择应用按钮与未选择占位。
 - 翻译后端：DeepSeek 云端（选中）/ 本地模型分段，附 Ollama 切换说明。
 
@@ -104,9 +104,26 @@ swift test -Xswiftc -warnings-as-errors
 
 实测证据（隔离 root，`open -n --env GLOBAL_TRANSLATOR_RUNTIME_ROOT=…`）：冷启动 1.5 s 后 `onscreen=true`、`X=1552 Y=38 360×600`、`alpha=1.0`，截图确认面板渲染完整；再点击外部后 `onscreen=false`，关闭行为未回归。全量 630 tests / 62 suites 通过。
 
+**同一区域的两处回归（P3/P2，已修复，PR #37，merge `3c45379`）**
+
+- **P3：正常菜单栏图标被误判为不可用。** 归属判断原先用 `visibleFrame`，而真实菜单栏图标整块位于该矩形之外、只与它的上沿相接；`CGRect.intersects` 对零面积交集返回 `false`，于是每个正常图标都被判成不可用，面板被推到备用角落。修法：归属判断改用 `screenFrame`，位置约束仍用 `visibleFrame`，并追加「图标必须落在顶部 60 pt 菜单栏带内」——实测 ControlCenter 托管时会返回 `(0,0,44,24)` 这类无意义 frame，它跟 `screenFrame` 相交，只靠相交判断会把面板锚到屏幕左下角（实测 `X=8 / Y=394`）。
+- **P2：键盘切换应用后面板不关闭。** 移除 `didResignActive` 强制关闭后，Cmd-Tab 与切空间不产生鼠标事件，outside-click 监控看不到。修法：改听 `NSWorkspace.didActivateApplicationNotification` 与 `activeSpaceDidChangeNotification`，新增 `DropdownFocusPolicy`（显示后 1.2 s 内的失焦视为启动噪声），冷启动另给一次 5 秒内有效的豁免，避免把真正的切换漏掉。
+- 实测：冷启动 2.2 s `onscreen=true`；切 Finder、切 Chrome 后 1 s 内均 `onscreen=false`；正常图标路径锚点 `X=1324`（贴近图标），无有效几何时 `X=1552`（右上角）。全量 633 tests / 62 suites 通过。
+
 **限制二：划词弹层未完成实机取证。** 用 `cliclick` 在 TextEdit 中真实拖选（7→48 个拖拽事件、位移 228–489 pt），日志确认手势判定为 `verdict=textSelection`，随后出现 `selection_unreadable`：注入式拖拽没有让 TextEdit 真正产生选中文本，AX 读不到、⌘C 兜底也拿不到内容。该链路的弹层渲染与交互由 `SelectionTranslatePopoverTests`、`GlassUIRenderTests`、`ApplicationControllerTests` 中的 45 个以上用例覆盖并通过，但**真机划词弹层本轮仍记未完成**，不用自动化结论替代。
 
-**限制三：截图翻译热键未做键盘注入验收。** 与 `docs/merged-acceptance-2026-10-24.md` 记录一致，本机键盘自动化未能触发 `screenshot_hotkey`，本轮未重试。
+**限制三已解除：截图翻译热键实机验收通过，此前记录有误。** 多轮记录称「⌃⇧T 键盘注入无法触发 `screenshot_hotkey`」，根因是键位假设错误：安装版读取用户配置 `~/Library/Application Support/GlobalTranslator/config.json`，其中 `screenshotTranslateHotkey = {control: false, option: true, shift: false, command: false, keyCode: 50}`，即 **⌥`**，早已不是默认的 ⌃⇧T；而隔离实例读默认配置，所以本页第 91 行的截图仍显示 ⌃⇧T。按真实键位注入后：
+
+| 步骤 | 观测 |
+| --- | --- |
+| 注入 ⌥` | 出现 `layer=1000`、`1920×1080`、`onscreen=true` 的全屏覆盖层 |
+| 注入 Esc（keyCode 53） | 覆盖层消失，取消路径正常 |
+
+同轮修掉一个显示缺陷：`KeyboardShortcutSpec.namedKeys` 未收录 keyCode 50，UI 把 ⌥` 渲染成 `⌥Key50`。已补齐 ANSI 标点键（`` ` `` `-` `=` `[` `]` `\` `;` `'` `,` `.` `/` `§`），新增 `punctuationKeysRenderAsSymbolsInsteadOfRawNumbers` 覆盖断言；未收录键码仍回退 `Key<code>`，保证不渲染空白。
+
+**本次验证边界：** 只覆盖「热键 → 覆盖层 → Esc 取消」。拖选区域 → 本机 Vision OCR → 后端翻译 → 结果弹层的全链路未在真机取证，该部分由 `ScreenshotTranslateCoreTests` 与 UI 层测试覆盖。
+
+修完键名后全量 `swift test -Xswiftc -warnings-as-errors`：**634 tests / 62 suites 通过**（较上轮新增 1 个键名用例）。
 
 ## 六、隔离启动链退出 71：未复现，待确认原始命令
 
@@ -166,7 +183,10 @@ CLI 显式退出码只有 0 / 1 / 2（`Sources/GlobalTranslatorCLI/main.swift:27
 | 完整 macOS 编译 | 通过（Release，warnings-as-errors，28.39 s） |
 | 全量测试 | 通过（627 tests / 62 suites） |
 | 打包与签名 | 通过（1.1.3，自签名 valid） |
-| 界面验收 | 设置面板通过；菜单栏图标、划词弹层、截图热键受环境限制 |
+| 界面验收 | 设置面板通过；划词弹层未取证；截图热键已通过（⌥`） |
+| 菜单栏图标不可见 | 系统层限制（ControlCenter 托管，图标宽高为 0），面板定位已加兜底 |
 | 菜单栏面板冷启动不显示 | 已修复并实测通过（PR #35，merge `db31daa`） |
+| 键盘切换不关面板 / 正常图标被误判 | 已修复并实测通过（PR #37，merge `3c45379`） |
+| 截图热键显示为 `⌥Key50` | 已修复（补齐 ANSI 标点键名），测试覆盖 |
 | 隔离启动退出 71 | 九种变体均未复现，待原始命令 |
 | 开源发布 / 发行包 | 许可证与 zip 发行包已就绪；转公开与 Release 上传待授权 |

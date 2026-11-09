@@ -114,6 +114,23 @@ public struct KeyboardShortcutSpec: Codable, Equatable, Sendable {
         public static let space: UInt16 = 49
         public static let delete: UInt16 = 51
         public static let escape: UInt16 = 53
+
+        /// Punctuation keys in ANSI layout order. Recording stores whatever
+        /// `NSEvent.keyCode` the user presses, so every printable key needs a
+        /// name; otherwise the UI shows the raw number (e.g. `Key50`).
+        public static let section: UInt16 = 10
+        public static let equal: UInt16 = 24
+        public static let minus: UInt16 = 27
+        public static let rightBracket: UInt16 = 30
+        public static let leftBracket: UInt16 = 33
+        public static let quote: UInt16 = 39
+        public static let semicolon: UInt16 = 41
+        public static let backslash: UInt16 = 42
+        public static let comma: UInt16 = 43
+        public static let slash: UInt16 = 44
+        public static let period: UInt16 = 47
+        public static let grave: UInt16 = 50
+
         public static let leftArrow: UInt16 = 123
         public static let rightArrow: UInt16 = 124
         public static let downArrow: UInt16 = 125
@@ -146,6 +163,11 @@ public struct KeyboardShortcutSpec: Codable, Equatable, Sendable {
         KeyCode.l: "L", KeyCode.j: "J", KeyCode.k: "K", KeyCode.n: "N",
         KeyCode.m: "M", KeyCode.returnKey: "↩", KeyCode.tab: "⇥",
         KeyCode.space: "空格", KeyCode.delete: "⌫", KeyCode.escape: "Esc",
+        KeyCode.grave: "`", KeyCode.minus: "-", KeyCode.equal: "=",
+        KeyCode.leftBracket: "[", KeyCode.rightBracket: "]",
+        KeyCode.backslash: "\\", KeyCode.semicolon: ";", KeyCode.quote: "'",
+        KeyCode.comma: ",", KeyCode.period: ".", KeyCode.slash: "/",
+        KeyCode.section: "§",
         KeyCode.leftArrow: "←", KeyCode.rightArrow: "→",
         KeyCode.downArrow: "↓", KeyCode.upArrow: "↑"
     ]
