@@ -4,7 +4,9 @@ Packages/
 xcuserdata/
 DerivedData/
 
+/dist/
 /.codegraph
 .codebuddy/
+.workbuddy/
 .playwright-cli/
 .DS_Store

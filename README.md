@@ -112,3 +112,16 @@ swift build -c release -Xswiftc -warnings-as-errors
 macOS 26 在当前机器上把裸可执行文件的 `NSStatusItem` 交给 ControlCenter 以 `.ephemeral`、`neverClip: false` 方式托管。菜单栏空间不足或系统布局裁剪时，`NSStatusItem.isVisible` 仍可能为 `true`，但图标像素不显示；公开 AppKit API没有强制优先级或 `neverClip` 选项。
 
 新版使用标准 `.app` 身份、方形 `NSStatusItem` 和稳定 autosave 名称。菜单栏仍由 macOS 排布，空间不足时请通过 Dock、双击应用或 `global-translator settings` 打开设置。用户已批准 `.app` 与独立窗口，[ADR-001](docs/decisions/001-bare-executable-status-item.md) 中的旧产品约束已被 [ADR-002](docs/decisions/002-desktop-settings-entry.md) 取代。
+
+## 发行包
+
+```bash
+bash scripts/package-app.sh   # 先产出 .build/desktop/Global Translator.app
+bash scripts/make-release.sh  # 再打包成 dist/Global-Translator-<版本>-<架构>.zip
+```
+
+`make-release.sh` 会校验签名、附上 `LICENSE`、`README.md` 与安装说明，并生成同名 `.sha256` 校验和。产物写入 `dist/`（不入库）。未做 Apple 公证，分发后首次打开需右键「打开」。
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。
