@@ -96,7 +96,13 @@ swift test -Xswiftc -warnings-as-errors
 
 **限制一：菜单栏图标不可见。** 菜单栏截图中没有蓝色「译」图标；`peekaboo menubar list` 只枚举到系统 `MenuBarAgent`（frame 宽高为 0）。这与 README「已知系统限制」一致：ControlCenter 以 `.ephemeral` 托管状态项，空间不足时不渲染像素。
 
-由此派生一个值得注意的行为：用 `open -n` 首次启动实例后，面板虽被创建（`layer=3`、360×600）但 `onscreen=false`；必须再执行一次 `global-translator settings` 才会显示。建议后续给 `showDropdown()` 增加“锚点不可用时退到屏幕右上角”的兜底，这条未在本轮改动，仅记录。
+由此派生的缺陷**已修复（PR #35，merge `db31daa`）**。修复前：用 `open -n` 首次启动实例后，面板虽被创建（`layer=3`、360×600）但 `onscreen=false`，必须再执行一次 `global-translator settings` 才显示。三处改动：
+
+- `DropdownLayout.panelAnchor`：图标几何不可用（无 window、零尺寸、不在可见区域）时退回可见区域右上角，顶边夹在可见范围内；
+- `DropdownPanel.present`：把 `anchorTopLeft` 正确换算成窗口左下角 origin，不再依赖 AppKit 隐式 constrain；
+- `StatusItemController`：去掉 `didResignActive` 的强制关闭，`resignKey` 延迟 300 ms 再判断「App 是否仍在前台」。
+
+实测证据（隔离 root，`open -n --env GLOBAL_TRANSLATOR_RUNTIME_ROOT=…`）：冷启动 1.5 s 后 `onscreen=true`、`X=1552 Y=38 360×600`、`alpha=1.0`，截图确认面板渲染完整；再点击外部后 `onscreen=false`，关闭行为未回归。全量 630 tests / 62 suites 通过。
 
 **限制二：划词弹层未完成实机取证。** 用 `cliclick` 在 TextEdit 中真实拖选（7→48 个拖拽事件、位移 228–489 pt），日志确认手势判定为 `verdict=textSelection`，随后出现 `selection_unreadable`：注入式拖拽没有让 TextEdit 真正产生选中文本，AX 读不到、⌘C 兜底也拿不到内容。该链路的弹层渲染与交互由 `SelectionTranslatePopoverTests`、`GlassUIRenderTests`、`ApplicationControllerTests` 中的 45 个以上用例覆盖并通过，但**真机划词弹层本轮仍记未完成**，不用自动化结论替代。
 
@@ -161,5 +167,6 @@ CLI 显式退出码只有 0 / 1 / 2（`Sources/GlobalTranslatorCLI/main.swift:27
 | 全量测试 | 通过（627 tests / 62 suites） |
 | 打包与签名 | 通过（1.1.3，自签名 valid） |
 | 界面验收 | 设置面板通过；菜单栏图标、划词弹层、截图热键受环境限制 |
+| 菜单栏面板冷启动不显示 | 已修复并实测通过（PR #35，merge `db31daa`） |
 | 隔离启动退出 71 | 九种变体均未复现，待原始命令 |
 | 开源发布 / 发行包 | 许可证与 zip 发行包已就绪；转公开与 Release 上传待授权 |
