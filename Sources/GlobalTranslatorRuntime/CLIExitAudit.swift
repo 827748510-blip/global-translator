@@ -32,12 +32,13 @@ public enum CLIExitAudit {
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         now: Date = Date()
     ) {
+        let managed = RuntimeManager.isManagedByLaunchd(environment: environment)
         var fields: [String: Any] = [
             "event": "cli_exit",
             "code": Int(code),
             "command": truncated(arguments.joined(separator: " ")),
             "pid": Int(ProcessInfo.processInfo.processIdentifier),
-            "managedByLaunchd": RuntimeManager.isManagedByLaunchd(environment: environment),
+            "managedByLaunchd": managed,
             "timestamp": ISO8601DateFormatter().string(from: now)
         ]
         if let root = paths?.rootDirectory.path {
@@ -45,8 +46,7 @@ public enum CLIExitAudit {
         }
         // Only record the label when it really identifies a job: launchd also
         // sets "0" as a placeholder, which says nothing about supervision.
-        if RuntimeManager.isManagedByLaunchd(environment: environment),
-           let service = environment["XPC_SERVICE_NAME"] {
+        if managed, let service = environment["XPC_SERVICE_NAME"] {
             fields["xpcServiceName"] = truncated(service)
         }
         guard let data = try? JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys]),
@@ -62,6 +62,12 @@ public enum CLIExitAudit {
             try? handle.close()
         } else {
             try? line.write(to: url)
+        }
+        // A job's stderr goes to StandardErrorPath, giving a second copy that
+        // survives a read-only or full log directory. Nothing is echoed for
+        // ordinary shell use, where it would pollute the caller's terminal.
+        if managed {
+            FileHandle.standardError.write(line)
         }
     }
 

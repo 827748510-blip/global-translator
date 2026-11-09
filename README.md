@@ -37,7 +37,7 @@ global-translator stop
 
 **用 launchd 托管（可选）**：`packaging/com.maodashu.global-translator.daemon.plist` 是模板，把 `__HOME__` 换成你的主目录后放进 `~/Library/LaunchAgents/`，再执行 `launchctl bootstrap gui/$(id -u) …`。模板用 `run --daemon-child` 而不是 `start`：在 launchd job 里 `start` 会改为前台运行 worker，这是刻意的 —— 否则 job 立刻退出，KeepAlive 与退出码记录都会失效。
 
-每条命令的退出码都会追加到 `~/Library/Logs/GlobalTranslator/cli.log`，含 `command`、`pid`、`managedByLaunchd` 与 `xpcServiceName`。异常退出时先看这个文件：有记录说明是本程序返回的（码值可直接归因），没有记录说明进程在 `main` 之前就被系统拦下了。
+每条命令的退出码都会追加到 `~/Library/Logs/GlobalTranslator/cli.log`，含 `command`、`pid`、`managedByLaunchd` 与 `xpcServiceName`。异常退出时先看这个文件：**有记录**说明是本程序返回的（码值可直接归因）；**没有记录**不能直接判定「死在 `main` 之前」—— 也可能是被 `SIGKILL` 或崩溃终止（来不及写）、日志目录不可写、或跑的是旧二进制。此时用 `launchctl print … | grep "last exit"`（`(signal …)` 即信号终止）、`log show` 与 `~/Library/Logs/DiagnosticReports` 交叉确认。托管场景下同一行还会写进 stderr，launchd 的 `StandardErrorPath` 可作第二份记录。
 
 ## Chrome 扩展
 

@@ -173,11 +173,19 @@ CLI 显式退出码只有 0 / 1 / 2，源码里不存在 `exit(71)`。
 
 ### 6.4 本轮修复：把「不可定位」变成「可定位」
 
-1. **launchd 托管时不再派生**（`RuntimeManager.start`）：检测到 `XPC_SERVICE_NAME` 且不是 LaunchServices 的 `application.*` 命名时，直接前台运行 worker。job 因此常驻、KeepAlive 生效、退出码由 launchd 记录。
+1. **launchd 托管时前台运行完整应用**（`main.swift` 的 `.start` 分支）：检测到 `XPC_SERVICE_NAME` 且不是 LaunchServices 的 `application.*` 命名时，走 `GlobalTranslatorApplication.run`，而不是 `RuntimeManager.start`。
+   - **这里有一个必须避开的坑**：改在 `RuntimeManager.start` 里调用 `run(mode:)` 是错的。`RuntimeManager.run` 只启动一个带 `NoopRuntimeWorkerHook` 的 `RuntimeWorker`：socket 能应答 `status`，`launchctl print` 也显示 `running`，但翻译引擎、热键、设置窗口一个都没有，表现为「进程在、功能不在」。必须走应用入口，才能拿到 `ApplicationController` 与 `MainThreadStopHook`。
+   - job 因此常驻、KeepAlive 生效、退出码由 launchd 记录。
 2. **CLI 退出审计**（`CLIExitAudit`）：每条命令结束都向 `~/Library/Logs/GlobalTranslator/cli.log` 追加一行 JSON，含 `code`、`command`、`pid`、`managedByLaunchd`、`xpcServiceName`、`runtimeRoot`、`timestamp`。路径固定在用户日志目录，即使 `--runtime-root` 解析失败也能写入。
 3. **launchd 模板**（`packaging/com.maodashu.global-translator.daemon.plist`）：`run --daemon-child` + `KeepAlive` + `ThrottleInterval`，不自动安装。
+4. **冷启动豁免只属于启动**（`LaunchFocusExemption`）：原实现用裸 bool 标记，关闭面板不清除、非启动方式重新打开也不重置，于是「冷启动 → 快速关闭 → 再打开 → 5 秒内切应用」会误用旧豁免，面板继续悬浮。改为状态机：启动时武装、任何其他打开或关闭都解除，且每次咨询后必定消耗。
 
-验证：全量 `swift test -Xswiftc -warnings-as-errors` → **638 tests / 64 suites 通过**（新增 `LaunchdDetectionTests` 1 项、`CLIExitAuditTests` 3 项）。端到端实测：修复后 launchd job `state=running` / `pid` 有值 / `last exit (never exited)`；bootout 后 `cli.log` 留下 `code:0, managedByLaunchd:true, xpcServiceName:com.maodashu.gtprobe.startfix`；普通 shell 的 `start → status → stop` 仍返回 0/0/0，行为未回归。
+验证：全量 `swift test -Xswiftc -warnings-as-errors` → **639 tests / 64 suites 通过**（新增 `LaunchdDetectionTests` 1 项、`CLIExitAuditTests` 3 项、`LaunchFocusExemption` 1 项）。端到端实测：
+
+- launchd 加载 `start` 后 job `state=running`、`pid` 有值、`last exit (never exited)`；
+- **P2 回归证据**：对同一实例执行 `settings`，返回 `{"pid":52591,"running":true,"state":"running"}` 并唤起 360×600 面板（1089,38）。`showSettings` 只有经过 `MainThreadStopHook` 才会被应答，面板只有 `ApplicationController` 存在才会出现 —— 这证明跑的是完整应用，不是只有 socket 的空 worker；
+- bootout 后 `cli.log` 留下 `code:0, managedByLaunchd:true, xpcServiceName:…startfix`；
+- 普通 shell 的 `start → status → stop` 仍返回 0/0/0，行为未回归。
 
 ### 6.5 下次出现 71 时怎么判
 
@@ -185,7 +193,24 @@ CLI 显式退出码只有 0 / 1 / 2，源码里不存在 `exit(71)`。
 | --- | --- | --- |
 | 有，`code=71` | 是本程序退出的 | 日志里的 `command` 直接指出哪条命令 |
 | 有，`code` 不是 71 | 71 来自包裹它的脚本 / 管道 | 查调用方的 `set -e` 与 `$?` 传递 |
-| **没有** | 进程在 `main` 之前就死了 | Gatekeeper、TCC、`posix_spawn`、launchd 域限制 |
+| 有，`code=128+n` | 被信号 n 终止 | SIGKILL(9)=137、SIGSEGV(11)=139、SIGTERM(15)=143 |
+| **没有** | **不能推出「死在 `main` 之前」** | 至少四种可能，需交叉验证（见下） |
+
+「没有记录」有四种成因，不能只归到一种：
+
+1. **进程在 `main` 之前就被拦下** —— Gatekeeper、TCC、`posix_spawn` 失败、launchd 域限制。
+2. **被信号杀死** —— `SIGKILL` 无法被捕获，进程来不及写任何东西；崩溃（`SIGSEGV` / `SIGABRT`）同理。
+3. **日志写入失败** —— 目录不可写、磁盘满、权限被改。
+4. **审计代码本身未执行** —— 例如跑到的是旧版本二进制。
+
+交叉验证手段：
+
+| 证据 | 读法 |
+| --- | --- |
+| `launchctl print gui/$UID/<label> \| grep "last exit"` | `(signal SIGKILL)` 是信号；`78` 是配置错误；`(never exited)` 说明进程还活着 |
+| `log show --last 10m --predicate 'process == "global-translator"'` | 系统层拦截会在统一日志里留痕 |
+| `ls ~/Library/Logs/DiagnosticReports \| grep -i global` | 有崩溃报告说明是 `main` 之后崩的 |
+| launchd 的 `StandardErrorPath` | 托管场景下 `cli_exit` 会同时写 stderr，日志目录失效时仍有第二份 |
 
 ### 6.6 仍未确认的部分
 

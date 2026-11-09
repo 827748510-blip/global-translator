@@ -213,6 +213,42 @@ struct StatusItemTests {
     }
 
     @Test
+    func launchExemptionBelongsToTheLaunchOnly() {
+        let shownAt = Date(timeIntervalSince1970: 2_000)
+
+        // Armed by a cold launch: the first foreign activation is the bounce.
+        var launched = LaunchFocusExemption()
+        launched.armForLaunch()
+        let firstBounce = launched.consumeIfBounce(shownAt: shownAt, now: shownAt.addingTimeInterval(1))
+        #expect(firstBounce)
+        // Consumed on consultation, so a second switch is a real decision.
+        let secondSwitch = launched.consumeIfBounce(shownAt: shownAt, now: shownAt.addingTimeInterval(1.5))
+        #expect(!secondSwitch)
+
+        // A panel the user closed and reopened must not inherit the exemption,
+        // otherwise switching apps within the window leaves it floating.
+        var reopened = LaunchFocusExemption()
+        reopened.armForLaunch()
+        reopened.disarm()
+        let afterReopen = reopened.consumeIfBounce(shownAt: shownAt, now: shownAt.addingTimeInterval(1))
+        #expect(!afterReopen)
+        #expect(!reopened.isArmed)
+
+        // Past the window it is not a bounce, and the arm is still consumed.
+        var expired = LaunchFocusExemption()
+        expired.armForLaunch()
+        let afterExpiry = expired.consumeIfBounce(shownAt: shownAt, now: shownAt.addingTimeInterval(9))
+        #expect(!afterExpiry)
+        #expect(!expired.isArmed)
+
+        // A missing show time cannot justify an exemption.
+        var unknown = LaunchFocusExemption()
+        unknown.armForLaunch()
+        let withoutShownAt = unknown.consumeIfBounce(shownAt: nil, now: shownAt)
+        #expect(!withoutShownAt)
+    }
+
+    @Test
     func focusPolicyIgnoresLaunchChurnButDismissesDeliberateSwitching() {
         let shownAt = Date(timeIntervalSince1970: 1_000)
         // Cold launch: another app takes focus back right after the panel shows.

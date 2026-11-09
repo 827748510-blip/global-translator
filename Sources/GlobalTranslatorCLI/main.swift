@@ -48,6 +48,15 @@ struct GlobalTranslatorCLI {
                 exit(1)
             }
         case .start:
+            // A launchd job owns the process lifecycle, so detaching a `nohup`
+            // child would leave the job supervising nothing and KeepAlive dead.
+            // Run in the foreground — but through the application entry point:
+            // `RuntimeManager.run` only starts a bare worker, with no
+            // translation engine, hotkeys or settings window.
+            if RuntimeManager.isManagedByLaunchd() {
+                try await GlobalTranslatorApplication.run(paths: paths, mode: .daemonChild)
+                return
+            }
             switch try manager.start() {
             case let .started(pid):
                 writeStdout("已启动，PID \(pid)\n")
