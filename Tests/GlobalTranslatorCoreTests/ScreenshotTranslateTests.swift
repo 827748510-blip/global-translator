@@ -51,6 +51,29 @@ struct ScreenshotTranslateCoreTests {
     }
 
     @Test
+    func punctuationKeysRenderAsSymbolsInsteadOfRawNumbers() {
+        // Recording stores whatever key the user pressed, so punctuation must
+        // render as the character rather than falling back to `Key<code>`.
+        #expect(KeyboardShortcutSpec(keyCode: KeyboardShortcutSpec.KeyCode.grave, option: true).displayString == "⌥`")
+        #expect(KeyboardShortcutSpec(keyCode: KeyboardShortcutSpec.KeyCode.minus, control: true).displayString == "⌃-")
+        #expect(KeyboardShortcutSpec(keyCode: KeyboardShortcutSpec.KeyCode.equal, control: true).displayString == "⌃=")
+        #expect(KeyboardShortcutSpec(keyCode: KeyboardShortcutSpec.KeyCode.leftBracket, option: true).displayString == "⌥[")
+        #expect(KeyboardShortcutSpec(keyCode: KeyboardShortcutSpec.KeyCode.rightBracket, option: true).displayString == "⌥]")
+        #expect(KeyboardShortcutSpec(keyCode: KeyboardShortcutSpec.KeyCode.backslash, option: true).displayString == "⌥\\")
+        #expect(KeyboardShortcutSpec(keyCode: KeyboardShortcutSpec.KeyCode.semicolon, option: true).displayString == "⌥;")
+        #expect(KeyboardShortcutSpec(keyCode: KeyboardShortcutSpec.KeyCode.quote, option: true).displayString == "⌥'")
+        #expect(KeyboardShortcutSpec(keyCode: KeyboardShortcutSpec.KeyCode.comma, option: true).displayString == "⌥,")
+        #expect(KeyboardShortcutSpec(keyCode: KeyboardShortcutSpec.KeyCode.period, option: true).displayString == "⌥.")
+        #expect(KeyboardShortcutSpec(keyCode: KeyboardShortcutSpec.KeyCode.slash, option: true).displayString == "⌥/")
+        #expect(KeyboardShortcutSpec(keyCode: KeyboardShortcutSpec.KeyCode.section, option: true).displayString == "⌥§")
+
+        // Unmapped codes still fall back so nothing renders blank.
+        #expect(KeyboardShortcutSpec.keyName(for: 96) == "Key96")
+        // The shipped default is unaffected by the new table.
+        #expect(KeyboardShortcutSpec.screenshotTranslateDefault.displayString == "⌃⇧T")
+    }
+
+    @Test
     func regionDragRequiresMinimumSize() {
         var drag = ScreenshotRegionDrag()
         #expect(drag.completePointerUp(clampedTo: nil) == nil)

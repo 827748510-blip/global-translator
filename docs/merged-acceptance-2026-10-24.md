@@ -23,6 +23,7 @@
 
 - `saveScreenshotImage` / `copyScreenshotImage` 的开关、目录创建、PNG 落盘、弹层路径提示、失败不阻断翻译均有自动化测试（`ScreenshotImageIOTests`、`ScreenshotTranslateControllerTests`、`GlassUIRenderTests`）。
 - 本机键盘自动化被权限限制：`cliclick` 的 `t:t` 与直接 `CGEvent` 都没有触发 `screenshot_hotkey` 日志，因此本轮**没有完成真实 ⌃⇧T → 区域拖选 → OCR → 保存/复制** 的完整 GUI 验收。
+  - **后续更正（2026-11-09）**：该轮的键位假设有误。受影响环境的用户配置是 **⌥`**（`keyCode 50` + `option`），并非默认 ⌃⇧T，注入默认键位自然无法触发。按真实键位已实测「热键 → 全屏覆盖层 → Esc 取消」通过。详见 [`closure-evidence-2026-11-09.md`](closure-evidence-2026-11-09.md) 的「限制三已解除」。
 - 划词验收不依赖截图/键盘注入，使用运行日志 + mock 请求记录；未伪造截图通过证据。
 
 ## 当前状态
