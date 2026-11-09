@@ -123,6 +123,73 @@ struct StatusItemTests {
     }
 
     @Test
+    func panelAnchorHangsBelowIconAndFallsBackWithoutUsableGeometry() {
+        let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let size = CGSize(width: 380, height: 600)
+
+        // Normal icon: top edge follows the icon's bottom edge.
+        let withIcon = DropdownLayout.panelAnchor(
+            iconFrame: CGRect(x: 1200, y: 876, width: 24, height: 24),
+            panelSize: size,
+            visibleFrame: screen
+        )
+        #expect(withIcon.y == 876)
+        #expect(withIcon.x == 1022)
+
+        // ControlCenter hosts the item with no window at all.
+        let withoutWindow = DropdownLayout.panelAnchor(
+            iconFrame: nil,
+            panelSize: size,
+            visibleFrame: screen
+        )
+        #expect(withoutWindow.y == 892)
+        #expect(withoutWindow.x == 1052)
+
+        // The item exists but reports a zero-size frame, which previously
+        // anchored the panel off-screen.
+        let zeroSize = DropdownLayout.panelAnchor(
+            iconFrame: CGRect(x: 900, y: 0, width: 0, height: 0),
+            panelSize: size,
+            visibleFrame: screen
+        )
+        #expect(zeroSize == withoutWindow)
+
+        // An icon frame on another display must not be used.
+        let offScreenIcon = DropdownLayout.panelAnchor(
+            iconFrame: CGRect(x: 5000, y: 5000, width: 24, height: 24),
+            panelSize: size,
+            visibleFrame: screen
+        )
+        #expect(offScreenIcon == withoutWindow)
+    }
+
+    @Test
+    func panelAnchorKeepsTallPanelInsideShortScreen() {
+        let screen = CGRect(x: 0, y: 0, width: 1920, height: 700)
+        let size = CGSize(width: 380, height: 640)
+        let anchor = DropdownLayout.panelAnchor(
+            iconFrame: CGRect(x: 1880, y: 676, width: 24, height: 24),
+            panelSize: size,
+            visibleFrame: screen
+        )
+        // Top edge pins to the icon when it still fits; the panel never leaves
+        // the visible frame even when it is nearly as tall as the screen.
+        #expect(anchor.y == 676)
+        #expect(anchor.y - size.height >= screen.minY)
+    }
+
+    @Test @MainActor
+    func presentPutsTheAnchorOnTheTopEdge() {
+        let panel = DropdownPanel(content: NSViewController())
+        panel.present(anchorTopLeft: CGPoint(x: 100, y: 800), size: CGSize(width: 380, height: 240))
+        // The frame's bottom edge is the anchor minus the panel height, so the
+        // top edge lands on the anchor instead of the bottom edge doing so.
+        #expect(panel.frame.minY == 560)
+        panel.dismiss(animated: false)
+        panel.orderOut(nil)
+    }
+
+    @Test
     func toggleDecisionCoversOpenCloseAndFlickerGuard() {
         // Closed with no recent dismissal: clicking opens.
         #expect(DropdownToggleLogic.toggleAction(isShown: false, secondsSinceDismiss: nil) == .show)
