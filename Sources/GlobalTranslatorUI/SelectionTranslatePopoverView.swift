@@ -63,16 +63,18 @@ public struct SelectionTranslatePopoverView: View {
     private var contentLayout: some View {
         VStack(alignment: .leading, spacing: GTSelectionMetrics.sectionSpacing) {
             textBlock
-            if let savedHint = content.savedImageHint {
-                Text(savedHint)
+            // 保存路径 / 剪贴板提示：一条一行，行数上限与高度测量共用常量。
+            ForEach(Array(content.secondaryHints.enumerated()), id: \.offset) { _, hint in
+                Text(hint)
                     .font(GTType.caption)
                     .foregroundStyle(GTColor.secondaryText)
-                    .lineLimit(2)
+                    .lineLimit(GTSelectionMetrics.secondaryHintMaxLines)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityLabel("截图保存位置")
-                    .accessibilityValue(savedHint)
+                    .accessibilityLabel("截图提示")
+                    .accessibilityValue(hint)
             }
             if content.showsOptimizeAction || content.showsActionButtons {
                 actionsGroup

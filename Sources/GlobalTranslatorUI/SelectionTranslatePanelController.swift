@@ -397,14 +397,20 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
             ).height
             chromeHeight += GTSelectionMetrics.textBlockSpacing
         }
-        if let savedHint = content.savedImageHint, !savedHint.isEmpty {
-            chromeHeight += GTSelectionMetrics.textBlockSpacing
-            chromeHeight += OverlayLayout.estimatedTextSize(
-                for: savedHint,
-                maxWidth: textWidth,
-                maxLines: 2,
-                font: NSFont.preferredFont(forTextStyle: .caption1)
-            ).height
+        // 提示行：视图里每多一行就多一个 `sectionSpacing`（不是 textBlockSpacing），
+        // 而且长路径最多折到 `secondaryHintMaxLines` 行。少算间距或按 2 行截断，
+        // 底部的保存路径就会被切掉。
+        let hintFont = NSFont.preferredFont(forTextStyle: .caption1)
+        let hintLineHeight = OverlayLayout.estimatedLineHeight(for: hintFont)
+        let hintMaxHeight = hintLineHeight * CGFloat(GTSelectionMetrics.secondaryHintMaxLines)
+        for hint in content.secondaryHints {
+            chromeHeight += GTSelectionMetrics.sectionSpacing
+            let measured = SelectionPopoverLayout.measuredWrappedHeight(
+                for: hint,
+                width: textWidth,
+                font: hintFont
+            )
+            chromeHeight += min(measured, hintMaxHeight)
         }
         let hasActions = content.showsOptimizeAction || content.showsActionButtons
         if hasActions {

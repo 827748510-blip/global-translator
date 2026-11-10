@@ -8,6 +8,38 @@ import GlobalTranslatorEngine
 import GlobalTranslatorRuntime
 import GlobalTranslatorUI
 
+/// 截图保存 / 复制动作现在在后台执行，注入的闭包必须是 `@Sendable`，不能再
+/// 捕获可变局部变量。用一把锁把记录器封成线程安全的盒子。
+final class ImageArtifactRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var savedDirectories: [URL] = []
+    private var copiedPayloads = 0
+
+    var saved: [URL] {
+        lock.lock()
+        defer { lock.unlock() }
+        return savedDirectories
+    }
+
+    var copiedCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return copiedPayloads
+    }
+
+    func recordSave(_ directory: URL) {
+        lock.lock()
+        savedDirectories.append(directory)
+        lock.unlock()
+    }
+
+    func recordCopy() {
+        lock.lock()
+        copiedPayloads += 1
+        lock.unlock()
+    }
+}
+
 @MainActor
 struct ScreenshotTranslateControllerTests {
     private func waitUntil(_ condition: @escaping () -> Bool, timeout: TimeInterval = 1) async throws {
@@ -17,7 +49,6 @@ struct ScreenshotTranslateControllerTests {
         }
         #expect(condition())
     }
-
     @Test
     func hotkeyCapturesOCRAndShowsTranslationWithoutAutoCopy() async throws {
         var copied: [String] = []
@@ -138,11 +169,69 @@ struct ScreenshotTranslateControllerTests {
     }
 
     @Test
-    func emptyOCRShowsExplicitMessage() async throws {
+    func emptyOCRIsNoTranslationInsteadOfFailure() async throws {
+        // 截图里没有文字 = 没什么可翻的。旧行为弹红色「未识别到文字」，把正常
+        // 结果报成了失败。
         let ocr = FakeRegionOCR()
         ocr.text = "   "
         let popover = FakeSelectionPopover()
         let translator = StubSelectionTranslator()
+        let logger = RecordingLogger()
+        let controller = ScreenshotTranslateController(
+            selector: FakeRegionSelector(),
+            capturer: FakeRegionCapturer(),
+            ocr: ocr,
+            popover: popover,
+            permissions: FakePermissionController(snapshot: .allGranted),
+            logger: logger,
+            registrar: RecordingHotkeyRegistrar(),
+            translator: { translator },
+            backendReadiness: { .ready }
+        )
+        controller.handleHotkey()
+        try await waitUntil { popover.currentContent?.status == .noTranslationNeeded }
+        #expect(popover.currentContent?.displayTranslation == ScreenshotTranslateSupport.ocrEmptyCopy)
+        #expect(popover.currentContent?.allowsCopy == false)
+        #expect(translator.texts.isEmpty)
+        #expect(logger.records.contains(where: { $0.0 == "screenshot_ocr_empty" }))
+    }
+
+    @Test
+    func untranslatableOCRTextIsNoTranslationInsteadOfFailure() async throws {
+        // 只识别到 URL / 版本号这类内容：不可译，但不是失败。
+        let ocr = FakeRegionOCR()
+        ocr.text = "https://example.com/docs/getting-started"
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        let logger = RecordingLogger()
+        let controller = ScreenshotTranslateController(
+            selector: FakeRegionSelector(),
+            capturer: FakeRegionCapturer(),
+            ocr: ocr,
+            popover: popover,
+            permissions: FakePermissionController(snapshot: .allGranted),
+            logger: logger,
+            registrar: RecordingHotkeyRegistrar(),
+            translator: { translator },
+            backendReadiness: { .ready }
+        )
+        controller.handleHotkey()
+        try await waitUntil { popover.currentContent?.status == .noTranslationNeeded }
+        #expect(popover.currentContent?.displayTranslation == ScreenshotTranslateSupport.notTranslatableCopy)
+        #expect(popover.currentContent?.allowsCopy == true)
+        #expect(translator.texts.isEmpty)
+        #expect(logger.records.contains(where: { $0.0 == "screenshot_not_translatable" }))
+    }
+
+    @Test
+    func copiedSourceEchoIsNoTranslationInsteadOfFailure() async throws {
+        // 模型原样回传唯一的原文（专有名词）时，滑词早就按「无需翻译」处理；
+        // 截图此前会走红色「翻译失败」。
+        let ocr = FakeRegionOCR()
+        ocr.text = "Hello world"
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.error = SelectionTranslateError.noTranslationNeeded
         let controller = ScreenshotTranslateController(
             selector: FakeRegionSelector(),
             capturer: FakeRegionCapturer(),
@@ -155,9 +244,12 @@ struct ScreenshotTranslateControllerTests {
             backendReadiness: { .ready }
         )
         controller.handleHotkey()
-        try await waitUntil { popover.currentContent?.status == .failed }
-        #expect(popover.currentContent?.displayTranslation == ScreenshotTranslateSupport.ocrEmptyCopy)
-        #expect(translator.texts.isEmpty)
+        try await waitUntil {
+            popover.currentContent?.status == .translated
+                || popover.currentContent?.status == .noTranslationNeeded
+        }
+        #expect(popover.currentContent?.status == .noTranslationNeeded)
+        #expect(popover.currentContent?.displayTranslation == SelectionTranslateSupport.noTranslationNeededCopy)
     }
 
     @Test
@@ -324,8 +416,7 @@ struct ScreenshotTranslateControllerTests {
     func savesAndCopiesScreenshotWhenEnabled() async throws {
         let directory = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Pictures/gt-shots", isDirectory: true)
-        var savedTo: [URL] = []
-        var copiedImages = 0
+        let recorder = ImageArtifactRecorder()
         let ocr = FakeRegionOCR()
         ocr.text = "Hello world"
         let popover = FakeSelectionPopover()
@@ -342,18 +433,18 @@ struct ScreenshotTranslateControllerTests {
             translator: { translator },
             backendReadiness: { .ready },
             imageSaver: { _, dir in
-                savedTo.append(dir)
+                recorder.recordSave(dir)
                 return dir.appendingPathComponent("shot.png")
             },
-            imageCopier: { _ in copiedImages += 1 }
+            imageCopier: { _ in recorder.recordCopy() }
         )
         controller.setSaveImage(true)
         controller.setCopyImage(true)
         controller.setSaveDirectory(directory.path)
         controller.handleHotkey()
         try await waitUntil { popover.currentContent?.status == .translated }
-        #expect(savedTo == [directory])
-        #expect(copiedImages == 1)
+        #expect(recorder.saved == [directory])
+        #expect(recorder.copiedCount == 1)
         // 落盘路径存原始绝对路径，弹层提示用 ~ 缩写。
         #expect(popover.currentContent?.savedImagePath == directory.path + "/shot.png")
         #expect(popover.currentContent?.savedImageHint == "已保存到 ~/Pictures/gt-shots/shot.png")
@@ -361,8 +452,7 @@ struct ScreenshotTranslateControllerTests {
 
     @Test
     func doesNotSaveOrCopyByDefault() async throws {
-        var savedTo: [URL] = []
-        var copiedImages = 0
+        let recorder = ImageArtifactRecorder()
         let ocr = FakeRegionOCR()
         ocr.text = "Hello world"
         let popover = FakeSelectionPopover()
@@ -378,14 +468,80 @@ struct ScreenshotTranslateControllerTests {
             registrar: RecordingHotkeyRegistrar(),
             translator: { translator },
             backendReadiness: { .ready },
-            imageSaver: { _, dir in savedTo.append(dir); return dir.appendingPathComponent("shot.png") },
-            imageCopier: { _ in copiedImages += 1 }
+            imageSaver: { _, dir in
+                recorder.recordSave(dir)
+                return dir.appendingPathComponent("shot.png")
+            },
+            imageCopier: { _ in recorder.recordCopy() }
         )
         controller.handleHotkey()
         try await waitUntil { popover.currentContent?.status == .translated }
-        #expect(savedTo.isEmpty)
-        #expect(copiedImages == 0)
+        #expect(recorder.saved.isEmpty)
+        #expect(recorder.copiedCount == 0)
         #expect(popover.currentContent?.savedImagePath == nil)
+    }
+
+    /// 复制截图 + 自动复制译文同时开着时，译文不能无声覆盖刚生成的截图：
+    /// 图片留在剪贴板，弹层给出提示，译文由用户点「拷贝」显式复制。
+    @Test
+    func autoCopyDoesNotOverwriteCopiedScreenshot() async throws {
+        var copiedText: [String] = []
+        let recorder = ImageArtifactRecorder()
+        let ocr = FakeRegionOCR()
+        ocr.text = "Hello world"
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "你好，世界"
+        let controller = ScreenshotTranslateController(
+            selector: FakeRegionSelector(),
+            capturer: FakeRegionCapturer(),
+            ocr: ocr,
+            popover: popover,
+            permissions: FakePermissionController(snapshot: .allGranted),
+            logger: RecordingLogger(),
+            registrar: RecordingHotkeyRegistrar(),
+            translator: { translator },
+            backendReadiness: { .ready },
+            pasteboardWriter: { copiedText.append($0) },
+            imageSaver: { _, dir in dir.appendingPathComponent("shot.png") },
+            imageCopier: { _ in recorder.recordCopy() }
+        )
+        controller.setAutoCopy(true)
+        controller.setCopyImage(true)
+        controller.handleHotkey()
+        try await waitUntil { popover.currentContent?.status == .translated }
+        #expect(recorder.copiedCount == 1)
+        #expect(copiedText.isEmpty)
+        #expect(popover.currentContent?.clipboardHint == SelectionTranslateSupport.clipboardImageKeptCopy)
+        // 译文仍然可以手动复制。
+        #expect(popover.currentContent?.allowsCopy == true)
+    }
+
+    /// 只有自动复制开着、但没复制截图时，照旧自动复制译文（不产生提示）。
+    @Test
+    func autoCopyStillWritesWhenScreenshotWasNotCopied() async throws {
+        var copiedText: [String] = []
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "你好，世界"
+        let controller = ScreenshotTranslateController(
+            selector: FakeRegionSelector(),
+            capturer: FakeRegionCapturer(),
+            ocr: FakeRegionOCR(),
+            popover: popover,
+            permissions: FakePermissionController(snapshot: .allGranted),
+            logger: RecordingLogger(),
+            registrar: RecordingHotkeyRegistrar(),
+            translator: { translator },
+            backendReadiness: { .ready },
+            pasteboardWriter: { copiedText.append($0) }
+        )
+        controller.setAutoCopy(true)
+        controller.setSaveImage(true)
+        controller.handleHotkey()
+        try await waitUntil { popover.currentContent?.status == .translated }
+        #expect(copiedText == ["你好，世界"])
+        #expect(popover.currentContent?.clipboardHint == nil)
     }
 
     @Test

@@ -292,7 +292,6 @@ public final class TranslationSession {
                 coordinator: coordinator
             )
         }
-        let plan = SelectionTranslateSupport.prepareSource(text)
         // 双向互译：简体中文源 → 英文；其余可翻译文本 → 简体中文。标识符 / URL
         // 仍然不弹层。
         switch TextFilter.selectionDecision(limited.text) {
@@ -301,7 +300,9 @@ public final class TranslationSession {
         case .skip:
             throw SelectionTranslateError.emptyResult
         }
+        // 方向先定，分片才能按目标语言的膨胀率取上限（中→英要留出加倍的输出空间）。
         let direction = TextFilter.selectionDirection(limited.text) ?? .toChinese
+        let plan = SelectionTranslateSupport.prepareSource(text, direction: direction)
         guard !plan.chunks.isEmpty else { throw SelectionTranslateError.emptyResult }
         await coordinator.selectBackend(kind: backend, modelIdentifier: model)
         var parts: [String] = []
@@ -505,7 +506,7 @@ public final class TranslationSession {
             logger.event("selection_plain_fallback", fields: ["status": "failed", "reason": reason])
             throw SelectionTranslateError.emptyResult
         }
-        let cleaned = SelectionTranslateSupport.cleanPlainFallback(raw)
+        let cleaned = SelectionTranslateSupport.cleanPlainFallback(raw, original: text)
         guard !cleaned.isEmpty else {
             logger.event("selection_plain_fallback", fields: ["status": "failed", "reason": reason])
             throw SelectionTranslateError.emptyResult

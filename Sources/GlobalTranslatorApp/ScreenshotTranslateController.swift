@@ -20,8 +20,8 @@ public final class ScreenshotTranslateController {
     private let pasteboardWriter: (String) throws -> Void
     private let mouseLocation: () -> CGPoint
     private let requestScreenCapture: () -> Void
-    private let imageSaver: (CGImage, URL) throws -> URL
-    private let imageCopier: (CGImage) -> Void
+    private let imageSaver: @Sendable (Data, URL) throws -> URL
+    private let imageCopier: @Sendable (Data) -> Void
 
     private var shortcut: KeyboardShortcutSpec
     private var autoCopy = false
@@ -35,6 +35,8 @@ public final class ScreenshotTranslateController {
     private var saveDirectoryPath = AppConfiguration.defaultScreenshotSaveDirectory
     /// 最近一次成功落盘的截图路径；弹层用它显示「已保存到 …」。新一轮会清空。
     private var lastSavedImagePath: String?
+    /// 本轮已经把截图放进剪贴板。自动复制译文必须让位，见 `autoCopyIfNeeded`。
+    private var clipboardImageKept = false
 
     public var lastHotkeyError: String?
 
@@ -58,10 +60,12 @@ public final class ScreenshotTranslateController {
         mouseLocation: @escaping () -> CGPoint = { NSEvent.mouseLocation },
         requestScreenCapture: @escaping () -> Void = {},
         shortcut: KeyboardShortcutSpec = .screenshotTranslateDefault,
-        imageSaver: @escaping (CGImage, URL) throws -> URL = { image, directory in
-            try ScreenshotImageIO.save(image, to: directory)
+        imageSaver: @escaping @Sendable (Data, URL) throws -> URL = { data, directory in
+            try ScreenshotImageIO.save(pngData: data, to: directory)
         },
-        imageCopier: @escaping (CGImage) -> Void = { ScreenshotImageIO.copyToClipboard($0) }
+        imageCopier: @escaping @Sendable (Data) -> Void = { data in
+            ScreenshotImageIO.copyToClipboard(pngData: data)
+        }
     ) {
         self.selector = selector
         self.capturer = capturer
@@ -225,7 +229,7 @@ public final class ScreenshotTranslateController {
             return
         }
         // 保存 / 复制截图发生在 OCR 之前：即使识别不到文字，用户要的截图也已保留。
-        handleImageArtifacts(image)
+        await handleImageArtifacts(image)
         let recognized: String
         do {
             recognized = try await ocr.recognizeJoinedText(image: image)
@@ -243,8 +247,9 @@ public final class ScreenshotTranslateController {
         }
         let text = recognized.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
+            // 图里没有文字 = 没什么可翻的，不是失败：不弹红色，也不调模型。
             logger.event("screenshot_ocr_empty", fields: [:])
-            presentFailure(
+            presentNoTranslationNeeded(
                 original: "",
                 message: ScreenshotTranslateSupport.ocrEmptyCopy,
                 screenFrame: rect
@@ -253,7 +258,9 @@ public final class ScreenshotTranslateController {
         }
         switch TextFilter.selectionDecision(text) {
         case .skip:
-            presentFailure(
+            // 只识别到 URL / 版本号 / 快捷键这类不可译内容：同样属于「无需翻译」。
+            logger.event("screenshot_not_translatable", fields: [:])
+            presentNoTranslationNeeded(
                 original: text,
                 message: ScreenshotTranslateSupport.notTranslatableCopy,
                 screenFrame: rect
@@ -262,13 +269,25 @@ public final class ScreenshotTranslateController {
             // 双向互译：截图识别出的简体中文也翻译成英文，不再只提示「已是中文」。
             presentTranslation(original: text, screenFrame: rect)
         case .noTranslationNeeded:
-            popover.show(withSavedPath(
-                SelectionPopoverContent.noTranslationNeeded(original: text, screenFrame: rect)
-                    .asScreenshotResult()
-            ))
+            presentNoTranslationNeeded(original: text, screenFrame: rect)
         case .translate:
             presentTranslation(original: text, screenFrame: rect)
         }
+    }
+
+    /// 「无需翻译」是独立成功状态：文案说明原因，弹层保持非失败样式。
+    private func presentNoTranslationNeeded(
+        original: String,
+        message: String = SelectionTranslateSupport.noTranslationNeededCopy,
+        screenFrame: CGRect
+    ) {
+        popover.show(withArtifactHints(
+            SelectionPopoverContent.noTranslationNeeded(
+                original: original,
+                screenFrame: screenFrame,
+                message: message
+            ).asScreenshotResult()
+        ))
     }
 
     private func presentTranslation(original: String, screenFrame: CGRect) {
@@ -292,7 +311,7 @@ public final class ScreenshotTranslateController {
         case .ready:
             break
         }
-        popover.show(withSavedPath(
+        popover.show(withArtifactHints(
             SelectionPopoverContent.loading(original: original, screenFrame: screenFrame)
                 .asScreenshotResult()
         ))
@@ -317,7 +336,7 @@ public final class ScreenshotTranslateController {
                     )
                     return
                 }
-                self.popover.show(self.withSavedPath(
+                self.popover.show(self.withArtifactHints(
                     SelectionPopoverContent.translated(
                         original: original,
                         translation: text,
@@ -330,6 +349,12 @@ public final class ScreenshotTranslateController {
                 return
             } catch {
                 guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
+                // 模型原样回传唯一要翻的原文 = 专有名词，属于「无需翻译」而不是
+                // 失败：滑词早就这么处理，截图此前会弹红色「翻译失败」。
+                if let selection = error as? SelectionTranslateError, selection == .noTranslationNeeded {
+                    self.presentNoTranslationNeeded(original: original, screenFrame: screenFrame)
+                    return
+                }
                 self.logger.event("screenshot_translate_failed", fields: ["status": "error"])
                 self.presentFailure(
                     original: original,
@@ -342,7 +367,7 @@ public final class ScreenshotTranslateController {
 
     private func presentFailure(original: String, message: String, screenFrame: CGRect? = nil) {
         let frame = screenFrame ?? SelectionTranslateSupport.fallbackFrame(at: mouseLocation())
-        popover.show(withSavedPath(
+        popover.show(withArtifactHints(
             SelectionPopoverContent.failed(
                 original: original,
                 message: message,
@@ -351,35 +376,59 @@ public final class ScreenshotTranslateController {
         ))
     }
 
+    /// 自动复制译文。「复制截图」刚把图片放进剪贴板的这一轮不覆盖：用户要的是
+    /// 那张图，译文已经显示在弹层里，需要时点「拷贝」显式覆盖即可。
     private func autoCopyIfNeeded(_ text: String) {
-        guard autoCopy else { return }
+        guard autoCopy, !clipboardImageKept else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         try? pasteboardWriter(trimmed)
     }
 
-    /// 保存 / 复制截图（按开关）。失败只记日志，不阻断翻译流程。
-    private func handleImageArtifacts(_ image: CGImage) {
+    /// 保存 / 复制截图（按开关）。PNG 编码与写盘都在后台：4K 截图在主线程编码
+    /// 会把弹层和快捷键一起卡住。失败只记日志，不阻断翻译流程。
+    private func handleImageArtifacts(_ image: CGImage) async {
         lastSavedImagePath = nil
+        clipboardImageKept = false
+        guard saveImageEnabled || copyImageEnabled else { return }
+        guard let data = await ScreenshotImageIO.pngDataOffMain(image) else {
+            if saveImageEnabled {
+                logger.event("screenshot_save_failed", fields: ["status": "encode"])
+            }
+            return
+        }
         if saveImageEnabled {
+            let directory = URL(fileURLWithPath: saveDirectoryPath, isDirectory: true)
             do {
-                let directory = URL(fileURLWithPath: saveDirectoryPath, isDirectory: true)
-                lastSavedImagePath = try imageSaver(image, directory).path
+                lastSavedImagePath = try await saveImageData(data, to: directory).path
                 logger.event("screenshot_saved", fields: [:])
             } catch {
                 logger.event("screenshot_save_failed", fields: ["status": "error"])
             }
         }
         if copyImageEnabled {
-            imageCopier(image)
+            imageCopier(data)
+            clipboardImageKept = true
             logger.event("screenshot_copied", fields: [:])
         }
     }
 
-    /// 弹层内容带上「已保存到 …」路径提示。
-    private func withSavedPath(_ content: SelectionPopoverContent) -> SelectionPopoverContent {
+    /// 注入的写盘动作本身是同步的，包一层后台任务，主线程只等结果。
+    private func saveImageData(_ data: Data, to directory: URL) async throws -> URL {
+        let saver = imageSaver
+        return try await Task.detached(priority: .userInitiated) {
+            try saver(data, directory)
+        }.value
+    }
+
+    /// 弹层内容带上「已保存到 …」路径提示与剪贴板保护提示。
+    private func withArtifactHints(_ content: SelectionPopoverContent) -> SelectionPopoverContent {
         var copy = content
         copy.savedImagePath = lastSavedImagePath
+        // 只有「自动复制译文」开着才谈得上被压制，否则这句提示是噪音。
+        copy.clipboardHint = clipboardImageKept && autoCopy
+            ? SelectionTranslateSupport.clipboardImageKeptCopy
+            : nil
         return copy
     }
 

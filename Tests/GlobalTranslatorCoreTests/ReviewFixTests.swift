@@ -334,6 +334,150 @@ struct ReviewFixTests {
         #expect(TextFilter.shouldTranslate("한국어 테스트"))
     }
 
+    // MARK: - 04 长中文译成英文不再被长度限制拒绝
+
+    @Test
+    func outputCharacterLimitScalesWithSourceLength() {
+        // 固定 8192 是下限：源文短时行为不变。
+        #expect(TranslationRequestValidator.outputCharacterLimit(sourceCharacters: 0) == 8_192)
+        #expect(TranslationRequestValidator.outputCharacterLimit(sourceCharacters: 1_800) == 8_192)
+        // 4000 字的中文源译成英文可以合法超过 8192 字符。
+        #expect(TranslationRequestValidator.outputCharacterLimit(sourceCharacters: 4_000) == 12_000)
+    }
+
+    @Test
+    func chunkBudgetRespectsTargetLanguageExpansion() {
+        for direction in [SelectionTranslationDirection.toChinese, .toEnglish] {
+            let chunk = SelectionTranslateSupport.chunkCharacters(for: direction)
+            let worstCaseOutput = Double(chunk) * direction.outputExpansion
+            #expect(worstCaseOutput <= Double(TranslationRequestValidator.maximumOutputCharacters))
+            #expect(chunk >= 200)
+        }
+        // 中→英系数为 2，但 1800 字 × 2 仍在 8192 之内，所以默认分片不变。
+        #expect(SelectionTranslateSupport.chunkCharacters(for: .toEnglish)
+                == SelectionTranslateSupport.selectionChunkCharacters)
+    }
+
+    @Test
+    func longEnglishResultIsAcceptedWhenSourceJustifiesIt() throws {
+        let id = UUID(uuidString: "00000000-0000-0000-0000-0000000000AA")!
+        // 4000 字中文 → 9000 字符英文：旧规则按固定 8192 判「译文过长」。
+        let translated = String(repeating: "word ", count: 1_800)
+        let envelope: [String: Any] = [
+            "choices": [[
+                "message": [
+                    "content": #"{"translations":[{"segmentId":"\#(id.uuidString)","text":"\#(translated)"}]}"#
+                ]
+            ]]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: envelope)
+
+        do {
+            _ = try TranslationResponseParser.parseChatCompletions(data, expectedIDs: [id])
+            Issue.record("expected the fixed cap to reject a 9000-character result")
+        } catch let error as TranslationError {
+            guard case .invalidResponse(let message) = error else {
+                Issue.record("unexpected error: \(error)")
+                return
+            }
+            #expect(message == "translation text is empty or too long")
+        }
+
+        let result = try TranslationResponseParser.parseChatCompletions(
+            data,
+            expectedIDs: [id],
+            sourceCharacters: 4_000
+        )
+        #expect(result.translations.first?.simplifiedChineseText == translated)
+
+        // 失控输出（远超 3 倍）仍然被拒。
+        let runaway = String(repeating: "word ", count: 9_000)
+        let runawayEnvelope: [String: Any] = [
+            "choices": [[
+                "message": [
+                    "content": #"{"translations":[{"segmentId":"\#(id.uuidString)","text":"\#(runaway)"}]}"#
+                ]
+            ]]
+        ]
+        let runawayData = try JSONSerialization.data(withJSONObject: runawayEnvelope)
+        do {
+            _ = try TranslationResponseParser.parseChatCompletions(
+                runawayData,
+                expectedIDs: [id],
+                sourceCharacters: 4_000
+            )
+            Issue.record("expected a runaway result to be rejected")
+        } catch let error as TranslationError {
+            guard case .invalidResponse(let message) = error else {
+                Issue.record("unexpected error: \(error)")
+                return
+            }
+            #expect(message == "translation text is empty or too long")
+        }
+    }
+
+    // MARK: - 06 DeepSeek 原文回传被拒绝
+
+    @Test
+    func deepSeekRejectsEchoedSourceWhenPolicyIsReject() async throws {
+        let id = UUID(uuidString: "00000000-0000-0000-0000-0000000000AB")!
+        let output = #"{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"translations\":[{\"segmentId\":\"\#(id.uuidString)\",\"text\":\"Deploy the release\"}]}"}]}]}"#
+        let transport = ReviewTransport(responses: [
+            HTTPResponse(statusCode: 200, headers: [:], body: Data(output.utf8))
+        ])
+        let backend = DeepSeekBackend(transport: transport, credentialStore: ReviewCredentials(value: "key"))
+        do {
+            _ = try await backend.translate(TranslationRequest(
+                windowRevision: 1,
+                items: [TranslationItem(id: id, sourceText: "Deploy the release")],
+                copiedSourcePolicy: .reject
+            ))
+            Issue.record("expected an echoed source to be rejected")
+        } catch let error as TranslationError {
+            guard case .invalidResponse(let message) = error else {
+                Issue.record("unexpected error: \(error)")
+                return
+            }
+            #expect(message == "translation copied the source")
+        }
+    }
+
+    @Test
+    func deepSeekKeepsEchoedSourceForPageText() async throws {
+        let id = UUID(uuidString: "00000000-0000-0000-0000-0000000000AC")!
+        let output = #"{"output":[{"type":"message","content":[{"type":"output_text","text":"{\"translations\":[{\"segmentId\":\"\#(id.uuidString)\",\"text\":\"Figma\"}]}"}]}]}"#
+        let transport = ReviewTransport(responses: [
+            HTTPResponse(statusCode: 200, headers: [:], body: Data(output.utf8))
+        ])
+        let backend = DeepSeekBackend(transport: transport, credentialStore: ReviewCredentials(value: "key"))
+        let result = try await backend.translate(TranslationRequest(
+            windowRevision: 1,
+            items: [TranslationItem(id: id, sourceText: "Figma")],
+            copiedSourcePolicy: .keep
+        ))
+        #expect(result.translations.first?.simplifiedChineseText == "Figma")
+    }
+
+    @Test
+    func localMaxTokensGrowsWithTargetLanguageExpansion() {
+        // 1800 字中文源：旧规则给 1928 tokens，译成英文 (~2300+) 会被截断。
+        let toChinese = LocalOpenAIBackend.maxTokens(
+            itemCount: 1,
+            sourceCharacters: 1_800,
+            expansion: SelectionTranslationDirection.toChinese.outputExpansion
+        )
+        let toEnglish = LocalOpenAIBackend.maxTokens(
+            itemCount: 1,
+            sourceCharacters: 1_800,
+            expansion: SelectionTranslationDirection.toEnglish.outputExpansion
+        )
+        #expect(toChinese == 1_928)
+        #expect(toEnglish == 3_728)
+        #expect(toEnglish <= 4_096)
+        // 短文本仍走原来的 overlay 预算。
+        #expect(LocalOpenAIBackend.maxTokens(itemCount: 1, sourceCharacters: 12, expansion: 2) == 128)
+    }
+
     @Test
     func responseAccumulatorRejectsBodiesOverLimit() throws {
         var accumulator = HTTPResponseAccumulator(maximumBytes: 4)

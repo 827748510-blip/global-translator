@@ -98,10 +98,19 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
             throw TranslationError.invalidResponse("unexpected DeepSeek HTTP status")
         }
         recordUsage(from: response.body, startedAt: startedAt, requestedAt: requestedAt)
-        return try TranslationResponseParser.parseResponses(
+        let result = try TranslationResponseParser.parseResponses(
             response.body,
             expectedIDs: request.items.map { $0.id },
-            windowRevision: request.windowRevision
+            windowRevision: request.windowRevision,
+            sourceCharacters: request.items.reduce(0) { $0 + $1.sourceText.count }
+        )
+        // 云端同样会把「本来要翻的原文」原样回传（品牌密集段落、目标语言判断
+        // 错时尤其明显）。用与本地后端同一个回声策略收口：.reject 抛
+        // invalidResponse 交给上层回退/提示，.keep 保留原文当成功。
+        return try LocalTranslationQuality.applyCopiedSourcePolicy(
+            result,
+            items: request.items,
+            policy: request.copiedSourcePolicy
         )
     }
 
@@ -182,10 +191,19 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
             throw TranslationError.invalidResponse("unexpected DeepSeek HTTP status")
         }
         recordUsage(from: response.body, startedAt: startedAt, requestedAt: requestedAt)
-        return try TranslationResponseParser.parseResponses(
+        let result = try TranslationResponseParser.parseResponses(
             response.body,
             expectedIDs: request.items.map { $0.id },
-            windowRevision: request.windowRevision
+            windowRevision: request.windowRevision,
+            sourceCharacters: request.items.reduce(0) { $0 + $1.sourceText.count }
+        )
+        // 云端同样会把「本来要翻的原文」原样回传（品牌密集段落、目标语言判断
+        // 错时尤其明显）。用与本地后端同一个回声策略收口：.reject 抛
+        // invalidResponse 交给上层回退/提示，.keep 保留原文当成功。
+        return try LocalTranslationQuality.applyCopiedSourcePolicy(
+            result,
+            items: request.items,
+            policy: request.copiedSourcePolicy
         )
     }
 

@@ -4,7 +4,19 @@ enum TranslationRequestValidator {
     static let maximumItems = 24
     static let maximumSourceCharacters = 4_000
     /// One selection chunk can emit ~2k Chinese characters at the scaled local `max_tokens`.
+    /// Keep it as the floor of `outputCharacterLimit(sourceCharacters:)`.
     static let maximumOutputCharacters = 8_192
+    /// 中文→英文的字符增长上限（见 `SelectionTranslationDirection.outputExpansion`）。
+    /// 3 倍留出余量：正常译文过得去，模型复读整段的失控输出仍会被拒。
+    static let maximumOutputExpansion = 3
+
+    /// 结果长度上限按本次请求的源文长度放大。固定 8192 字的前提是「译文不比源文
+    /// 长多少」，而中文译成英文天然膨胀一倍：一段 4000 字的中文源（跨窗口批或
+    /// 长选区）译出来就可能超过 8192 字，被误判成 `translation text is empty or too long`。
+    static func outputCharacterLimit(sourceCharacters: Int) -> Int {
+        guard sourceCharacters > 0 else { return maximumOutputCharacters }
+        return max(maximumOutputCharacters, sourceCharacters * maximumOutputExpansion)
+    }
 
     static func validate(_ request: TranslationRequest) throws {
         guard !request.items.isEmpty else {
@@ -194,7 +206,8 @@ enum TranslationResponseParser {
     static func parseResponses(
         _ data: Data,
         expectedIDs: [UUID],
-        windowRevision: UInt64 = 0
+        windowRevision: UInt64 = 0,
+        sourceCharacters: Int = 0
     ) throws -> TranslationResult {
         do {
             let envelope = try JSONDecoder().decode(ResponsesEnvelope.self, from: data)
@@ -206,7 +219,12 @@ enum TranslationResponseParser {
             guard output.content.count == 1, let content = output.content.first, content.type == "output_text" else {
                 throw TranslationError.invalidResponse("response output_text is missing or ambiguous")
             }
-            return try parseTranslationJSON(Data(content.text.utf8), expectedIDs: expectedIDs, windowRevision: windowRevision)
+            return try parseTranslationJSON(
+                Data(content.text.utf8),
+                expectedIDs: expectedIDs,
+                windowRevision: windowRevision,
+                sourceCharacters: sourceCharacters
+            )
         } catch let error as TranslationError {
             throw error
         } catch {
@@ -218,10 +236,16 @@ enum TranslationResponseParser {
         _ data: Data,
         expectedIDs: [UUID],
         windowRevision: UInt64 = 0,
-        mode: TranslationParseMode = .strict
+        mode: TranslationParseMode = .strict,
+        sourceCharacters: Int = 0
     ) throws -> TranslationResult {
         if mode == .localRelaxed {
-            return try parseLocalChatCompletions(data, expectedIDs: expectedIDs, windowRevision: windowRevision)
+            return try parseLocalChatCompletions(
+                data,
+                expectedIDs: expectedIDs,
+                windowRevision: windowRevision,
+                sourceCharacters: sourceCharacters
+            )
         }
         do {
             let envelope = try JSONDecoder().decode(ChatEnvelope.self, from: data)
@@ -232,7 +256,8 @@ enum TranslationResponseParser {
                 Data(envelope.choices[0].message.content.utf8),
                 expectedIDs: expectedIDs,
                 windowRevision: windowRevision,
-                mode: .strict
+                mode: .strict,
+                sourceCharacters: sourceCharacters
             )
         } catch let error as TranslationError {
             throw error
@@ -290,7 +315,8 @@ enum TranslationResponseParser {
     private static func parseLocalChatCompletions(
         _ data: Data,
         expectedIDs: [UUID],
-        windowRevision: UInt64
+        windowRevision: UInt64,
+        sourceCharacters: Int = 0
     ) throws -> TranslationResult {
         let root: Any
         do {
@@ -302,7 +328,8 @@ enum TranslationResponseParser {
         return try parseLocalTranslationJSON(
             unwrapJSONPayload(stripThinkTags(content)),
             expectedIDs: expectedIDs,
-            windowRevision: windowRevision
+            windowRevision: windowRevision,
+            sourceCharacters: sourceCharacters
         )
     }
 
@@ -381,10 +408,16 @@ enum TranslationResponseParser {
         _ data: Data,
         expectedIDs: [UUID],
         windowRevision: UInt64,
-        mode: TranslationParseMode = .strict
+        mode: TranslationParseMode = .strict,
+        sourceCharacters: Int = 0
     ) throws -> TranslationResult {
         if mode == .localRelaxed {
-            return try parseLocalTranslationJSON(data, expectedIDs: expectedIDs, windowRevision: windowRevision)
+            return try parseLocalTranslationJSON(
+                data,
+                expectedIDs: expectedIDs,
+                windowRevision: windowRevision,
+                sourceCharacters: sourceCharacters
+            )
         }
         let candidates = translationJSONCandidates(data)
         var recoverable: TranslationError?
@@ -393,7 +426,8 @@ enum TranslationResponseParser {
                 return try parseStrictTranslationJSON(
                     candidate,
                     expectedIDs: expectedIDs,
-                    windowRevision: windowRevision
+                    windowRevision: windowRevision,
+                    sourceCharacters: sourceCharacters
                 )
             } catch let error as TranslationError {
                 if isRecoverableTranslationJSONError(error) {
@@ -410,7 +444,8 @@ enum TranslationResponseParser {
                 return try parseLocalTranslationJSON(
                     candidate,
                     expectedIDs: expectedIDs,
-                    windowRevision: windowRevision
+                    windowRevision: windowRevision,
+                    sourceCharacters: sourceCharacters
                 )
             } catch {
                 continue
@@ -422,7 +457,8 @@ enum TranslationResponseParser {
     private static func parseStrictTranslationJSON(
         _ data: Data,
         expectedIDs: [UUID],
-        windowRevision: UInt64
+        windowRevision: UInt64,
+        sourceCharacters: Int = 0
     ) throws -> TranslationResult {
         do {
             let envelope = try JSONDecoder().decode(TranslationEnvelope.self, from: data)
@@ -437,9 +473,10 @@ enum TranslationResponseParser {
             guard Set(actual) == expected else {
                 throw TranslationError.invalidResponse("translation IDs do not match request")
             }
+            let characterLimit = TranslationRequestValidator.outputCharacterLimit(sourceCharacters: sourceCharacters)
             guard envelope.translations.allSatisfy({
                 let text = $0.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                return !text.isEmpty && text.count <= TranslationRequestValidator.maximumOutputCharacters
+                return !text.isEmpty && text.count <= characterLimit
             }) else {
                 throw TranslationError.invalidResponse("translation text is empty or too long")
             }
@@ -538,7 +575,8 @@ enum TranslationResponseParser {
     private static func parseLocalTranslationJSON(
         _ data: Data,
         expectedIDs: [UUID],
-        windowRevision: UInt64
+        windowRevision: UInt64,
+        sourceCharacters: Int = 0
     ) throws -> TranslationResult {
         let json: Any
         do {
@@ -547,12 +585,22 @@ enum TranslationResponseParser {
             let trimmed = String(decoding: data, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if let texts = fallbackTexts(fromRaw: trimmed, count: expectedIDs.count) {
-                return try localResult(texts: texts, expectedIDs: expectedIDs, windowRevision: windowRevision)
+                return try localResult(
+                    texts: texts,
+                    expectedIDs: expectedIDs,
+                    windowRevision: windowRevision,
+                    sourceCharacters: sourceCharacters
+                )
             }
             throw TranslationError.invalidResponse("translation JSON is invalid")
         }
         let texts = try extractLocalTexts(json, count: expectedIDs.count)
-        return try localResult(texts: texts, expectedIDs: expectedIDs, windowRevision: windowRevision)
+        return try localResult(
+            texts: texts,
+            expectedIDs: expectedIDs,
+            windowRevision: windowRevision,
+            sourceCharacters: sourceCharacters
+        )
     }
 
     private static func fallbackTexts(fromRaw trimmed: String, count: Int) -> [String]? {
@@ -564,7 +612,8 @@ enum TranslationResponseParser {
     private static func localResult(
         texts: [String],
         expectedIDs: [UUID],
-        windowRevision: UInt64
+        windowRevision: UInt64,
+        sourceCharacters: Int = 0
     ) throws -> TranslationResult {
         guard texts.count == expectedIDs.count else {
             throw TranslationError.invalidResponse("translation count does not match request")
@@ -572,9 +621,10 @@ enum TranslationResponseParser {
         let cleaned = texts.enumerated().map { index, text in
             LocalTranslationCleanup.stripKeyLeak(text, compactIndex: index)
         }
+        let characterLimit = TranslationRequestValidator.outputCharacterLimit(sourceCharacters: sourceCharacters)
         guard cleaned.allSatisfy({
             let text = $0.trimmingCharacters(in: .whitespacesAndNewlines)
-            return !text.isEmpty && text.count <= TranslationRequestValidator.maximumOutputCharacters
+            return !text.isEmpty && text.count <= characterLimit
         }) else {
             throw TranslationError.invalidResponse("translation text is empty or too long")
         }

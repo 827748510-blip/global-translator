@@ -42,6 +42,14 @@ public enum SelectionTranslationDirection: String, Equatable, Sendable {
         self == .toEnglish ? "en" : "zh-Hans"
     }
 
+    /// 目标语言的字符膨胀系数。同一段中文译成英文普遍比原文长一倍左右
+    /// （`世界` → `world`），反向则持平或收缩。分片上限、本地 `max_tokens`
+    /// 预算与结果长度校验必须用同一个系数：否则一段合法的长中文译成英文后会
+    /// 先被 token 预算截断、再被长度校验判成「译文为空或过长」。
+    public var outputExpansion: Double {
+        self == .toEnglish ? 2.0 : 1.0
+    }
+
     public init?(targetLanguage: String?) {
         guard let targetLanguage else { return nil }
         let value = targetLanguage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -167,10 +175,20 @@ public enum TextFilter {
             return true
         }
         let hasAllCaps = tokens.contains { isAllCapsAbbreviation($0) }
+        // 对仗词必须是「强信号」本身（内部驼峰或标识符），不能只是首字母大写：
+        // 任何标题短语（"AI Tools"、"Vision OCR"）都由大写词组成，把它当专名
+        // 会让本来该翻的标题静默跳过。
+        //
+        // 例外是**显式列表**："Vision + OCR"、"Vision / OCR" 用 + / | & , 明确
+        // 串成技术栈，这里的首字母大写词是专名的一部分；而空格相连的
+        // "AI Tools" 仍然是标题，要翻。
+        let hasExplicitListSeparator = value.contains { "+/|&,".contains($0) }
         let hasPeerName = tokens.contains { token in
             !isVersionToken(token)
                 && !isAllCapsAbbreviation(token)
-                && (hasInternalCamelCase(token) || isCapitalizedProductWord(token) || isIdentifierOrUnit(token))
+                && (hasInternalCamelCase(token)
+                    || isIdentifierOrUnit(token)
+                    || (hasExplicitListSeparator && isCapitalizedProductWord(token)))
         }
         return hasAllCaps && hasPeerName
     }

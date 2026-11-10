@@ -100,7 +100,8 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
                 response.body,
                 expectedIDs: request.items.map { $0.id },
                 windowRevision: request.windowRevision,
-                mode: .localRelaxed
+                mode: .localRelaxed,
+                sourceCharacters: request.items.reduce(0) { $0 + $1.sourceText.count }
             ),
             items: request.items,
             policy: request.copiedSourcePolicy
@@ -140,10 +141,16 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
     /// Modelfile `num_predict` default. Overlay / page batches stay at
     /// 128 (one item) / 256 (three). Long selection chunks scale up so a
     /// 1500–2000 character piece can finish instead of truncating at 128.
-    static func maxTokens(itemCount: Int, sourceCharacters: Int = 0) -> Int {
+    ///
+    /// `expansion` is the target-language growth factor: the same 1800-char
+    /// chunk needs roughly twice the budget once it is being rendered into
+    /// English. Without it the JSON is cut mid-string, the parse fails, and a
+    /// legal 中→英 translation surfaces as 「翻译失败」.
+    static func maxTokens(itemCount: Int, sourceCharacters: Int = 0, expansion: Double = 1.0) -> Int {
         let overlayBudget = min(256, 64 + 64 * max(itemCount, 1))
         guard sourceCharacters > 320 else { return overlayBudget }
-        return min(2_048, max(overlayBudget, sourceCharacters + 128))
+        let scaled = Int((Double(sourceCharacters) * max(expansion, 1.0)).rounded(.up)) + 128
+        return min(4_096, max(overlayBudget, scaled))
     }
 
     static let plainCompletionMaxTokens = 1_024
@@ -184,7 +191,8 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
             ],
             maxTokens: Self.maxTokens(
                 itemCount: request.items.count,
-                sourceCharacters: request.items.reduce(0) { $0 + $1.sourceText.count }
+                sourceCharacters: request.items.reduce(0) { $0 + $1.sourceText.count },
+                expansion: direction.outputExpansion
             ),
             responseFormat: ChatResponseFormat()
         )

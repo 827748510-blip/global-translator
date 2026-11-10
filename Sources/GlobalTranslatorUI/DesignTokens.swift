@@ -118,4 +118,7 @@ public enum GTSelectionMetrics {
     public static let sectionSpacing: CGFloat = GTSpacing.small
     /// Scene picker ↔ action buttons inside the actions group.
     public static let actionsSpacing: CGFloat = GTSpacing.xSmall
+    /// 保存路径 / 剪贴板提示最多几行。长路径（外接盘、深层目录）需要 3 行才
+    /// 不会被省略号吃掉；视图的 `lineLimit` 与高度测量共用这个数。
+    public static let secondaryHintMaxLines = 3
 }

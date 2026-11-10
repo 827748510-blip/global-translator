@@ -61,7 +61,9 @@ struct SelectionTranslateDecisionTests {
     @Test(arguments: [
         "Hello world", "Open", "Apply Settings", "Translate this sentence",
         "File / Edit", "Copy + Paste", "Save / Export", "Xcode 16 + Swift 6",
-        "Sentence 0", "Sentence 1", "Sentence 6", "Hello from the page"
+        "Sentence 0", "Sentence 1", "Sentence 6", "Hello from the page",
+        // 01：空格相连的「大写词 + 大写词」是标题，不是专名清单。
+        "AI Tools", "Vision OCR", "AI Model Comparison"
     ])
     func ordinaryEnglishStillTranslates(_ text: String) {
         #expect(TextFilter.selectionDecision(text) == .translate)

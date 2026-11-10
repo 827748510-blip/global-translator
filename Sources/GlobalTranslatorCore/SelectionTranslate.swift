@@ -309,6 +309,9 @@ public struct SelectionPopoverContent: Equatable, Sendable {
     public var allowsRetranslate: Bool
     /// 截图翻译把区域图保存到文件后，弹层展示的路径提示（~ 缩写）。滑词没有。
     public var savedImagePath: String?
+    /// 「复制截图」已经把图片放进剪贴板、因此跳过了自动复制译文时的提示。
+    /// 没有它，用户刚拿到的截图会被译文无声覆盖。
+    public var clipboardHint: String?
     /// Frozen at content creation so a long code selection is not re-detected
     /// on every SwiftUI body pass.
     public let isCodeSnippet: Bool
@@ -323,6 +326,7 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         allowsPromptOptimize: Bool = true,
         allowsRetranslate: Bool = true,
         savedImagePath: String? = nil,
+        clipboardHint: String? = nil,
         isCodeSnippet: Bool? = nil
     ) {
         self.original = original
@@ -334,6 +338,7 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         self.allowsPromptOptimize = allowsPromptOptimize
         self.allowsRetranslate = allowsRetranslate
         self.savedImagePath = savedImagePath
+        self.clipboardHint = clipboardHint
         self.isCodeSnippet = isCodeSnippet ?? CodeSnippetDetector.isCode(original)
     }
 
@@ -404,6 +409,14 @@ public struct SelectionPopoverContent: Equatable, Sendable {
             + SelectionTranslateSupport.displayPath(savedImagePath)
     }
 
+    /// 弹层底部所有次要提示行，顺序固定。视图与高度测量都读它，避免「视图多
+    /// 画一行、测量少算一行」，那正是长路径被截断的原因。
+    public var secondaryHints: [String] {
+        [savedImageHint, clipboardHint]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
     public static func loading(original: String, screenFrame: CGRect) -> SelectionPopoverContent {
         SelectionPopoverContent(
             original: original,
@@ -460,11 +473,17 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         )
     }
 
-    public static func noTranslationNeeded(original: String, screenFrame: CGRect) -> SelectionPopoverContent {
+    /// 「无需翻译」是独立成功状态，不是失败：文案由调用方指定（截图识别不到
+    /// 文字、只识别到 URL/标识符、模型判定专有名词），默认用通用文案。
+    public static func noTranslationNeeded(
+        original: String,
+        screenFrame: CGRect,
+        message: String = SelectionTranslateSupport.noTranslationNeededCopy
+    ) -> SelectionPopoverContent {
         SelectionPopoverContent(
             original: original,
             originalPreview: SelectionTranslateSupport.truncatedOriginal(original),
-            translation: SelectionTranslateSupport.noTranslationNeededCopy,
+            translation: message,
             status: .noTranslationNeeded,
             screenFrame: screenFrame
         )
@@ -516,13 +535,19 @@ public enum SelectionTranslateSupport {
     public static let copyFeedbackMilliseconds = 1_500
     public static let chunkJoinSeparator = "\n\n"
     public static let savedImageCopyPrefix = "已保存到 "
+    /// 复制截图与自动复制译文撞车时的提示：图片留在剪贴板，译文需要显式点「拷贝」。
+    public static let clipboardImageKeptCopy = "截图已复制到剪贴板，译文未自动复制"
 
     /// Abbreviates a path for display: home becomes ~. Pure string + home dir,
     /// shared by the settings caption and the popover hint.
     public static func displayPath(_ path: String) -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        if path.hasPrefix(home) {
-            return "~" + path.dropFirst(home.count)
+        if path == home { return "~" }
+        // 按路径组件边界比较：/Users/qiuxianzi2 与 /Users/qiuxianzi 只是字符串同前缀，
+        // 用 hasPrefix 会把别人的家目录也缩写成 ~，看起来像自己的文件。
+        let homePrefix = home.hasSuffix("/") ? home : home + "/"
+        if path.hasPrefix(homePrefix) {
+            return "~/" + path.dropFirst(homePrefix.count)
         }
         return path
     }
@@ -539,16 +564,22 @@ public enum SelectionTranslateSupport {
     /// wrapping quotes / labels so 「"Figma（设计工具）"」 and 「译文：…」 do not
     /// land in the popover or the copy buffer verbatim. Code fences and think
     /// tags are already removed by the transport parsers.
-    public static func cleanPlainFallback(_ raw: String) -> String {
+    public static func cleanPlainFallback(_ raw: String, original: String? = nil) -> String {
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = original?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         for _ in 0..<2 {
             guard text.count >= 2 else { break }
             let pairs: [(Character, Character)] = [("\"", "\""), ("“", "”"), ("「", "」")]
-            guard pairs.contains(where: { text.first == $0.0 && text.last == $0.1 }) else { break }
+            guard let pair = pairs.first(where: { text.first == $0.0 && text.last == $0.1 }) else { break }
+            // 原文自己就以同一对引号包裹时，这对引号是内容而不是模型包装：
+            // 删掉就篡改了原文的引用符号。只有回复比原文多包一层时才剥。
+            if source.count >= 2, source.first == pair.0, source.last == pair.1 { break }
             text = String(text.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
         }
         for label in ["译文：", "译文:", "翻译：", "翻译:", "简体中文：", "简体中文:"] {
             if text.hasPrefix(label) {
+                // 原文本身以「译文：」开头（例如在讨论这段文字）时不能当成前缀标签。
+                if source.hasPrefix(label) { break }
                 text = String(text.dropFirst(label.count)).trimmingCharacters(in: .whitespacesAndNewlines)
                 break
             }
@@ -596,16 +627,28 @@ public enum SelectionTranslateSupport {
         return (prefix(text, maxCount: selectionHardLimitCharacters), true)
     }
 
-    public static func prepareSource(_ text: String) -> SelectionSourcePlan {
+    public static func prepareSource(
+        _ text: String,
+        direction: SelectionTranslationDirection = .toChinese
+    ) -> SelectionSourcePlan {
         let originalCharacterCount = text.count
         let limited = limitSelectionSource(text)
-        let chunks = chunkSource(limited.text)
+        let chunks = chunkSource(limited.text, targetCharacters: chunkCharacters(for: direction))
         return SelectionSourcePlan(
             chunks: chunks,
             didTruncate: limited.didTruncate,
             originalCharacterCount: originalCharacterCount,
             usedCharacterCount: limited.text.count
         )
+    }
+
+    /// 分片上限与目标语言膨胀率绑定：`chunk × expansion` 必须落在结果长度校验
+    /// 之内，否则一段合法的长中文译成英文后会被「译文过长」拒掉。默认的中→英
+    /// 系数下 1800 字仍安全，所以数值不变；规则从两处魔法数字收成一处。
+    public static func chunkCharacters(for direction: SelectionTranslationDirection) -> Int {
+        let outputLimit = Double(TranslationRequestValidator.maximumOutputCharacters)
+        let allowed = Int(outputLimit / max(direction.outputExpansion, 1))
+        return max(200, min(selectionChunkCharacters, allowed))
     }
 
     /// Split near `selectionChunkCharacters` at paragraph, then sentence, then word boundaries.

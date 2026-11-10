@@ -355,6 +355,42 @@ struct GlassUIRenderTests {
         try Self.writeIfRequested(image, named: "gt-glass-selection.png")
     }
 
+    /// 07：保存路径提示曾按 `textBlockSpacing` 少算 8pt，并且只允许 2 行，
+    /// 长路径会被切掉。这里用真实的 SwiftUI 排版高度和测量结果对照。
+    @Test
+    func selectionPopoverWithLongSavedPathIsNotClipped() throws {
+        var content = SelectionPopoverContent.translated(
+            original: "A saved screenshot",
+            translation: "一段用于尺寸检查的译文。",
+            screenFrame: .zero
+        ).asScreenshotResult()
+        content.savedImagePath = "/Volumes/ExternalSSD/交付/"
+            + String(repeating: "设计评审与最终交付/", count: 4)
+            + "截图翻译-20261110-113600-abcd.png"
+        let view = SelectionTranslatePopoverView(
+            content: content,
+            chrome: SelectionPopoverChrome()
+        )
+        let expected = SelectionTranslatePanelController.contentSize(for: content)
+        let fittingHeight = NSHostingView(rootView: view).fittingSize.height
+        #expect(abs(fittingHeight - expected.height) <= 12)
+
+        // 折行后的提示确实占到了多行：与单行路径相比高出两行以上。
+        var shortContent = content
+        shortContent.savedImagePath = "/tmp/a.png"
+        let shortHeight = SelectionTranslatePanelController.contentSize(for: shortContent).height
+        #expect(expected.height - shortHeight >= 20)
+
+        // 保存路径 + 剪贴板提示同时存在时，两条都要计入高度。
+        content.clipboardHint = SelectionTranslateSupport.clipboardImageKeptCopy
+        let twoHintHeight = SelectionTranslatePanelController.contentSize(for: content).height
+        #expect(twoHintHeight > expected.height)
+        let twoHintFitting = NSHostingView(
+            rootView: SelectionTranslatePopoverView(content: content, chrome: SelectionPopoverChrome())
+        ).fittingSize.height
+        #expect(abs(twoHintFitting - twoHintHeight) <= 12)
+    }
+
     private static func renderHostingView<V: View>(_ view: V) throws -> NSImage {
         let hosting = NSHostingView(rootView: view)
         let size = hosting.fittingSize
