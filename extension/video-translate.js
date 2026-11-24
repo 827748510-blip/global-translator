@@ -1,0 +1,745 @@
+// Video translation Phase A + B1 + B2 — overlay Simplified Chinese from
+// textTracks, sidecar, YouTube in-session captions, or on-device ASR cues
+// from the desktop bridge. The page never captures audio or pauses playback.
+(() => {
+  const Cues = (typeof GlobalTranslatorSubtitleCues !== "undefined")
+    ? GlobalTranslatorSubtitleCues
+    : null;
+  const Youtube = (typeof GlobalTranslatorYouTubeCaptions !== "undefined")
+    ? GlobalTranslatorYouTubeCaptions
+    : null;
+  const Asr = (typeof GlobalTranslatorVideoASR !== "undefined")
+    ? GlobalTranslatorVideoASR
+    : null;
+  if (!Cues) return;
+
+  const CHUNK_SIZE = 3;
+  const PROBE_MS = 4000;
+  const PREFETCH = 4;
+  const DESKTOP_SYNC_MS = 3000;
+  const CUE_WAIT_MS = 8000;
+  const ASR_POLL_MS = 1000;
+  const HOST_ATTR = "data-gt-video-translate";
+  const PAINT_MS = 250;
+
+  let enabled = false;
+  let sidecarCues = [];
+  let probed = false;
+  let probeTimer = null;
+  let serviceError = false;
+  let runningTranslate = false;
+  let observer = null;
+  let paintTimer = null;
+  const translations = new Map();
+  const originalTrackModes = new WeakMap();
+  const overlays = new Map();
+  const boundVideos = new WeakSet();
+  const boundList = [];
+  let cueWaitText = "";
+  let cueWaitSince = 0;
+  let asrTimer = null;
+  let asrWanted = false;
+  let asrStatus = "";
+  let asrMessage = "";
+  let asrCues = [];
+  let asrSeenSeq = {};
+  let asrInFlight = false;
+  let asrQueued = null;
+
+  function safe(fn) {
+    try {
+      fn();
+    } catch (_error) {
+      // Never interrupt the page or playback.
+    }
+  }
+
+  function isVisibleVideo(video) {
+    if (!video || !video.isConnected) return false;
+    const rect = video.getBoundingClientRect();
+    return rect.width >= 24 && rect.height >= 24;
+  }
+
+  function listVideos() {
+    const all = Array.prototype.slice.call(document.querySelectorAll("video"));
+    const main = document.querySelector("video.html5-main-video");
+    if (main) {
+      const rest = all.filter((video) => video !== main && isVisibleVideo(video));
+      return [main].concat(rest);
+    }
+    const visible = all.filter(isVisibleVideo);
+    return visible.length > 0 ? visible : all;
+  }
+
+  function restoreTrackModes(video) {
+    const tracks = video.textTracks;
+    if (!tracks) return;
+    for (let i = 0; i < tracks.length; i++) {
+      const track = tracks[i];
+      if (!originalTrackModes.has(track)) continue;
+      try {
+        track.mode = originalTrackModes.get(track);
+      } catch (_error) {}
+    }
+  }
+
+  function collectTrackCues(video) {
+    const collected = [];
+    const tracks = video.textTracks;
+    if (!tracks) return collected;
+    for (let i = 0; i < tracks.length; i++) {
+      const track = tracks[i];
+      if (!track || track.kind === "metadata") continue;
+      if (!originalTrackModes.has(track)) {
+        originalTrackModes.set(track, track.mode);
+      }
+      if (track.mode === "disabled") {
+        try { track.mode = "hidden"; } catch (_error) {}
+      }
+      const list = track.cues;
+      if (!list) continue;
+      for (let j = 0; j < list.length; j++) {
+        const cue = list[j];
+        const text = Cues.normalizeCueText(cue && cue.text);
+        if (!text) continue;
+        collected.push({ start: cue.startTime, end: cue.endTime, text });
+      }
+    }
+    return collected;
+  }
+
+  function youtubeCues(video) {
+    if (!Youtube || typeof Youtube.cuesFor !== "function") return [];
+    if (!Youtube.isActivePage()) return [];
+    if (typeof Youtube.syncFromDom === "function") {
+      try { Youtube.syncFromDom(video); } catch (_error) {}
+    }
+    return Youtube.cuesFor(video) || [];
+  }
+
+  function captionCues(video) {
+    if (sidecarCues.length > 0) return sidecarCues;
+    const fromYoutube = youtubeCues(video);
+    if (fromYoutube.length > 0) return fromYoutube;
+    return collectTrackCues(video);
+  }
+
+  function cuesFor(video) {
+    const captions = captionCues(video);
+    if (Cues.hasForeignCues(captions)) return captions;
+    if (asrCues.length > 0) return asrCues;
+    return captions;
+  }
+
+  function youtubeNoForeignMessage() {
+    if (sidecarCues.length > 0) return "";
+    if (Youtube && Youtube.isActivePage() && Youtube.MESSAGES) {
+      return Youtube.MESSAGES.noYouTubeCaptions || "";
+    }
+    return "";
+  }
+
+  function overlayParent(_video) {
+    if (Youtube && typeof Youtube.overlayParentNode === "function") {
+      return Youtube.overlayParentNode(document);
+    }
+    const full = document.fullscreenElement;
+    if (full) return full;
+    return document.body || document.documentElement;
+  }
+
+  function translationObject() {
+    const object = {};
+    translations.forEach((value, key) => {
+      object[key] = value;
+    });
+    return object;
+  }
+
+  function ensureOverlay(video) {
+    let record = overlays.get(video);
+    const parent = overlayParent(video);
+    if (record && record.host.isConnected) {
+      if (parent && record.host.parentNode !== parent) {
+        parent.appendChild(record.host);
+      }
+      return record;
+    }
+    const host = document.createElement("div");
+    host.setAttribute(HOST_ATTR, "");
+    host.style.cssText = [
+      "display:block",
+      "position:fixed",
+      "left:0",
+      "top:0",
+      "overflow:visible",
+      "opacity:1",
+      "visibility:visible",
+      "pointer-events:none",
+      "z-index:2147483646",
+      "transform:none",
+      "contain:none"
+    ].join(";");
+    host.style.setProperty("display", "block", "important");
+    host.style.setProperty("position", "fixed", "important");
+    host.style.setProperty("opacity", "1", "important");
+    host.style.setProperty("visibility", "visible", "important");
+    host.style.setProperty("z-index", "2147483646", "important");
+    host.style.setProperty("pointer-events", "none", "important");
+    const shadow = host.attachShadow({ mode: "closed" });
+    const box = document.createElement("div");
+    box.setAttribute("part", "box");
+    box.style.cssText = [
+      "display:none",
+      "pointer-events:none",
+      "text-align:center",
+      "font-family:-apple-system,'PingFang SC','Noto Sans CJK SC',sans-serif",
+      "font-size:15px",
+      "line-height:1.35",
+      "color:#fff"
+    ].join(";");
+    const pill = document.createElement("div");
+    pill.style.cssText = [
+      "display:inline-block",
+      "max-width:90%",
+      "padding:4px 10px",
+      "border-radius:4px",
+      "background:rgba(0,0,0,0.72)",
+      "white-space:pre-wrap",
+      "word-break:break-word"
+    ].join(";");
+    box.appendChild(pill);
+    shadow.appendChild(box);
+    (parent || document.body || document.documentElement).appendChild(host);
+    record = { host, box, pill };
+    overlays.set(video, record);
+    return record;
+  }
+
+  function positionOverlay(record, video) {
+    const rect = video.getBoundingClientRect();
+    const host = record.host;
+    const parent = host.parentNode;
+    const height = 56;
+    const offscreen = rect.width < 24 || rect.height < 24 ||
+      rect.bottom < 8 || rect.top > window.innerHeight - 8;
+    host.style.display = offscreen ? "none" : "block";
+    host.style.setProperty("display", offscreen ? "none" : "block", "important");
+    host.style.pointerEvents = "none";
+    host.style.setProperty("z-index", "2147483646", "important");
+    host.style.setProperty("opacity", offscreen ? "0" : "1", "important");
+    host.style.setProperty("visibility", offscreen ? "hidden" : "visible", "important");
+    const useAbsolute = parent && parent !== document.documentElement && parent !== document.body;
+    if (useAbsolute) {
+      const parentRect = parent.getBoundingClientRect();
+      host.style.position = "absolute";
+      host.style.left = Math.max(0, rect.left - parentRect.left) + "px";
+      host.style.top = Math.max(0, rect.bottom - parentRect.top - height - 8) + "px";
+    } else {
+      host.style.position = "fixed";
+      host.style.left = Math.max(0, rect.left) + "px";
+      host.style.top = Math.max(0, rect.bottom - height - 8) + "px";
+    }
+    host.style.width = Math.max(0, rect.width) + "px";
+    host.style.height = height + "px";
+  }
+
+  function cueWaitTimedOut(cues, time, translationsNow) {
+    const cue = Cues.activeCue(cues, time);
+    const source = cue ? Cues.normalizeCueText(cue.text) : "";
+    const foreign = !!(source && Cues.shouldSendForVideoTranslate(source));
+    const hasZh = !!(source && translationsNow[source]);
+    if (!foreign || hasZh || serviceError) {
+      cueWaitText = "";
+      cueWaitSince = 0;
+      return false;
+    }
+    if (cueWaitText !== source) {
+      cueWaitText = source;
+      cueWaitSince = Date.now();
+    }
+    return cueWaitSince > 0 && (Date.now() - cueWaitSince) >= CUE_WAIT_MS;
+  }
+
+  function renderVideo(video) {
+    if (!enabled || !video || !video.isConnected) return;
+    const record = ensureOverlay(video);
+    positionOverlay(record, video);
+    const cues = cuesFor(video);
+    const time = video.currentTime || 0;
+    const translationsNow = translationObject();
+    const waitTimedOut = cueWaitTimedOut(cues, time, translationsNow);
+    const state = Cues.overlayState({
+      enabled: true,
+      cues,
+      time,
+      translations: translationsNow,
+      serviceError,
+      waitTimedOut,
+      probed,
+      noForeignMessage: youtubeNoForeignMessage(),
+      asrStatus,
+      asrMessage
+    });
+    const asrBit = Asr && Asr.overlayBits ? Asr.overlayBits(asrStatus) : "asr0";
+    if (Youtube && typeof Youtube.overlayDebugBits === "function") {
+      const bits = Youtube.overlayDebugBits({
+        cues,
+        time,
+        translations: translationsNow,
+        pageWorld: !!(Youtube.pageWorldAlive && Youtube.pageWorldAlive(document)),
+        dom: !!(Youtube.collectDomCaptionText && Youtube.collectDomCaptionText(document))
+      });
+      record.host.setAttribute("data-gt-vt", bits + " " + asrBit);
+      try {
+        if (typeof localStorage !== "undefined" && localStorage.getItem("gtVtDebug") === "1") {
+          console.debug("[gt-vt]", bits, asrBit);
+        }
+      } catch (_error) {}
+    } else {
+      record.host.setAttribute("data-gt-vt", asrBit);
+    }
+    if (!state.show || (!state.cueText && !state.message)) {
+      record.box.style.display = "none";
+      record.pill.textContent = "";
+      return;
+    }
+    record.box.style.display = "block";
+    record.pill.textContent = state.cueText || state.message;
+  }
+
+  function renderAll() {
+    listVideos().forEach(renderVideo);
+  }
+
+  function translateTexts(texts) {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage({ type: "translate", texts, lane: "video" }, (response) => {
+          if (chrome.runtime.lastError || !response || response.error) {
+            resolve(null);
+            return;
+          }
+          resolve({
+            translations: response.translations || [],
+            retry: Array.isArray(response.retry) ? response.retry : []
+          });
+        });
+      } catch (_error) {
+        resolve(null);
+      }
+    });
+  }
+
+  function pendingForeignTexts(video) {
+    const cues = cuesFor(video);
+    const time = video.currentTime || 0;
+    const needed = [];
+    const seen = {};
+    const current = Cues.activeCue(cues, time);
+    const startIndex = current ? cues.indexOf(current) : cues.findIndex((cue) => cue.start >= time);
+    const from = startIndex >= 0 ? startIndex : 0;
+    for (let i = from; i < cues.length && needed.length < PREFETCH; i++) {
+      const text = Cues.normalizeCueText(cues[i] && cues[i].text);
+      if (!text || seen[text] || translations.has(text)) continue;
+      if (!Cues.shouldSendForVideoTranslate(text)) continue;
+      seen[text] = true;
+      needed.push(text);
+    }
+    return needed;
+  }
+
+  async function prefetch(video) {
+    if (!enabled || runningTranslate) return;
+    const texts = pendingForeignTexts(video);
+    if (texts.length === 0) return;
+    runningTranslate = true;
+    try {
+      for (let offset = 0; offset < texts.length; offset += CHUNK_SIZE) {
+        if (!enabled) return;
+        const chunk = texts.slice(offset, offset + CHUNK_SIZE);
+        const result = await translateTexts(chunk);
+        if (!result) {
+          serviceError = true;
+          renderAll();
+          return;
+        }
+        serviceError = false;
+        const retry = new Set(result.retry || []);
+        for (let i = 0; i < chunk.length; i++) {
+          if (retry.has(i)) continue;
+          const translated = result.translations[i];
+          if (typeof translated === "string" && translated.trim()) {
+            translations.set(chunk[i], translated.trim());
+          }
+        }
+      }
+      renderAll();
+    } finally {
+      runningTranslate = false;
+    }
+  }
+
+  function onTimeUpdate(event) {
+    safe(() => {
+      const video = event.target;
+      renderVideo(video);
+      prefetch(video);
+    });
+  }
+
+  function bindVideo(video) {
+    if (boundVideos.has(video)) return;
+    boundVideos.add(video);
+    boundList.push(video);
+    video.addEventListener("timeupdate", onTimeUpdate);
+    video.addEventListener("seeked", onTimeUpdate);
+    video.addEventListener("loadedmetadata", onTimeUpdate);
+    video.addEventListener("emptied", onTimeUpdate);
+    if (video.textTracks && video.textTracks.addEventListener) {
+      video.textTracks.addEventListener("addtrack", () => safe(() => {
+        renderVideo(video);
+        prefetch(video);
+      }));
+    }
+    renderVideo(video);
+    prefetch(video);
+  }
+
+  function unbindVideo(video) {
+    video.removeEventListener("timeupdate", onTimeUpdate);
+    video.removeEventListener("seeked", onTimeUpdate);
+    video.removeEventListener("loadedmetadata", onTimeUpdate);
+    video.removeEventListener("emptied", onTimeUpdate);
+    restoreTrackModes(video);
+    boundVideos.delete(video);
+    const index = boundList.indexOf(video);
+    if (index >= 0) boundList.splice(index, 1);
+    const record = overlays.get(video);
+    if (record && record.host && record.host.parentNode) {
+      record.host.parentNode.removeChild(record.host);
+    }
+    overlays.delete(video);
+  }
+
+  function scan() {
+    if (!enabled) return;
+    listVideos().forEach(bindVideo);
+    for (let i = boundList.length - 1; i >= 0; i--) {
+      if (!boundList[i].isConnected) unbindVideo(boundList[i]);
+    }
+    syncAsr();
+    renderAll();
+  }
+
+  function startObserver() {
+    if (observer) return;
+    observer = new MutationObserver(() => safe(scan));
+    observer.observe(document.documentElement || document.body, {
+      childList: true,
+      subtree: true
+    });
+  }
+
+  function stopObserver() {
+    if (observer) observer.disconnect();
+    observer = null;
+  }
+
+  function startPaintLoop() {
+    if (paintTimer) return;
+    paintTimer = setInterval(() => {
+      safe(() => {
+        if (!enabled) return;
+        scan();
+        listVideos().forEach((video) => prefetch(video));
+      });
+    }, PAINT_MS);
+  }
+
+  function stopPaintLoop() {
+    if (paintTimer) clearInterval(paintTimer);
+    paintTimer = null;
+  }
+
+  function clearOverlays() {
+    boundList.slice().forEach((video) => {
+      try { unbindVideo(video); } catch (_error) {}
+    });
+    boundList.length = 0;
+    overlays.forEach((record) => {
+      if (record.host && record.host.parentNode) {
+        record.host.parentNode.removeChild(record.host);
+      }
+    });
+    overlays.clear();
+  }
+
+  function probeDelay() {
+    if (Youtube && Youtube.isActivePage() && Youtube.YOUTUBE_PROBE_MS) {
+      return Youtube.YOUTUBE_PROBE_MS;
+    }
+    return PROBE_MS;
+  }
+
+  function hasImmediateCues() {
+    if (sidecarCues.length > 0) return true;
+    const videos = listVideos();
+    for (let i = 0; i < videos.length; i++) {
+      if (youtubeCues(videos[i]).length > 0) return true;
+    }
+    if (Youtube && Youtube.isActivePage()) return false;
+    for (let i = 0; i < videos.length; i++) {
+      if (collectTrackCues(videos[i]).length > 0) return true;
+    }
+    return false;
+  }
+
+  function markProbedSoon() {
+    if (probeTimer) clearTimeout(probeTimer);
+    probed = hasImmediateCues();
+    if (probed) {
+      renderAll();
+      syncAsr();
+      return;
+    }
+    probeTimer = setTimeout(() => {
+      probed = true;
+      renderAll();
+      syncAsr();
+    }, probeDelay());
+  }
+
+  function clearAsrState() {
+    asrCues = [];
+    asrSeenSeq = {};
+    asrStatus = "";
+    asrMessage = "";
+  }
+
+  function applyAsrSnapshot(payload, video) {
+    if (!payload || typeof payload !== "object") return;
+    asrStatus = typeof payload.status === "string" ? payload.status : "";
+    asrMessage = Asr && Asr.messageFor
+      ? Asr.messageFor(asrStatus, payload.message)
+      : (payload.message || "");
+    if (!video) return;
+    const mapped = Asr && Asr.mapNewCues
+      ? Asr.mapNewCues(asrCues, payload.cues, video.currentTime || 0, asrSeenSeq)
+      : { cues: asrCues, seenSeq: asrSeenSeq };
+    asrCues = mapped.cues;
+    asrSeenSeq = mapped.seenSeq;
+  }
+
+  function postAsr(needed, video) {
+    if (asrInFlight) {
+      asrQueued = { needed: needed === true, video };
+      return;
+    }
+    asrInFlight = true;
+    try {
+      chrome.runtime.sendMessage({ type: "video-asr", needed: needed === true }, (response) => {
+        asrInFlight = false;
+        const queued = asrQueued;
+        asrQueued = null;
+        if (chrome.runtime.lastError) {
+          if (queued) postAsr(queued.needed, queued.video);
+          return;
+        }
+        safe(() => {
+          applyAsrSnapshot(response, video || listVideos()[0]);
+          renderAll();
+          if (video) prefetch(video);
+          else listVideos().forEach((item) => prefetch(item));
+        });
+        if (queued) postAsr(queued.needed, queued.video);
+      });
+    } catch (_error) {
+      asrInFlight = false;
+    }
+  }
+
+  function syncAsr() {
+    if (!enabled) return;
+    const videos = listVideos();
+    const video = videos[0];
+    const captions = video ? captionCues(video) : [];
+    const foreign = Cues.hasForeignCues(captions);
+    const want = probed && Asr && Asr.shouldRequest ? Asr.shouldRequest(foreign) : (probed && !foreign);
+    if (!want) {
+      if (asrWanted) postAsr(false, video);
+      asrWanted = false;
+      clearAsrState();
+      stopAsrPoll();
+      return;
+    }
+    asrWanted = true;
+    postAsr(true, video);
+    startAsrPoll();
+  }
+
+  function startAsrPoll() {
+    if (asrTimer) return;
+    asrTimer = setInterval(() => {
+      safe(() => {
+        if (!enabled || !asrWanted) return;
+        syncAsr();
+      });
+    }, ASR_POLL_MS);
+  }
+
+  function stopAsrPoll() {
+    if (asrTimer) clearInterval(asrTimer);
+    asrTimer = null;
+  }
+
+  function onViewportChange() {
+    safe(renderAll);
+  }
+
+  function start() {
+    const already = enabled;
+    enabled = true;
+    serviceError = false;
+    if (Youtube && typeof Youtube.start === "function") {
+      Youtube.start(() => {
+        if (!enabled) return;
+        probed = true;
+        scan();
+        listVideos().forEach((video) => prefetch(video));
+        renderAll();
+      });
+    }
+    if (already) {
+      scan();
+      markProbedSoon();
+      return;
+    }
+    startObserver();
+    startPaintLoop();
+    scan();
+    markProbedSoon();
+    window.addEventListener("scroll", onViewportChange, true);
+    window.addEventListener("resize", onViewportChange);
+    document.addEventListener("fullscreenchange", onViewportChange);
+  }
+
+  function stop() {
+    enabled = false;
+    probed = false;
+    serviceError = false;
+    if (probeTimer) clearTimeout(probeTimer);
+    probeTimer = null;
+    stopObserver();
+    stopPaintLoop();
+    stopAsrPoll();
+    if (asrWanted) postAsr(false);
+    asrWanted = false;
+    clearAsrState();
+    window.removeEventListener("scroll", onViewportChange, true);
+    window.removeEventListener("resize", onViewportChange);
+    document.removeEventListener("fullscreenchange", onViewportChange);
+    if (Youtube && typeof Youtube.stop === "function") Youtube.stop();
+    clearOverlays();
+    translations.clear();
+    cueWaitText = "";
+    cueWaitSince = 0;
+  }
+
+  function applySidecar(payload) {
+    sidecarCues = [];
+    if (!payload || typeof payload.text !== "string" || !payload.text) {
+      if (enabled) markProbedSoon();
+      renderAll();
+      return;
+    }
+    try {
+      sidecarCues = Cues.parseSidecar(payload.text, payload.name || "");
+    } catch (_error) {
+      sidecarCues = [];
+    }
+    if (enabled) {
+      if (sidecarCues.length > 0) {
+        probed = true;
+        scan();
+        listVideos().forEach((video) => prefetch(video));
+        renderAll();
+      } else {
+        markProbedSoon();
+        scan();
+        renderAll();
+      }
+    }
+  }
+
+  function applyDesktopVideoPref(on) {
+    try {
+      chrome.storage.local.set({ videoTranslateEnabled: on });
+    } catch (_error) {}
+    if (on) {
+      if (!enabled) start();
+    } else if (enabled) {
+      stop();
+    }
+  }
+
+  function syncDesktopPref() {
+    try {
+      chrome.runtime.sendMessage({ type: "ping" }, (response) => {
+        const lastError = chrome.runtime.lastError;
+        const decision = Cues.desktopVideoPrefFromPing
+          ? Cues.desktopVideoPrefFromPing(response, lastError)
+          : null;
+        if (!decision || !decision.write) return;
+        applyDesktopVideoPref(decision.enabled === true);
+      });
+    } catch (_error) {
+      // Transient channel errors must not force the default-profile pref off.
+    }
+  }
+
+  function readPrefs() {
+    try {
+      chrome.storage.local.get({ videoTranslateEnabled: false }, (prefs) => {
+        const on = prefs && prefs.videoTranslateEnabled === true;
+        if (on) start();
+        else stop();
+      });
+    } catch (_error) {
+      stop();
+    }
+    try {
+      if (chrome.storage.session) {
+        chrome.storage.session.get({ videoSidecar: null }, (value) => {
+          applySidecar(value && value.videoSidecar);
+        });
+      }
+    } catch (_error) {}
+    syncDesktopPref();
+  }
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    safe(() => {
+      if (area === "local" && changes.videoTranslateEnabled) {
+        if (changes.videoTranslateEnabled.newValue === true) start();
+        else stop();
+      }
+      if ((area === "session" || area === "local") && changes.videoSidecar) {
+        applySidecar(changes.videoSidecar.newValue);
+      }
+    });
+  });
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => safe(readPrefs));
+  } else {
+    readPrefs();
+  }
+
+  setInterval(() => {
+    safe(() => {
+      if (document.visibilityState !== "visible") return;
+      if (enabled || document.querySelector("video")) syncDesktopPref();
+    });
+  }, DESKTOP_SYNC_MS);
+})();

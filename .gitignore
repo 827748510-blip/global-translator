@@ -1,0 +1,43 @@
+# SwiftPM / Xcode
+.build/
+.swiftpm/
+Packages/
+xcuserdata/
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+
+# Release & Staging Artifacts
+/dist/
+
+# macOS System Files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# AI Assistants & Editor Caches
+/.codegraph
+.codebuddy/
+.workbuddy/
+.trae/
+.trae-*
+.cursor/
+.claude/
+.vscode/
+.idea/
+
+# Test, Screenshot & Browser Automation Artifacts
+.playwright-cli/
+.screenshots/
+gt-resume-shots/
+node_modules/
+coverage/
+*.log
+
+# Local Secrets & Signing Credentials (Safety Net)
+.env
+.env.*
+*.pem
+*.p12
+*.mobileprovision

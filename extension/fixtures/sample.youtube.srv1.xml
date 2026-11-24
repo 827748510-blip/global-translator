@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<transcript>
+  <text start="1.5" dur="2.0">Hello from XML</text>
+  <text start="4" dur="1.25">Second &amp; last</text>
+  <text start="6" dur="1.0">&#39;Quoted&#39; line</text>
+</transcript>

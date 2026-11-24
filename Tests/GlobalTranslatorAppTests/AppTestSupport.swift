@@ -1,0 +1,1032 @@
+import AppKit
+import Foundation
+@testable import GlobalTranslatorApp
+import GlobalTranslatorCapture
+import GlobalTranslatorCore
+import GlobalTranslatorEngine
+import GlobalTranslatorRuntime
+import GlobalTranslatorUI
+
+actor RecordingConfigurationStore: ConfigurationStoring {
+    private(set) var saved: [AppConfiguration] = []
+    let loadError: Error?
+    let configuration: AppConfiguration
+
+    init(loadError: Error? = nil, configuration: AppConfiguration = AppConfiguration()) {
+        self.loadError = loadError
+        self.configuration = configuration
+    }
+
+    func load() async throws -> AppConfiguration {
+        if let loadError { throw loadError }
+        return configuration
+    }
+
+    func save(_ configuration: AppConfiguration) async throws {
+        saved.append(configuration)
+    }
+}
+
+final class RecordingCredentialStore: CredentialStoring, @unchecked Sendable {
+    private(set) var value: String?
+    private(set) var savedValues: [String] = []
+    private(set) var readCount = 0
+
+    init(value: String?) { self.value = value }
+    func save(apiKey: String) throws { value = apiKey; savedValues.append(apiKey) }
+    func read() throws -> String? { readCount += 1; return value }
+    func delete() throws { value = nil }
+}
+
+final class StubBackendFactory: TranslationBackendFactory, @unchecked Sendable {
+    let health: BackendHealth
+    private(set) var healthCredentials: [String] = []
+
+    init(health: BackendHealth) { self.health = health }
+    func makeBackend(kind: BackendKind, configuration: AppConfiguration, credentials: any CredentialStoring) throws -> any TranslationBackend {
+        StubBackend(kind: kind)
+    }
+    func healthCheck(kind: BackendKind, configuration: AppConfiguration, credentials: any CredentialStoring) async -> BackendHealth {
+        if kind == .deepSeekCloud, let value = try? credentials.read() {
+            healthCredentials.append(value)
+        }
+        return health
+    }
+}
+
+actor HealthCheckGate {
+    private var started = false
+    private var startedWaiters: [CheckedContinuation<Void, Never>] = []
+    private var resultWaiters: [CheckedContinuation<BackendHealth, Never>] = []
+    private var releasedHealth: BackendHealth?
+
+    func waitUntilStarted() async {
+        if started { return }
+        await withCheckedContinuation { continuation in
+            startedWaiters.append(continuation)
+        }
+    }
+
+    func check() async -> BackendHealth {
+        started = true
+        let waiters = startedWaiters
+        startedWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        if let releasedHealth { return releasedHealth }
+        return await withCheckedContinuation { continuation in
+            resultWaiters.append(continuation)
+        }
+    }
+
+    func release(_ health: BackendHealth) {
+        releasedHealth = health
+        let waiters = resultWaiters
+        resultWaiters.removeAll()
+        waiters.forEach { $0.resume(returning: health) }
+    }
+}
+
+final class GatedBackendFactory: TranslationBackendFactory, @unchecked Sendable {
+    let gate: HealthCheckGate
+
+    init(gate: HealthCheckGate = HealthCheckGate()) {
+        self.gate = gate
+    }
+
+    func makeBackend(
+        kind: BackendKind,
+        configuration: AppConfiguration,
+        credentials: any CredentialStoring
+    ) throws -> any TranslationBackend {
+        StubBackend(kind: kind)
+    }
+
+    func healthCheck(
+        kind: BackendKind,
+        configuration: AppConfiguration,
+        credentials: any CredentialStoring
+    ) async -> BackendHealth {
+        await gate.check()
+    }
+}
+
+final class RecordingModelBackendFactory: TranslationBackendFactory, @unchecked Sendable {
+    private var healthResults: [BackendHealth]
+    private(set) var madeDeepSeekModels: [String] = []
+
+    init(healthResults: [BackendHealth]) {
+        self.healthResults = healthResults
+    }
+
+    func makeBackend(
+        kind: BackendKind,
+        configuration: AppConfiguration,
+        credentials: any CredentialStoring
+    ) throws -> any TranslationBackend {
+        if kind == .deepSeekCloud {
+            madeDeepSeekModels.append(configuration.deepSeekModel)
+        }
+        return StubBackend(kind: kind)
+    }
+
+    func healthCheck(
+        kind: BackendKind,
+        configuration: AppConfiguration,
+        credentials: any CredentialStoring
+    ) async -> BackendHealth {
+        if kind != .deepSeekCloud {
+            return BackendHealth(status: .healthy, message: "ok")
+        }
+        _ = try? credentials.read()
+        guard !healthResults.isEmpty else {
+            return BackendHealth(status: .healthy, message: "ok")
+        }
+        return healthResults.removeFirst()
+    }
+}
+
+actor CompletionProbe {
+    private(set) var completed = false
+    func markCompleted() { completed = true }
+}
+
+/// Exercises the real local health adapter without contacting a model service.
+actor LocalModelCatalogTransport: HTTPTransport {
+    private(set) var paths: [String] = []
+
+    func send(_ request: URLRequest) async throws -> HTTPResponse {
+        let path = request.url?.path ?? ""
+        paths.append(path)
+        let body: Data
+        switch path {
+        case "/v1/models":
+            body = Data(#"{"data":[{"id":"qwen3:8b"},{"id":"llama3.2:latest"}]}"#.utf8)
+        case "/v1/chat/completions":
+            body = try JSONSerialization.data(withJSONObject: [
+                "choices": [["message": ["content": #"{"0":"你好"}"#]]]
+            ])
+        default:
+            throw TranslationError.invalidRequest("Unexpected test endpoint")
+        }
+        return HTTPResponse(statusCode: 200, headers: [:], body: body)
+    }
+}
+
+actor DelayedEchoTransport: HTTPTransport {
+    private(set) var calls = 0
+    func send(_: URLRequest) async throws -> HTTPResponse {
+        calls += 1
+        try await Task.sleep(for: .milliseconds(150))
+        let content = #"{"0":"你好"}"#
+        let response = try JSONSerialization.data(withJSONObject: [
+            "choices": [["message": ["content": content]]]
+        ])
+        return HTTPResponse(statusCode: 200, headers: [:], body: response)
+    }
+}
+
+actor OverlapEchoTransport: HTTPTransport {
+    private(set) var calls = 0
+    private var inFlight = 0
+    private(set) var maxInFlight = 0
+
+    func send(_: URLRequest) async throws -> HTTPResponse {
+        inFlight += 1
+        maxInFlight = max(maxInFlight, inFlight)
+        calls += 1
+        defer { inFlight -= 1 }
+        try await Task.sleep(for: .milliseconds(80))
+        let content = #"{"0":"你好"}"#
+        let response = try JSONSerialization.data(withJSONObject: [
+            "choices": [["message": ["content": content]]]
+        ])
+        return HTTPResponse(statusCode: 200, headers: [:], body: response)
+    }
+}
+
+struct StubBackend: TranslationBackend, Sendable {
+    let kind: BackendKind
+    func healthCheck() async -> BackendHealth { BackendHealth(status: .healthy, message: "ok") }
+    func translate(_ request: TranslationRequest) async throws -> TranslationResult {
+        TranslationResult(windowRevision: request.windowRevision, translations: request.items.map { Translation(segmentId: $0.id, simplifiedChineseText: "ok") })
+    }
+}
+
+final class FakePermissionController: PermissionControlling, @unchecked Sendable {
+    private let lock = NSLock()
+    private var currentSnapshot: PermissionSnapshot
+    private(set) var accessibilityRequestCount = 0
+    private(set) var screenCaptureRequestCount = 0
+    init(snapshot: PermissionSnapshot) { self.currentSnapshot = snapshot }
+    var snapshot: PermissionSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return currentSnapshot
+    }
+    var privacyURLs: [URL] { [] }
+    func requestAccessibilityPermission() -> Bool {
+        lock.lock()
+        accessibilityRequestCount += 1
+        lock.unlock()
+        return true
+    }
+    func requestScreenCapturePermission() -> Bool {
+        lock.lock()
+        screenCaptureRequestCount += 1
+        lock.unlock()
+        return true
+    }
+    func update(_ snapshot: PermissionSnapshot) {
+        lock.lock()
+        currentSnapshot = snapshot
+        lock.unlock()
+    }
+}
+
+@MainActor
+final class FakeWindowMonitor: ActiveWindowMonitoring {
+    var current: ActiveWindowDescriptor?
+    private(set) var startCount = 0
+    private(set) var stopCount = 0
+    var callback: ActiveWindowCallback?
+    private(set) var visualUpdatesEnabled = false
+    private(set) var visualUpdateCalls = 0
+    private(set) var captureRefreshRequests = 0
+    func retryCurrentWindowCapture() { captureRefreshRequests += 1 }
+    func setVisualUpdatesEnabled(_ enabled: Bool) { visualUpdatesEnabled = enabled; visualUpdateCalls += 1 }
+    func setCallback(_ callback: @escaping ActiveWindowCallback) { self.callback = callback }
+    func start() { startCount += 1 }
+    func stop() { stopCount += 1 }
+    func emit(_ descriptor: ActiveWindowDescriptor?) { callback?(descriptor) }
+}
+
+struct FakeCapturePipeline: CapturePipelining, Sendable {
+    var source: CaptureSource = .accessibility
+    func capture(_ descriptor: ActiveWindowDescriptor) async throws -> CaptureSnapshot {
+        CaptureSnapshot(window: CapturedWindow(descriptor: descriptor, regions: [], source: source))
+    }
+}
+
+actor CountingCapturePipeline: CapturePipelining {
+    private(set) var count = 0
+
+    func capture(_ descriptor: ActiveWindowDescriptor) async throws -> CaptureSnapshot {
+        count += 1
+        let region = TextRegion(
+            id: UUID(),
+            sourceText: "Visible English label",
+            screenFrame: CGRect(x: 20, y: 20, width: 80, height: 20),
+            confidence: 1,
+            source: .accessibility,
+            windowRevision: descriptor.revision
+        )
+        return CaptureSnapshot(window: CapturedWindow(
+            descriptor: descriptor,
+            regions: [region],
+            source: .accessibility
+        ))
+    }
+}
+
+actor RecordingCaptureRevisions: CapturePipelining {
+    private(set) var revisions: [UInt64] = []
+    func capture(_ descriptor: ActiveWindowDescriptor) async throws -> CaptureSnapshot {
+        revisions.append(descriptor.revision)
+        return CaptureSnapshot(window: CapturedWindow(descriptor: descriptor, regions: [], source: .accessibility))
+    }
+}
+
+struct FailingCapturePipeline: CapturePipelining, Sendable {
+    func capture(_ descriptor: ActiveWindowDescriptor) async throws -> CaptureSnapshot {
+        throw NSError(domain: "capture", code: 1, userInfo: [NSLocalizedDescriptionKey: "secret source text"])
+    }
+}
+
+struct CaptureErrorPipeline: CapturePipelining, Sendable {
+    let error: CaptureError
+
+    func capture(_ descriptor: ActiveWindowDescriptor) async throws -> CaptureSnapshot {
+        throw error
+    }
+}
+
+struct SingleRegionCapturePipeline: CapturePipelining, Sendable {
+    func capture(_ descriptor: ActiveWindowDescriptor) async throws -> CaptureSnapshot {
+        let region = TextRegion(
+            id: UUID(),
+            sourceText: "hello",
+            screenFrame: CGRect(x: 20, y: 20, width: 80, height: 20),
+            confidence: 1,
+            source: .accessibility,
+            windowRevision: descriptor.revision
+        )
+        return CaptureSnapshot(window: CapturedWindow(
+            descriptor: descriptor,
+            regions: [region],
+            source: .accessibility
+        ))
+    }
+}
+
+actor StaleFailureCapturePipeline: CapturePipelining {
+    private var firstCaptureStarted = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var failureContinuation: CheckedContinuation<Void, Never>?
+
+    func waitUntilFirstCaptureStarts() async {
+        if firstCaptureStarted { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func releaseFirstFailure() {
+        failureContinuation?.resume()
+        failureContinuation = nil
+    }
+
+    func capture(_ descriptor: ActiveWindowDescriptor) async throws -> CaptureSnapshot {
+        if descriptor.revision == 1 {
+            firstCaptureStarted = true
+            let waiters = startWaiters
+            startWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+            await withCheckedContinuation { continuation in
+                failureContinuation = continuation
+            }
+            throw CaptureError.captureFailed
+        }
+        return CaptureSnapshot(window: CapturedWindow(descriptor: descriptor, regions: [], source: .accessibility))
+    }
+}
+
+final class FakeInPageTranslator: InPageTranslating, @unchecked Sendable {
+    let available: Bool
+    /// When set, only windows owned by this process are claimed; windows of
+    /// other processes fall through to the bubble pipeline (mirrors the PID
+    /// ownership check in CDPInPageTranslator).
+    var acceptedWindowPID: Int32?
+    var extractError: Error?
+    private var appliedStorage: [[InPageReplacement]] = []
+    private(set) var extractCount = 0
+    private let textID = UUID()
+
+    init(available: Bool) {
+        self.available = available
+    }
+
+    func isApplicable(bundleIdentifier: String, windowPID: Int32) async -> Bool {
+        guard available else { return false }
+        if let acceptedWindowPID, acceptedWindowPID != windowPID { return false }
+        return true
+    }
+
+    func extract(windowRevision: UInt64) async throws -> [InPageText] {
+        extractCount += 1
+        if let extractError { throw extractError }
+        return [InPageText(nodeID: "n1", id: textID, text: "Reliable browser translation keeps the original page readable")]
+    }
+
+    func apply(_ replacements: [InPageReplacement]) async throws {
+        appliedStorage.append(replacements)
+    }
+
+    var applied: [[InPageReplacement]] {
+        appliedStorage
+    }
+}
+
+actor TranslatingCoordinator: TranslationCoordinating {
+    func selectBackend(kind: BackendKind, modelIdentifier: String) async {}
+    func clearCache() async {}
+    func cancelPendingRequests() async {}
+    func translate(
+        snapshot: CaptureSnapshot,
+        backend: BackendKind,
+        modelIdentifier: String,
+        visionFallbackEnabled: Bool
+    ) async throws -> EngineOutput {
+        let translations = snapshot.regions.map { region in
+            RenderedTranslation(region: region, text: "你好 " + region.sourceText)
+        }
+        return EngineOutput(
+            windowRevision: snapshot.descriptor.revision,
+            translations: translations,
+            metrics: EngineMetrics(inputRegionCount: translations.count, eligibleRegionCount: translations.count,
+                cacheHitCount: 0, batchCount: 1, translatedRegionCount: translations.count,
+                durationMilliseconds: 1, status: .success)
+        )
+    }
+
+    func completePlain(system _: String, user: String, backend _: BackendKind) async throws -> String {
+        let source = user.split(separator: "\n").last.map(String.init) ?? user
+        return "优化 " + source
+    }
+}
+
+actor RecordingPlainCoordinator: TranslationCoordinating {
+    private(set) var selectedKinds: [BackendKind] = []
+    private(set) var systems: [String] = []
+    private(set) var users: [String] = []
+    private(set) var completePlainBackends: [BackendKind] = []
+    private(set) var translateBackends: [BackendKind] = []
+    private(set) var sources: [[String]] = []
+    private var plainResult = "rewritten"
+
+    func setPlainResult(_ value: String) {
+        plainResult = value
+    }
+
+    func selectBackend(kind: BackendKind, modelIdentifier: String) async { selectedKinds.append(kind) }
+    func clearCache() async {}
+    func cancelPendingRequests() async {}
+    func translate(
+        snapshot: CaptureSnapshot,
+        backend: BackendKind,
+        modelIdentifier: String,
+        visionFallbackEnabled: Bool
+    ) async throws -> EngineOutput {
+        translateBackends.append(backend)
+        sources.append(snapshot.regions.map(\.sourceText))
+        let translations = snapshot.regions.map { region in
+            RenderedTranslation(region: region, text: "你好 " + region.sourceText)
+        }
+        return EngineOutput(
+            windowRevision: snapshot.descriptor.revision,
+            translations: translations,
+            metrics: EngineMetrics(
+                inputRegionCount: translations.count,
+                eligibleRegionCount: translations.count,
+                cacheHitCount: 0,
+                batchCount: translations.isEmpty ? 0 : 1,
+                translatedRegionCount: translations.count,
+                durationMilliseconds: 1,
+                status: translations.isEmpty ? .cacheOnly : .success
+            )
+        )
+    }
+
+    func completePlain(system: String, user: String, backend: BackendKind) async throws -> String {
+        systems.append(system)
+        users.append(user)
+        completePlainBackends.append(backend)
+        return plainResult
+    }
+}
+
+/// Fails if the bridge still dumps a dense page into one coordinator call.
+actor OneItemCoordinator: TranslationCoordinating {
+    private(set) var itemCounts: [Int] = []
+
+    func selectBackend(kind: BackendKind, modelIdentifier: String) async {}
+    func clearCache() async {}
+    func cancelPendingRequests() async {}
+    func translate(
+        snapshot: CaptureSnapshot,
+        backend: BackendKind,
+        modelIdentifier: String,
+        visionFallbackEnabled: Bool
+    ) async throws -> EngineOutput {
+        itemCounts.append(snapshot.regions.count)
+        if snapshot.regions.count > TranslationCoordinator.localPageTextBatchSize {
+            throw TranslationError.networkFailure
+        }
+        let translations = snapshot.regions.map { region in
+            RenderedTranslation(region: region, text: "你好 " + region.sourceText)
+        }
+        return EngineOutput(
+            windowRevision: snapshot.descriptor.revision,
+            translations: translations,
+            metrics: EngineMetrics(inputRegionCount: translations.count, eligibleRegionCount: translations.count,
+                cacheHitCount: 0, batchCount: 1, translatedRegionCount: translations.count,
+                durationMilliseconds: 1, status: .success)
+        )
+    }
+}
+
+actor FlakySecondItemCoordinator: TranslationCoordinating {
+    private var calls = 0
+
+    func selectBackend(kind: BackendKind, modelIdentifier: String) async {}
+    func clearCache() async {}
+    func cancelPendingRequests() async {}
+    func translate(
+        snapshot: CaptureSnapshot,
+        backend: BackendKind,
+        modelIdentifier: String,
+        visionFallbackEnabled: Bool
+    ) async throws -> EngineOutput {
+        calls += 1
+        if calls == 2 { throw TranslationError.networkFailure }
+        let translations = snapshot.regions.map { region in
+            RenderedTranslation(region: region, text: "你好 " + region.sourceText)
+        }
+        return EngineOutput(
+            windowRevision: snapshot.descriptor.revision,
+            translations: translations,
+            metrics: EngineMetrics(inputRegionCount: translations.count, eligibleRegionCount: translations.count,
+                cacheHitCount: 0, batchCount: 1, translatedRegionCount: translations.count,
+                durationMilliseconds: 1, status: .success)
+        )
+    }
+}
+
+actor ThrowingJSONCoordinator: TranslationCoordinating {
+    func selectBackend(kind: BackendKind, modelIdentifier: String) async {}
+    func clearCache() async {}
+    func cancelPendingRequests() async {}
+    func translate(
+        snapshot: CaptureSnapshot,
+        backend: BackendKind,
+        modelIdentifier: String,
+        visionFallbackEnabled: Bool
+    ) async throws -> EngineOutput {
+        throw TranslationError.invalidResponse("translation JSON is invalid")
+    }
+}
+
+actor RecordingBridgeCoordinator: TranslationCoordinating {
+    private(set) var sources: [[String]] = []
+
+    func selectBackend(kind: BackendKind, modelIdentifier: String) async {}
+    func clearCache() async {}
+    func cancelPendingRequests() async {}
+    func translate(
+        snapshot: CaptureSnapshot,
+        backend: BackendKind,
+        modelIdentifier: String,
+        visionFallbackEnabled: Bool
+    ) async throws -> EngineOutput {
+        sources.append(snapshot.regions.map(\.sourceText))
+        let translations = snapshot.regions.map { region in
+            RenderedTranslation(region: region, text: "你好 " + region.sourceText)
+        }
+        return EngineOutput(
+            windowRevision: snapshot.descriptor.revision,
+            translations: translations,
+            metrics: EngineMetrics(inputRegionCount: translations.count, eligibleRegionCount: translations.count,
+                cacheHitCount: 0, batchCount: 1, translatedRegionCount: translations.count,
+                durationMilliseconds: 1, status: .success)
+        )
+    }
+}
+
+actor EchoingCoordinator: TranslationCoordinating {
+    func selectBackend(kind: BackendKind, modelIdentifier: String) async {}
+    func clearCache() async {}
+    func cancelPendingRequests() async {}
+    func translate(
+        snapshot: CaptureSnapshot,
+        backend: BackendKind,
+        modelIdentifier: String,
+        visionFallbackEnabled: Bool
+    ) async throws -> EngineOutput {
+        let translations = snapshot.regions.map { region in
+            RenderedTranslation(region: region, text: region.sourceText)
+        }
+        return EngineOutput(
+            windowRevision: snapshot.descriptor.revision,
+            translations: translations,
+            metrics: EngineMetrics(inputRegionCount: translations.count, eligibleRegionCount: translations.count,
+                cacheHitCount: 0, batchCount: 1, translatedRegionCount: translations.count,
+                durationMilliseconds: 1, status: .success)
+        )
+    }
+}
+
+final class EngineEventBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sink: EngineEventSink?
+
+    func set(_ sink: EngineEventSink?) {
+        lock.lock()
+        self.sink = sink
+        lock.unlock()
+    }
+
+    func emit(_ event: EngineEvent) {
+        lock.lock()
+        let sink = self.sink
+        lock.unlock()
+        sink?(event)
+    }
+}
+
+@MainActor
+final class SchedulerBox {
+    var value: FakeScheduler?
+    func emit(_ output: EngineOutput) { value?.emit(output) }
+}
+
+@MainActor
+final class FakeStatusItem: StatusItemControlling {
+    var showSettingsCount = 0
+    func showSettings() { showSettingsCount += 1 }
+    private(set) var statuses: [MenuBarStatus] = []
+    private(set) var stopCount = 0
+    func applyStatus(_ status: MenuBarStatus) { statuses.append(status) }
+    func stop() { stopCount += 1 }
+}
+
+@MainActor
+final class FakeOverlay: OverlayControlling {
+    private(set) var hideCount = 0
+    private(set) var lastTranslations: [RenderedTranslation] = []
+    private(set) var lastRevision: UInt64 = 0
+    func update(translations: [RenderedTranslation], revision: UInt64) {
+        lastTranslations = translations
+        lastRevision = revision
+    }
+    func hideAll() { hideCount += 1 }
+}
+
+@MainActor
+final class FakeSelectionPopover: SelectionPopoverControlling {
+    private(set) var shown: [SelectionPopoverContent] = []
+    private(set) var dismissCount = 0
+    var currentContent: SelectionPopoverContent?
+    var panelFrame: CGRect?
+    var onUserDismiss: (() -> Void)?
+    var onTranslate: (() -> Void)?
+    var onOptimize: (() -> Void)?
+    var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
+    var optimizeMode: PromptOptimizeMode = .communicationPolish
+    var extraInteractionFrames: [CGRect] = []
+    var copyFeedback: SelectionCopyFeedback = .idle
+    func show(_ content: SelectionPopoverContent) {
+        currentContent = content
+        shown.append(content)
+        panelFrame = CGRect(
+            x: content.screenFrame.minX,
+            y: content.screenFrame.maxY + 6,
+            width: 280,
+            height: 80
+        )
+    }
+    func dismiss() {
+        dismissCount += 1
+        currentContent = nil
+        panelFrame = nil
+    }
+    func simulateUserDismiss() {
+        onUserDismiss?()
+        dismiss()
+    }
+    func simulateTranslate() { onTranslate?() }
+    func simulateOptimize() { onOptimize?() }
+    func simulateOptimizeMode(_ mode: PromptOptimizeMode) {
+        optimizeMode = mode
+        onOptimizeModeChange?(mode)
+    }
+    func containsInteraction(at location: CGPoint) -> Bool {
+        if panelFrame?.contains(location) == true { return true }
+        return extraInteractionFrames.contains { $0.contains(location) }
+    }
+}
+
+@MainActor
+final class FakeRegionSelector: RegionSelectionPresenting {
+    var result: RegionSelectionOutcome = .completed(CGRect(x: 40, y: 80, width: 200, height: 60))
+    var selectCount = 0
+    var cancelCount = 0
+    var isSelecting = false
+
+    func selectRegion() async -> RegionSelectionOutcome {
+        selectCount += 1
+        return result
+    }
+
+    func cancel() {
+        cancelCount += 1
+    }
+}
+
+final class FakeRegionCapturer: RegionScreenCapturing, @unchecked Sendable {
+    var image: CGImage?
+    var error: Error?
+    private(set) var rects: [CGRect] = []
+
+    init(image: CGImage? = makeSolidTestImage()) {
+        self.image = image
+    }
+
+    func capture(rect: CGRect) async throws -> CGImage {
+        rects.append(rect)
+        if let error { throw error }
+        guard let image else { throw CaptureError.captureFailed }
+        return image
+    }
+}
+
+final class FakeRegionOCR: RegionTextRecognizing, @unchecked Sendable {
+    var text = "Hello world"
+    var error: Error?
+    private(set) var callCount = 0
+
+    func recognizeJoinedText(image: CGImage) async throws -> String {
+        callCount += 1
+        if let error { throw error }
+        return text
+    }
+}
+
+func makeSolidTestImage(width: Int = 32, height: Int = 16) -> CGImage? {
+    let colorSpace = CGColorSpaceCreateDeviceGray()
+    guard let context = CGContext(
+        data: nil,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: width,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.none.rawValue
+    ) else { return nil }
+    context.setFillColor(gray: 0.8, alpha: 1)
+    context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    return context.makeImage()
+}
+
+final class FakeSelectedTextReader: SelectedTextReading, @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: SelectedTextReadResult
+    private(set) var readCount = 0
+    private(set) var lastAllowClipboardFallback = false
+    private(set) var clipboardFallbackUseCount = 0
+    var clipboardFallbackSnapshot: SelectedTextSnapshot?
+
+    init(result: SelectedTextReadResult = .empty) {
+        self.result = result
+    }
+
+    func setResult(_ result: SelectedTextReadResult) {
+        lock.lock()
+        self.result = result
+        lock.unlock()
+    }
+
+    func readSelection(mouseLocation: CGPoint, allowClipboardFallback: Bool) async -> SelectedTextReadResult {
+        nextResult(allowClipboardFallback: allowClipboardFallback)
+    }
+
+    private func nextResult(allowClipboardFallback: Bool) -> SelectedTextReadResult {
+        lock.lock()
+        defer { lock.unlock() }
+        readCount += 1
+        lastAllowClipboardFallback = allowClipboardFallback
+        switch result {
+        case .snapshot:
+            return result
+        case .empty, .unavailable:
+            if allowClipboardFallback, let clipboardFallbackSnapshot {
+                clipboardFallbackUseCount += 1
+                return .snapshot(clipboardFallbackSnapshot)
+            }
+            return result
+        }
+    }
+}
+
+@MainActor
+final class GatedSelectedTextReader: SelectedTextReading {
+    private var continuations: [CheckedContinuation<SelectedTextReadResult, Never>] = []
+    private(set) var readCount = 0
+
+    func readSelection(mouseLocation: CGPoint, allowClipboardFallback: Bool) async -> SelectedTextReadResult {
+        readCount += 1
+        return await withCheckedContinuation { continuations.append($0) }
+    }
+
+    func release(_ result: SelectedTextReadResult) {
+        guard !continuations.isEmpty else { return }
+        continuations.removeFirst().resume(returning: result)
+    }
+}
+
+/// Drives the 滑词 structured→plain fallback path: structured translation can
+/// fail with a chosen error while the plain completion returns text or throws.
+actor RecoveringSelectionCoordinator: TranslationCoordinating {
+    private(set) var structuredCalls = 0
+    private(set) var plainCalls: [(system: String, user: String, backend: BackendKind)] = []
+
+    var structuredError: Error = TranslationError.invalidResponse("translation copied the source")
+    var structuredResult: String?
+    var plainResult = "Figma（设计工具）"
+    var plainError: Error?
+
+    func setPlainResult(_ value: String) { plainResult = value }
+    func setPlainError(_ error: Error) { plainError = error }
+    func setStructuredError(_ error: Error) { structuredError = error }
+
+    func selectBackend(kind: BackendKind, modelIdentifier: String) async {}
+    func clearCache() async {}
+    func cancelPendingRequests() async {}
+
+    func translate(
+        snapshot: CaptureSnapshot,
+        backend: BackendKind,
+        modelIdentifier: String,
+        visionFallbackEnabled: Bool
+    ) async throws -> EngineOutput {
+        structuredCalls += 1
+        if let structuredResult {
+            let translations = snapshot.regions.map {
+                RenderedTranslation(region: $0, text: structuredResult)
+            }
+            return EngineOutput(
+                windowRevision: snapshot.descriptor.revision,
+                translations: translations,
+                metrics: EngineMetrics(inputRegionCount: translations.count, eligibleRegionCount: translations.count,
+                    cacheHitCount: 0, batchCount: 1, translatedRegionCount: translations.count,
+                    durationMilliseconds: 1, status: .success)
+            )
+        }
+        throw structuredError
+    }
+
+    func completePlain(system: String, user: String, backend: BackendKind) async throws -> String {
+        plainCalls.append((system, user, backend))
+        if let plainError { throw plainError }
+        return plainResult
+    }
+}
+
+/// Structured call succeeds for the first chunk and fails on the second, while
+/// the plain fallback echoes the source. Exercises the multi-chunk guard that
+/// must not label a whole long selection 「专有名词，无需翻译」.
+actor EchoingTrailingChunkCoordinator: TranslationCoordinating {
+    private var calls = 0
+
+    func selectBackend(kind: BackendKind, modelIdentifier: String) async {}
+    func clearCache() async {}
+    func cancelPendingRequests() async {}
+
+    func translate(
+        snapshot: CaptureSnapshot,
+        backend: BackendKind,
+        modelIdentifier: String,
+        visionFallbackEnabled: Bool
+    ) async throws -> EngineOutput {
+        calls += 1
+        if calls >= 2 {
+            throw TranslationError.invalidResponse("translation copied the source")
+        }
+        let translations = snapshot.regions.map { RenderedTranslation(region: $0, text: "你好 " + $0.sourceText) }
+        return EngineOutput(
+            windowRevision: snapshot.descriptor.revision,
+            translations: translations,
+            metrics: EngineMetrics(inputRegionCount: translations.count, eligibleRegionCount: translations.count,
+                cacheHitCount: 0, batchCount: 1, translatedRegionCount: translations.count,
+                durationMilliseconds: 1, status: .success)
+        )
+    }
+
+    func completePlain(system _: String, user: String, backend _: BackendKind) async throws -> String {
+        user
+    }
+}
+
+@MainActor
+final class StubSelectionTranslator: SelectionTranslating {
+    var result = "你好世界"
+    var optimizeResult = "优化后的提示词"
+    var error: Error?
+    var delay: Duration?
+    var sourceWasTruncated = false
+    private(set) var texts: [String] = []
+    private(set) var optimizedTexts: [String] = []
+    private(set) var optimizedModes: [PromptOptimizeMode] = []
+
+    func translateSelection(_ text: String) async throws -> SelectionTranslationOutcome {
+        texts.append(text)
+        if let delay {
+            try await Task.sleep(for: delay)
+        }
+        if let error { throw error }
+        return SelectionTranslationOutcome(text: result, sourceWasTruncated: sourceWasTruncated)
+    }
+
+    func optimizePrompt(_ text: String, mode: PromptOptimizeMode) async throws -> String {
+        optimizedTexts.append(text)
+        optimizedModes.append(mode)
+        if let delay {
+            try await Task.sleep(for: delay)
+        }
+        if let error { throw error }
+        return optimizeResult
+    }
+}
+
+actor FakeCoordinator: TranslationCoordinating {
+    private(set) var selectedKinds: [BackendKind] = []
+    func selectBackend(kind: BackendKind, modelIdentifier: String) async { selectedKinds.append(kind) }
+    func clearCache() async {}
+    func translate(snapshot: CaptureSnapshot, backend: BackendKind, modelIdentifier: String, visionFallbackEnabled: Bool) async throws -> EngineOutput {
+        EngineOutput(windowRevision: snapshot.descriptor.revision, translations: [], metrics: EngineMetrics(inputRegionCount: 0, eligibleRegionCount: 0, cacheHitCount: 0, batchCount: 0, translatedRegionCount: 0, durationMilliseconds: 0, status: .cacheOnly))
+    }
+}
+
+@MainActor
+final class FakeScheduler: TranslationScheduling {
+    let output: @MainActor @Sendable (EngineOutput) -> Void
+    let state: @MainActor @Sendable (EngineState) -> Void
+    private(set) var submitCount = 0
+    private(set) var cancelCount = 0
+
+    init(
+        output: @escaping @MainActor @Sendable (EngineOutput) -> Void,
+        state: @escaping @MainActor @Sendable (EngineState) -> Void
+    ) {
+        self.output = output
+        self.state = state
+    }
+
+    convenience init() {
+        self.init(output: { _ in }, state: { _ in })
+    }
+
+    func submit(snapshot: CaptureSnapshot, backend: BackendKind, modelIdentifier: String, visionFallbackEnabled: Bool) {
+        submitCount += 1
+    }
+    func cancel() { cancelCount += 1 }
+    func emit(_ output: EngineOutput) { self.output(output) }
+}
+
+final class RecordingLogger: AppRuntimeLogger, @unchecked Sendable {
+    private(set) var records: [(String, [String: String])] = []
+    func event(_ code: String, fields: [String: String]) { records.append((code, fields)) }
+}
+
+@MainActor
+final class FakeRuntimeWorker: ApplicationRuntimeWorker {
+    private(set) var events: [String] = []
+    var isRunning = false
+    func start() throws { events.append("start"); isRunning = true }
+    func stop() { events.append("stop"); isRunning = false }
+}
+
+@MainActor
+final class RunnerEventRecorder {
+    var events: [String] = []
+}
+
+@MainActor
+final class FakeApplicationController: ApplicationControlling {
+    private(set) var events: [String] = []
+    private let recorder: RunnerEventRecorder?
+    init(recorder: RunnerEventRecorder? = nil) { self.recorder = recorder }
+    func start() async throws {
+        events.append("start")
+        recorder?.events.append("controller-start")
+    }
+    func stop() async { events.append("stop") }
+}
+
+@MainActor
+final class FakeEventLoop: ApplicationEventLoop {
+    let onRun: () -> Void
+    private let recorder: RunnerEventRecorder?
+    private(set) var prepareCount = 0
+    private(set) var runCount = 0
+    private(set) var stopCount = 0
+    init(onRun: @escaping () -> Void, recorder: RunnerEventRecorder? = nil) {
+        self.onRun = onRun
+        self.recorder = recorder
+    }
+    func prepare() { prepareCount += 1 }
+    func run(onStarted: @escaping @MainActor @Sendable () -> Void) async {
+        runCount += 1
+        recorder?.events.append("event-loop-run")
+        onStarted()
+        onRun()
+        stop()
+    }
+    func stop() { stopCount += 1 }
+}
+
+@MainActor
+final class FakeNSApplicationDriver: NSApplicationDriving {
+    private(set) var runCount = 0
+    private(set) var stopCount = 0
+    private(set) var postedEvents: [NSEvent] = []
+    private(set) var finishLaunchingCount = 0
+    private(set) var nextEventCount = 0
+    private(set) var updateWindowsCount = 0
+    var onNextEvent: (() -> Void)?
+
+    func run() { runCount += 1 }
+    func finishLaunching() { finishLaunchingCount += 1 }
+    func nextEvent(
+        matching mask: NSEvent.EventTypeMask,
+        until expiration: Date?,
+        inMode mode: RunLoop.Mode,
+        dequeue deqFlag: Bool
+    ) -> NSEvent? {
+        nextEventCount += 1
+        onNextEvent?()
+        return nil
+    }
+    func sendEvent(_ event: NSEvent) {}
+    func updateWindows() { updateWindowsCount += 1 }
+    func stop(_ sender: Any?) { stopCount += 1 }
+    func postEvent(_ event: NSEvent, atStart flag: Bool) { postedEvents.append(event) }
+}

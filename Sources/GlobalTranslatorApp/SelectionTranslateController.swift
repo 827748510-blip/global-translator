@@ -1,0 +1,594 @@
+import AppKit
+import Foundation
+import GlobalTranslatorCapture
+import GlobalTranslatorCore
+import GlobalTranslatorUI
+
+public enum SelectionTranslateError: Error, Equatable, Sendable, UISafeError {
+    case translatorUnavailable
+    case emptyResult
+    case noTranslationNeeded
+
+    public var uiSafeDescription: String {
+        switch self {
+        case .translatorUnavailable:
+            return "翻译服务未就绪"
+        case .emptyResult:
+            return "翻译失败"
+        case .noTranslationNeeded:
+            return SelectionTranslateSupport.noTranslationNeededCopy
+        }
+    }
+}
+
+@MainActor
+public protocol SelectionTranslating: AnyObject {
+    func translateSelection(_ text: String) async throws -> SelectionTranslationOutcome
+    func optimizePrompt(_ text: String, mode: PromptOptimizeMode) async throws -> String
+}
+
+@MainActor
+public protocol SelectionPointerMonitoring: AnyObject {
+    func start(_ handler: @escaping @MainActor (SelectionPointerPhase, CGPoint) -> Void)
+    func stop()
+}
+
+@MainActor
+public final class NullSelectionPointerMonitor: SelectionPointerMonitoring {
+    public init() {}
+    public func start(_ handler: @escaping @MainActor (SelectionPointerPhase, CGPoint) -> Void) {}
+    public func stop() {}
+}
+
+@MainActor
+public final class SystemSelectionPointerMonitor: SelectionPointerMonitoring {
+    private var monitors: [Any] = []
+
+    public init() {}
+
+    public func start(_ handler: @escaping @MainActor (SelectionPointerPhase, CGPoint) -> Void) {
+        stop()
+        let mask: NSEvent.EventTypeMask = [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { event in
+            handler(Self.phase(event.type), NSEvent.mouseLocation)
+        }) {
+            monitors.append(global)
+        }
+        if let local = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { event in
+            handler(Self.phase(event.type), NSEvent.mouseLocation)
+            return event
+        }) {
+            monitors.append(local)
+        }
+    }
+
+    public func stop() {
+        for monitor in monitors { NSEvent.removeMonitor(monitor) }
+        monitors = []
+    }
+
+    private static func phase(_ type: NSEvent.EventType) -> SelectionPointerPhase {
+        switch type {
+        case .leftMouseDown:
+            return .down
+        case .leftMouseDragged:
+            return .dragged
+        default:
+            return .up
+        }
+    }
+}
+
+/// Independent of window overlay capture and of the Chrome extension bridge.
+/// Mouse-up in any app (after a short settle) reads AX selected text and
+/// shows a nearby popover with the configured backend's translation. After a
+/// real drag, empty AX may steal-and-restore the clipboard (⌘C) so Electron
+/// apps such as Feishu still surface a popover.
+@MainActor
+public final class SelectionTranslateController {
+    private let reader: any SelectedTextReading
+    private let popover: any SelectionPopoverControlling
+    private let monitor: any SelectionPointerMonitoring
+    private let permissions: any PermissionControlling
+    private let logger: any AppRuntimeLogger
+    private let translator: () -> (any SelectionTranslating)?
+    private let isCloudKeyConfigured: () -> Bool
+    private let ownBundleIdentifiers: Set<String>
+    private let frontmostBundleIdentifier: () -> String
+    private let targetLanguage: String
+    private let settleDelay: Duration
+    private let unavailableDismissDelay: Duration
+
+    private var enabled = false
+    private var pointer = SelectionPointerState()
+    /// Scene-menu / popover presses must still update `pointer`, but must not
+    /// settle or dismiss. The menu window often closes before mouse-up, so the
+    /// matching `.up` lands outside `containsInteraction`.
+    private var pointerPressBeganOnOwnedUI = false
+    private var settleGate = SelectionSettleGate()
+    private var settleTask: Task<Void, Never>?
+    private var translateTask: Task<Void, Never>?
+    private var transientDismissTask: Task<Void, Never>?
+    private var presentationGeneration: UInt64 = 0
+    /// Source text the user just dismissed (Esc / outside click / new press).
+    /// Settle will not re-show it until the selection changes or becomes empty.
+    private var suppressedSource: String?
+    private var optimizeMode: PromptOptimizeMode = .communicationPolish
+    private var backend: BackendKind = .deepSeekCloud
+    /// Consecutive drag-selections that stayed unreadable. Pauses the red
+    /// status line and the clipboard borrow instead of looping on an app that
+    /// never exposes a selection.
+    private var degrade = SelectionReadingDegradeState()
+    private let now: () -> TimeInterval
+    public var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
+
+    public var isEnabled: Bool { enabled }
+
+    public init(
+        reader: any SelectedTextReading,
+        popover: any SelectionPopoverControlling,
+        monitor: any SelectionPointerMonitoring,
+        permissions: any PermissionControlling,
+        logger: any AppRuntimeLogger,
+        translator: @escaping () -> (any SelectionTranslating)?,
+        isCloudKeyConfigured: @escaping () -> Bool = { true },
+        ownBundleIdentifiers: Set<String> = [],
+        frontmostBundleIdentifier: @escaping () -> String = {
+            AXSelectedTextReader.systemFrontmostApplication()?.bundleIdentifier ?? ""
+        },
+        targetLanguage: String = SelectionTranslateSupport.defaultTargetLanguage,
+        settleDelay: Duration = .milliseconds(SelectionTranslateSupport.settleDelayMilliseconds),
+        unavailableDismissDelay: Duration = .milliseconds(
+            SelectionTranslateSupport.unavailableDismissMilliseconds
+        ),
+        now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    ) {
+        self.reader = reader
+        self.popover = popover
+        self.monitor = monitor
+        self.permissions = permissions
+        self.logger = logger
+        self.translator = translator
+        self.isCloudKeyConfigured = isCloudKeyConfigured
+        self.ownBundleIdentifiers = ownBundleIdentifiers
+        self.frontmostBundleIdentifier = frontmostBundleIdentifier
+        self.targetLanguage = targetLanguage
+        self.settleDelay = settleDelay
+        self.unavailableDismissDelay = unavailableDismissDelay
+        self.now = now
+        let wired = self.popover
+        wired.onUserDismiss = { [weak self] in
+            self?.handleUserDismiss()
+        }
+        wired.onTranslate = { [weak self] in
+            self?.performTranslate()
+        }
+        wired.onOptimize = { [weak self] in
+            self?.performOptimize()
+        }
+        wired.onOptimizeModeChange = { [weak self] mode in
+            self?.handleOptimizeModeChange(mode)
+        }
+        wired.optimizeMode = optimizeMode
+    }
+
+    public func setOptimizeMode(_ mode: PromptOptimizeMode) {
+        optimizeMode = mode
+        popover.optimizeMode = mode
+    }
+
+    public func setBackend(_ kind: BackendKind) {
+        backend = kind
+    }
+
+    public func setEnabled(_ enabled: Bool) {
+        guard self.enabled != enabled else {
+            if enabled { return }
+            stopWork()
+            return
+        }
+        self.enabled = enabled
+        if enabled {
+            monitor.start { [weak self] phase, location in
+                self?.handlePointer(phase, location: location)
+            }
+        } else {
+            monitor.stop()
+            stopWork()
+        }
+    }
+
+    public func handlePointer(_ phase: SelectionPointerPhase, location: CGPoint) {
+        guard enabled else { return }
+        let onOwnedUI = popover.containsInteraction(at: location)
+        if phase == .down {
+            pointerPressBeganOnOwnedUI = onOwnedUI
+        }
+        let action = pointer.handle(phase, at: location, timestamp: now())
+        let swallow = pointerPressBeganOnOwnedUI || onOwnedUI
+        if phase == .up {
+            pointerPressBeganOnOwnedUI = false
+        }
+        guard !swallow else { return }
+        switch action {
+        case .cancelPending:
+            suppressCurrentSelectionIfShowing()
+            cancelSettle()
+            cancelPresentation()
+            popover.dismiss()
+        case .scheduleSettle:
+            scheduleSettle(location: location)
+        case .ignore:
+            break
+        }
+    }
+
+    private func handleUserDismiss() {
+        suppressCurrentSelectionIfShowing()
+        cancelSettle()
+        cancelPresentation()
+    }
+
+    private func suppressCurrentSelectionIfShowing() {
+        if let original = popover.currentContent?.original, !original.isEmpty {
+            suppressedSource = original
+        }
+    }
+
+    private func stopWork() {
+        suppressedSource = nil
+        pointerPressBeganOnOwnedUI = false
+        cancelSettle()
+        cancelPresentation()
+        popover.dismiss()
+        degrade.recordSuccess()
+    }
+
+    private func cancelPresentation() {
+        presentationGeneration &+= 1
+        translateTask?.cancel()
+        translateTask = nil
+        transientDismissTask?.cancel()
+        transientDismissTask = nil
+    }
+
+    private func cancelSettle() {
+        settleGate.invalidate()
+        settleTask?.cancel()
+        settleTask = nil
+    }
+
+    private func scheduleSettle(location: CGPoint) {
+        cancelSettle()
+        let token = settleGate.next()
+        settleTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: self?.settleDelay ?? .milliseconds(150))
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled, self.enabled, self.settleGate.isCurrent(token) else { return }
+            await self.processSettledSelection(location: location, token: token)
+        }
+    }
+
+    private func processSettledSelection(location: CGPoint, token: UInt64) async {
+        let fallback = SelectionTranslateSupport.fallbackFrame(at: location)
+        guard permissions.snapshot.accessibilityTrusted else {
+            logger.event("selection_ax_unavailable", fields: ["reason": "permission"])
+            return
+        }
+        if permissions.snapshot.secureInputEnabled {
+            popover.dismiss()
+            return
+        }
+        let timestamp = now()
+        let verdict = pointer.gestureVerdict
+        let isTextSelection = verdict == .textSelection
+        if verdict != .click {
+            logger.event(
+                "selection_gesture",
+                fields: Self.gestureFields(verdict: verdict, features: pointer.gestureFeatures)
+            )
+        }
+        let allowClipboardFallback = isTextSelection
+            && !degrade.isDegraded(at: timestamp)
+            && !isOwnFrontmostApplication()
+        let result = await reader.readSelection(
+            mouseLocation: location,
+            allowClipboardFallback: allowClipboardFallback
+        )
+        // Reading the selection now awaits the clipboard fallback. A newer
+        // gesture (or toggling 滑词 off) invalidates this token, so its stale
+        // snapshot must not pop a panel over a newer selection.
+        guard !Task.isCancelled, enabled, settleGate.isCurrent(token) else { return }
+        switch result {
+        case .empty:
+            // A real drag-selection yielded neither AX text nor a clipboard
+            // copy: the UI stays silent (dragging a scrollbar or slider is not
+            // an error) but the event makes 「划词没反应」 diagnosable.
+            if isTextSelection {
+                var fields = Self.gestureFields(verdict: verdict, features: pointer.gestureFeatures)
+                fields["clipboardAllowed"] = allowClipboardFallback ? "true" : "false"
+                fields["degraded"] = degrade.isDegraded(at: timestamp) ? "true" : "false"
+                logger.event("selection_unreadable", fields: fields)
+            }
+            suppressedSource = nil
+            cancelPresentation()
+            popover.dismiss()
+        case .unavailable:
+            // Only a real drag-selection may surface the red status, and only
+            // while not degraded. A click or a window/scrollbar drag stays
+            // silent instead of flashing "无法读取所选文字".
+            logger.event(
+                "selection_ax_unavailable",
+                fields: ["reason": "ax", "gesture": verdict.rawValue]
+            )
+            // A click over a window-less area also reports `.unavailable`; only a
+            // real drag-selection counts toward degraded mode.
+            let tripped = isTextSelection ? degrade.recordFailure(at: timestamp) : false
+            if tripped {
+                logger.event(
+                    "selection_degraded",
+                    fields: [
+                        "failures": "\(SelectionReadingDegradeState.failureThreshold)",
+                        "cooldownSeconds": "\(Int(SelectionReadingDegradeState.cooldown))"
+                    ]
+                )
+            }
+            if isTextSelection, !degrade.isDegraded(at: timestamp) {
+                presentUnavailable(screenFrame: fallback)
+            } else {
+                popover.dismiss()
+            }
+        case .snapshot(let snapshot):
+            degrade.recordSuccess()
+            if isOwnApplication(snapshot.bundleIdentifier) {
+                popover.dismiss()
+                return
+            }
+            // Code is checked before TextFilter: `foo()` / `x = 1` are valid
+            // snippets that the prose filter would otherwise reject as an
+            // identifier. Code never gets the prompt-rewrite action.
+            if CodeSnippetDetector.isCode(snapshot.text) {
+                guard snapshot.text != suppressedSource else { return }
+                suppressedSource = nil
+                presentTranslation(snapshot)
+                return
+            }
+            switch TextFilter.selectionDecision(snapshot.text, targetLanguage: targetLanguage) {
+            case .skip:
+                // The selection changed to something we deliberately ignore
+                // (URL / identifier). Forget the previously suppressed text so
+                // selecting it again can surface a popover.
+                suppressedSource = nil
+                popover.dismiss()
+            case .alreadyTargetLanguage:
+                // 简体中文选区不再提示「已是中文」，双向互译把它译成英文。
+                guard snapshot.text != suppressedSource else { return }
+                suppressedSource = nil
+                presentTranslation(snapshot)
+            case .noTranslationNeeded:
+                guard snapshot.text != suppressedSource else { return }
+                suppressedSource = nil
+                presentNoTranslationNeeded(snapshot)
+            case .translate:
+                guard snapshot.text != suppressedSource else { return }
+                suppressedSource = nil
+                presentTranslation(snapshot)
+            }
+        }
+    }
+
+    private func performTranslate() {
+        guard enabled, let content = popover.currentContent, !content.original.isEmpty else { return }
+        if content.isCodeSnippet {
+            presentTranslation(snapshot(from: content), force: true)
+            return
+        }
+        switch TextFilter.selectionDecision(content.original, targetLanguage: targetLanguage) {
+        case .skip:
+            return
+        case .alreadyTargetLanguage, .noTranslationNeeded, .translate:
+            // 中文 → 英文，其余可翻译文本 → 简体中文；方向由后端按内容判定。
+            presentTranslation(snapshot(from: content), force: true)
+        }
+    }
+
+    private func handleOptimizeModeChange(_ mode: PromptOptimizeMode) {
+        guard optimizeMode != mode else { return }
+        optimizeMode = mode
+        popover.optimizeMode = mode
+        onOptimizeModeChange?(mode)
+    }
+
+    private func presentMissingDeepSeekKeyIfOriginal(_ original: String, screenFrame: CGRect) {
+        guard !original.isEmpty else { return }
+        popover.show(.failed(
+            original: original,
+            message: SelectionTranslateSupport.missingDeepSeekKeyCopy,
+            screenFrame: screenFrame
+        ))
+    }
+
+    private func performOptimize() {
+        guard enabled, let content = popover.currentContent, !content.original.isEmpty else { return }
+        guard !content.isCodeSnippet else { return }
+        guard TextFilter.shouldOfferPromptOptimization(content.original, targetLanguage: targetLanguage) else { return }
+        presentOptimize(original: content.original, screenFrame: content.screenFrame)
+    }
+
+    private func snapshot(from content: SelectionPopoverContent) -> SelectedTextSnapshot {
+        SelectedTextSnapshot(
+            text: content.original,
+            screenFrame: content.screenFrame,
+            source: .accessibility,
+            bundleIdentifier: ""
+        )
+    }
+
+    private func presentNoTranslationNeeded(_ snapshot: SelectedTextSnapshot) {
+        if popover.currentContent?.original == snapshot.text,
+           popover.currentContent?.status == .noTranslationNeeded {
+            return
+        }
+        cancelPresentation()
+        popover.show(.noTranslationNeeded(original: snapshot.text, screenFrame: snapshot.screenFrame))
+    }
+
+    private func presentUnavailable(screenFrame: CGRect) {
+        cancelPresentation()
+        let generation = presentationGeneration
+        popover.show(.unavailable(screenFrame: screenFrame))
+        transientDismissTask = Task { @MainActor [weak self] in
+            guard let delay = self?.unavailableDismissDelay else { return }
+            try? await Task.sleep(for: delay)
+            guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
+            if self.popover.currentContent?.status == .unavailable {
+                self.popover.dismiss()
+            }
+        }
+    }
+
+    private func presentTranslation(_ snapshot: SelectedTextSnapshot, force: Bool = false) {
+        if !force,
+           popover.currentContent?.original == snapshot.text,
+           popover.currentContent?.status == .translated {
+            return
+        }
+        cancelPresentation()
+        let generation = presentationGeneration
+        if backend == .deepSeekCloud && !isCloudKeyConfigured() {
+            presentMissingDeepSeekKeyIfOriginal(snapshot.text, screenFrame: snapshot.screenFrame)
+            return
+        }
+        popover.show(.loading(original: snapshot.text, screenFrame: snapshot.screenFrame))
+        guard let translator = translator() else {
+            popover.show(.failed(original: snapshot.text, message: "翻译服务未就绪", screenFrame: snapshot.screenFrame))
+            return
+        }
+        translateTask = Task { @MainActor [weak self] in
+            do {
+                let outcome = try await translator.translateSelection(snapshot.text)
+                guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
+                let text = outcome.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if text.isEmpty {
+                    self.popover.show(.failed(
+                        original: snapshot.text,
+                        message: "翻译失败",
+                        screenFrame: snapshot.screenFrame
+                    ))
+                    return
+                }
+                self.popover.show(.translated(
+                    original: snapshot.text,
+                    translation: text,
+                    screenFrame: snapshot.screenFrame,
+                    sourceWasTruncated: snapshot.sourceWasCapped || outcome.sourceWasTruncated
+                ))
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
+                if let selection = error as? SelectionTranslateError, selection == .noTranslationNeeded {
+                    self.presentNoTranslationNeeded(snapshot)
+                    return
+                }
+                self.logger.event("selection_translate_failed", fields: ["status": "error"])
+                self.popover.show(.failed(
+                    original: snapshot.text,
+                    message: Self.describe(error),
+                    screenFrame: snapshot.screenFrame
+                ))
+            }
+        }
+    }
+
+    private func presentOptimize(original: String, screenFrame: CGRect) {
+        cancelPresentation()
+        let generation = presentationGeneration
+        if backend == .deepSeekCloud && !isCloudKeyConfigured() {
+            presentMissingDeepSeekKeyIfOriginal(original, screenFrame: screenFrame)
+            return
+        }
+        popover.show(.optimizing(original: original, screenFrame: screenFrame))
+        guard let translator = translator() else {
+            popover.show(.failed(
+                original: original,
+                message: "翻译服务未就绪",
+                screenFrame: screenFrame
+            ))
+            return
+        }
+        let mode = optimizeMode
+        translateTask = Task { @MainActor [weak self] in
+            do {
+                let optimized = try await translator.optimizePrompt(original, mode: mode)
+                guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
+                let text = optimized.trimmingCharacters(in: .whitespacesAndNewlines)
+                if text.isEmpty {
+                    self.popover.show(.failed(
+                        original: original,
+                        message: SelectionTranslateSupport.optimizeFailedCopy,
+                        screenFrame: screenFrame
+                    ))
+                    return
+                }
+                self.popover.show(.optimized(original: original, prompt: text, screenFrame: screenFrame))
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
+                self.logger.event("selection_optimize_failed", fields: ["status": "error"])
+                self.popover.show(.failed(
+                    original: original,
+                    message: SelectionTranslateSupport.optimizeFailedCopy,
+                    screenFrame: screenFrame
+                ))
+            }
+        }
+    }
+
+    private func isOwnFrontmostApplication() -> Bool {
+        isOwnApplication(frontmostBundleIdentifier())
+    }
+
+    private func isOwnApplication(_ bundleIdentifier: String) -> Bool {
+        !bundleIdentifier.isEmpty && ownBundleIdentifiers.contains(bundleIdentifier)
+    }
+
+    /// Numeric gesture telemetry only — never the selected text or app content.
+    private static func gestureFields(
+        verdict: SelectionGestureVerdict,
+        features: SelectionGestureFeatures
+    ) -> [String: String] {
+        [
+            "verdict": verdict.rawValue,
+            "offsetPt": "\(Int(features.maxOffset.rounded()))",
+            "travelPt": "\(Int(features.totalTravel.rounded()))",
+            "dragEvents": "\(features.dragEventCount)",
+            "durationMs": "\(Int((features.duration * 1000).rounded()))",
+            "stallMs": "\(Int((features.longestStall * 1000).rounded()))"
+        ]
+    }
+
+    private static func describe(_ error: Error) -> String {
+        if let selection = error as? SelectionTranslateError {
+            return selection.uiSafeDescription
+        }
+        if let translation = error as? TranslationError {
+            switch translation {
+            case .invalidResponse, .invalidRequest:
+                return SelectionTranslateError.emptyResult.uiSafeDescription
+            case .missingCredential:
+                return SelectionTranslateSupport.missingDeepSeekKeyCopy
+            default:
+                return translation.uiSafeDescription
+            }
+        }
+        if let safe = error as? UISafeError {
+            return safe.uiSafeDescription
+        }
+        return UIFeedback.genericErrorMessage
+    }
+}

@@ -1,0 +1,20 @@
+{
+  "wireMagic": "pb3",
+  "events": [
+    {
+      "tStartMs": 0,
+      "dDurationMs": 2200,
+      "segs": [{ "utf8": "Hello from YouTube" }]
+    },
+    {
+      "tStartMs": 2500,
+      "dDurationMs": 1800,
+      "segs": [{ "utf8": "Second " }, { "utf8": "cue" }]
+    },
+    {
+      "tStartMs": 5000,
+      "dDurationMs": 1500,
+      "segs": [{ "utf8": "你好" }]
+    }
+  ]
+}

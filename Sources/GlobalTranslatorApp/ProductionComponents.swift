@@ -1,0 +1,66 @@
+import AppKit
+import Foundation
+import GlobalTranslatorCapture
+import GlobalTranslatorCore
+import GlobalTranslatorEngine
+import GlobalTranslatorRuntime
+import GlobalTranslatorUI
+
+@MainActor
+extension ApplicationControllerComponents {
+    public static func production(paths: RuntimePaths) -> ApplicationControllerComponents {
+        let logger: any AppRuntimeLogger
+        if let runtimeLogger = try? RuntimeLogger(url: paths.logURL) {
+            logger = RuntimeLoggerAdapter(logger: runtimeLogger)
+        } else {
+            logger = NullAppRuntimeLogger()
+        }
+        return ApplicationControllerComponents(
+            configurationStore: ConfigStore(url: paths.configURL),
+            credentialStore: MacOSKeychainStore(),
+            permissionController: SystemPermissionController(),
+            backendFactory: LiveTranslationBackendFactory(
+                localTransport: URLSessionHTTPTransport(requestTimeout: 90, resourceTimeout: 180)
+            ),
+            ollamaLifecycle: HomebrewOllamaLifecycle(),
+            monitorFactory: { allowed in
+                ActiveWindowMonitorAdapter(
+                    ownBundleIdentifier: Bundle.main.bundleIdentifier,
+                    translatedBundleIdentifiers: allowed
+                )
+            },
+            capturePipelineFactory: { allowed in
+                CapturePipeline(
+                    ownBundleIdentifier: Bundle.main.bundleIdentifier,
+                    translatedBundleIdentifiers: allowed
+                )
+            },
+            statusItemFactory: { viewModel in StatusItemController(viewModel: viewModel) },
+            overlayFactory: { OverlayPanelController() },
+            selectedTextReaderFactory: { AXSelectedTextReader() },
+            selectionPopoverFactory: { SelectionTranslatePanelController() },
+            selectionPointerMonitorFactory: { SystemSelectionPointerMonitor() },
+            regionSelectorFactory: { RegionSelectionOverlayController() },
+            regionCapturerFactory: { ScreenCaptureKitRegionCapturer() },
+            regionOCRFactory: { RegionVisionOCRService() },
+            hotkeyRegistrarFactory: { CarbonHotkeyRegistrar() },
+            screenshotPopoverFactory: { SelectionTranslatePanelController() },
+            coordinatorFactory: { backends, eventSink in
+                TranslationCoordinator(backends: backends, eventSink: eventSink)
+            },
+            schedulerFactory: { coordinator, output, state in
+                guard let concrete = coordinator as? TranslationCoordinator else {
+                    return NoopTranslationScheduler()
+                }
+                return RealtimeTranslationScheduler(
+                    coordinator: concrete,
+                    debounceInterval: 0,
+                    outputHandler: output,
+                    stateHandler: state
+                )
+            },
+            logger: logger,
+            inPageFactory: { CDPInPageTranslator() }
+        )
+    }
+}

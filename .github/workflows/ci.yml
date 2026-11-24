@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  extension-and-docs:
+    name: Extension Tests & Doc Links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run Chrome extension unit tests
+        run: node --test extension/*.test.js
+
+      - name: Validate relative Markdown links
+        run: |
+          python3 - <<'PY'
+          import os, re, sys
+          docs = ["README.md", "README_EN.md", "CONTRIBUTING.md", "SECURITY.md", "CHANGELOG.md"]
+          for root_dir, _, files in os.walk("docs"):
+              for fn in files:
+                  if fn.endswith(".md"):
+                      docs.append(os.path.join(root_dir, fn))
+          missing = []
+          for doc in docs:
+              if not os.path.exists(doc):
+                  continue
+              base = os.path.dirname(doc)
+              text = open(doc, encoding="utf-8").read()
+              for m in re.finditer(r'\[[^\]]+\]\(([^)]+)\)', text):
+                  target = m.group(1).split("#", 1)[0].strip()
+                  if not target or target.startswith(("http://", "https://", "mailto:")):
+                      continue
+                  resolved = os.path.normpath(os.path.join(base, target))
+                  if not os.path.exists(resolved):
+                      missing.append((doc, target))
+          if missing:
+              print("Broken Markdown links found:", missing)
+              sys.exit(1)
+          print(f"Verified {len(docs)} Markdown files with 0 broken links.")
+          PY

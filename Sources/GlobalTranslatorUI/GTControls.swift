@@ -1,0 +1,381 @@
+import SwiftUI
+import GlobalTranslatorCore
+
+/// The production settings-panel chrome, shared with render tests so previews
+/// exercise the exact same material/gradient/stroke composition as the app.
+struct GTSettingsPanelChrome: ViewModifier {
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        // macOS 27+ 原生 Liquid Glass；交互、折射和透光由系统负责。
+        content
+            .glassEffect(
+                .regular.interactive(),
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
+    }
+}
+
+/// Grouped settings block: fill, radius, and inner padding from DesignTokens.
+struct GTSettingsCard<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: GTControlMetrics.sectionSpacing) {
+            content()
+        }
+        .padding(.horizontal, GTControlMetrics.cardHorizontalPadding)
+        .padding(.vertical, GTControlMetrics.cardVerticalPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(
+            .regular.interactive(),
+            in: RoundedRectangle(cornerRadius: GTRadius.card, style: .continuous)
+        )
+    }
+}
+
+/// One compact card header, optionally with a trailing action (选择应用 / 重新检查).
+struct GTSettingsSectionHeader<Trailing: View>: View {
+    let title: String
+    @ViewBuilder var trailing: () -> Trailing
+
+    var body: some View {
+        HStack(alignment: .center, spacing: GTSpacing.xSmall) {
+            Text(title)
+                .font(GTType.cardTitle)
+                .foregroundStyle(GTColor.secondaryText)
+            Spacer(minLength: GTSpacing.xSmall)
+            trailing()
+        }
+        .frame(minHeight: GTControlMetrics.settingRowHeight)
+        .accessibilityElement(children: .contain)
+    }
+}
+
+extension GTSettingsSectionHeader where Trailing == EmptyView {
+    init(title: String) {
+        self.init(title: title) { EmptyView() }
+    }
+}
+
+/// Compact settings toggle: label on the left, switch pinned to the right.
+/// The expanding label keeps every switch in one aligned column.
+struct GTSettingsToggleRow: View {
+    let title: String
+    @Binding var isOn: Bool
+    var hint: String = ""
+
+    var body: some View {
+        Toggle(isOn: $isOn) {
+            Text(title)
+                .font(GTType.body)
+                .foregroundStyle(GTColor.primaryText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .toggleStyle(.switch)
+        .controlSize(.small)
+        .frame(minHeight: GTControlMetrics.settingRowHeight)
+        .accessibilityHint(hint)
+    }
+}
+
+/// A label on the left and a control on the right. Keeping one label column
+/// across the page is what makes the compact settings layout scan cleanly.
+struct GTLabeledControl<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        HStack(alignment: .center, spacing: GTSpacing.xSmall) {
+            Text(title)
+                .font(GTType.secondary)
+                .foregroundStyle(GTColor.secondaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(width: GTControlMetrics.settingLabelWidth, alignment: .leading)
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(minHeight: GTControlMetrics.settingRowHeight)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// Text field chrome matching the custom menu trigger (not the short grey system bezel).
+struct GTFieldTextStyle: TextFieldStyle {
+    func _body(configuration: TextField<Self._Label>) -> some View {
+        configuration
+            .font(GTType.body)
+            .padding(.horizontal, GTSpacing.small)
+            .frame(height: GTControlMetrics.fieldHeight)
+            .background(GTColor.fieldFill)
+            .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous)
+                    .strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
+            )
+    }
+}
+
+/// Read-only value row with the same height and stroke as editable fields.
+struct GTReadOnlyField: View {
+    let value: String
+
+    var body: some View {
+        Text(value)
+            .font(GTType.body)
+            .foregroundStyle(GTColor.secondaryText)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, GTSpacing.small)
+            .frame(height: GTControlMetrics.fieldHeight)
+            .background(GTColor.fieldFill)
+            .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous)
+                    .strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
+            )
+    }
+}
+
+/// Full-width primary / secondary action pair (or a single primary).
+struct GTActionRow<Primary: View, Secondary: View>: View {
+    var primary: () -> Primary
+    var secondary: (() -> Secondary)?
+
+    init(
+        @ViewBuilder primary: @escaping () -> Primary,
+        @ViewBuilder secondary: @escaping () -> Secondary
+    ) {
+        self.primary = primary
+        self.secondary = secondary
+    }
+
+    var body: some View {
+        HStack(spacing: GTSpacing.xSmall) {
+            if let secondary {
+                secondary()
+                    .frame(maxWidth: .infinity)
+            }
+            primary()
+                .frame(maxWidth: .infinity)
+        }
+        .frame(minHeight: GTControlMetrics.settingRowHeight)
+        .frame(maxWidth: .infinity)
+    }
+}
+
+extension GTActionRow where Secondary == EmptyView {
+    init(@ViewBuilder primary: @escaping () -> Primary) {
+        self.primary = primary
+        self.secondary = nil
+    }
+}
+
+/// Custom select: DesignToken-styled trigger and list, replacing the short grey system Picker.
+struct GTSelectField: View {
+    let options: [String]
+    @Binding var selection: String
+    var placeholder: String = "请选择"
+    var isEnabled: Bool = true
+    var onChange: (() -> Void)?
+
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: GTSpacing.xxSmall) {
+            trigger
+            if isExpanded, isEnabled, !options.isEmpty {
+                optionList
+            }
+        }
+        .onChange(of: options) { _, _ in
+            if !options.contains(selection) {
+                isExpanded = false
+            }
+        }
+    }
+
+    private var trigger: some View {
+        Button {
+            guard isEnabled, !options.isEmpty else { return }
+            isExpanded.toggle()
+        } label: {
+            HStack(spacing: GTSpacing.xSmall) {
+                Text(displayedValue)
+                    .font(GTType.body)
+                    .foregroundStyle(hasValue ? GTColor.primaryText : GTColor.secondaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: GTSpacing.xSmall)
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(GTType.caption)
+                    .foregroundStyle(GTColor.secondaryText)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, GTSpacing.small)
+            .frame(height: GTControlMetrics.fieldHeight)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled || options.isEmpty)
+        .background(GTColor.fieldFill)
+        .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous)
+                .strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
+        )
+        .accessibilityHint(options.isEmpty ? "请先测试连接以获取模型列表" : "打开模型列表")
+    }
+
+    private var optionList: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(options, id: \.self) { option in
+                    Button {
+                        if selection != option {
+                            selection = option
+                            onChange?()
+                        }
+                        isExpanded = false
+                    } label: {
+                        HStack(spacing: GTSpacing.xSmall) {
+                            Text(option)
+                                .font(GTType.body)
+                                .foregroundStyle(GTColor.primaryText)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: GTSpacing.xSmall)
+                            if option == selection {
+                                Image(systemName: "checkmark")
+                                    .font(GTType.caption.weight(.semibold))
+                                    .foregroundStyle(GTColor.accent)
+                                    .accessibilityHidden(true)
+                            }
+                        }
+                        .padding(.horizontal, GTSpacing.small)
+                        .frame(height: GTControlMetrics.menuRowHeight)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(option == selection ? GTColor.accent.opacity(0.12) : Color.clear)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(option == selection ? .isSelected : AccessibilityTraits())
+                }
+            }
+        }
+        .frame(maxHeight: min(CGFloat(options.count) * GTControlMetrics.menuRowHeight, GTControlMetrics.menuListMaxHeight))
+        .background(GTColor.fieldFill)
+        .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous)
+                .strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
+        )
+        .accessibilityLabel("模型列表")
+    }
+
+    private var hasValue: Bool {
+        !selection.isEmpty
+    }
+
+    private var displayedValue: String {
+        if !selection.isEmpty { return selection }
+        return placeholder
+    }
+}
+
+/// Divides the proposed width equally across children, matching left/right
+/// edges of the row above (scene segments ↔ action buttons).
+struct GTEqualWidthHStack: Layout {
+    var spacing: CGFloat = GTSpacing.xSmall
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let count = subviews.count
+        guard count > 0 else { return .zero }
+        let proposedWidth = proposal.width ?? subviews.reduce(CGFloat.zero) { $0 + $1.sizeThatFits(.unspecified).width }
+        let itemWidth = GTEqualWidthMetrics.itemWidth(total: proposedWidth, count: count, spacing: spacing)
+        let height = subviews.map {
+            $0.sizeThatFits(ProposedViewSize(width: itemWidth, height: proposal.height)).height
+        }.max() ?? 0
+        return CGSize(width: proposedWidth, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let count = subviews.count
+        guard count > 0 else { return }
+        let itemWidth = GTEqualWidthMetrics.itemWidth(total: bounds.width, count: count, spacing: spacing)
+        var x = bounds.minX
+        for subview in subviews {
+            subview.place(
+                at: CGPoint(x: x, y: bounds.minY),
+                proposal: ProposedViewSize(width: itemWidth, height: bounds.height)
+            )
+            x += itemWidth + spacing
+        }
+    }
+}
+
+/// Equal-width segmented control; selected fill uses accent so dark mode stays readable.
+struct GTEqualWidthSegmentedPicker<Value: Hashable>: View {
+    let options: [Value]
+    @Binding var selection: Value
+    var title: (Value) -> String
+    var isEnabled: Bool = true
+    var height: CGFloat = GTSelectionMetrics.modePickerHeight
+    var accessibilityLabelText: String = ""
+
+    var body: some View {
+        GTEqualWidthHStack(spacing: 1) {
+            ForEach(options, id: \.self) { option in
+                let isSelected = option == selection
+                Button {
+                    selection = option
+                } label: {
+                    Text(title(option))
+                        .font(GTType.secondary.weight(.medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .foregroundStyle(isSelected ? GTColor.selectedSegmentText : GTColor.primaryText)
+                        .background(isSelected ? GTColor.accent : Color.clear)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!isEnabled)
+                .accessibilityAddTraits(isSelected ? .isSelected : AccessibilityTraits())
+                .accessibilityValue(title(option))
+            }
+        }
+        .frame(height: height)
+        .frame(maxWidth: .infinity)
+        .background(GTColor.segmentTrack)
+        .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous)
+                .strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(accessibilityLabelText)
+    }
+}
+
+/// Three-scene control used in settings and the selection popover.
+struct GTOptimizeModePicker: View {
+    @Binding var selection: PromptOptimizeMode
+    var isEnabled: Bool = true
+    var height: CGFloat = GTSelectionMetrics.modePickerHeight
+
+    var body: some View {
+        GTEqualWidthSegmentedPicker(
+            options: PromptOptimizeMode.allCases,
+            selection: $selection,
+            title: { $0.title },
+            isEnabled: isEnabled,
+            height: height,
+            accessibilityLabelText: "优化场景"
+        )
+        .accessibilityValue(selection.title)
+        .accessibilityHint(selection.optimizeAccessibilityHint)
+    }
+}
