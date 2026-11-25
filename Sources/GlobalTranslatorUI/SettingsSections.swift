@@ -799,6 +799,150 @@ struct MaintenanceSection: View {
     }
 }
 
+struct AboutSection: View {
+    var viewModel: SettingsViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: GTControlMetrics.sectionSpacing) {
+            Text("关于与开源")
+                .font(GTType.cardTitle)
+                .foregroundStyle(GTColor.secondaryText)
+
+            HStack(alignment: .center, spacing: GTSpacing.xSmall) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(AppMetadata.appName) v\(AppMetadata.shortVersion)")
+                        .font(GTType.body.weight(.medium))
+                    Text("作者：\(AppMetadata.author) · \(AppMetadata.license) 开源协议")
+                        .font(GTType.caption)
+                        .foregroundStyle(GTColor.secondaryText)
+                }
+                Spacer(minLength: GTSpacing.xSmall)
+                Button {
+                    viewModel.openGitHubRepository()
+                } label: {
+                    HStack(spacing: GTSpacing.xxSmall) {
+                        GTGitHubMarkIcon(size: 12)
+                        Text("GitHub Star")
+                    }
+                }
+                .buttonStyle(GTSecondaryPillButtonStyle(compact: true))
+                .fixedSize()
+                .accessibilityLabel("在 GitHub 查看仓库并点 Star 支持作者 \(AppMetadata.author)")
+            }
+
+            Text("如果这款工具帮到了你，欢迎在 GitHub 点个 Star 支持作者 \(AppMetadata.author)。")
+                .font(GTType.caption)
+                .foregroundStyle(GTColor.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+struct SettingsGitHubStarBanner: View {
+    var viewModel: SettingsViewModel
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: GTRadius.card, style: .continuous)
+        HStack(alignment: .center, spacing: GTSpacing.xSmall) {
+            Image(systemName: "star.fill")
+                .font(GTType.secondary)
+                .foregroundStyle(GTColor.starAccent)
+                .accessibilityHidden(true)
+
+            Text("如果 Global Translator 帮到了你，请在 GitHub 点个 Star")
+                .font(GTType.caption)
+                .foregroundStyle(GTColor.primaryText)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: GTSpacing.xxSmall)
+
+            HStack(spacing: GTSpacing.xxSmall) {
+                Button {
+                    viewModel.openGitHubRepository(dismissStarBanner: true)
+                } label: {
+                    HStack(spacing: GTSpacing.xxSmall) {
+                        GTGitHubMarkIcon(size: 12)
+                        Text("去点 Star")
+                    }
+                }
+                .buttonStyle(GTSecondaryPillButtonStyle(compact: true))
+                .fixedSize()
+                .accessibilityLabel("前往 GitHub 为 Global Translator 点 Star")
+
+                Button {
+                    viewModel.dismissGitHubStarPrompt()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(GTColor.secondaryText)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("关闭 GitHub 点星提示")
+            }
+        }
+        .padding(.horizontal, GTControlMetrics.cardHorizontalPadding)
+        .padding(.vertical, GTSpacing.xSmall)
+        .background(GTColor.starBannerFill)
+        .clipShape(shape)
+        .overlay(
+            shape.strokeBorder(GTColor.starBannerBorder, lineWidth: GTControlMetrics.fieldStrokeWidth)
+        )
+    }
+}
+
+struct GTGitHubMarkIcon: View {
+    var size: CGFloat = 12
+
+    var body: some View {
+        GitHubMarkShape()
+            .fill(style: FillStyle(eoFill: true))
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+    }
+
+    private struct GitHubMarkShape: Shape {
+        func path(in rect: CGRect) -> Path {
+            let sx = rect.width / 16.0
+            let sy = rect.height / 16.0
+            func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+                CGPoint(x: rect.minX + x * sx, y: rect.minY + y * sy)
+            }
+            var path = Path()
+            path.move(to: pt(8, 0.198))
+            path.addCurve(to: pt(0, 8.198), control1: pt(3.582, 0.198), control2: pt(0, 3.78))
+            path.addCurve(to: pt(5.47, 15.792), control1: pt(0, 11.734), control2: pt(2.292, 14.733))
+            path.addCurve(to: pt(6.017, 15.407), control1: pt(5.87, 15.865), control2: pt(6.017, 15.619))
+            path.addCurve(to: pt(6.006, 14.046), control1: pt(6.017, 15.217), control2: pt(6.01, 14.714))
+            path.addCurve(to: pt(3.312, 12.974), control1: pt(3.781, 14.53), control2: pt(3.312, 12.974))
+            path.addCurve(to: pt(2.423, 11.804), control1: pt(2.948, 12.05), control2: pt(2.423, 11.804))
+            path.addCurve(to: pt(2.478, 11.317), control1: pt(1.697, 11.307), control2: pt(2.478, 11.317))
+            path.addCurve(to: pt(3.704, 12.142), control1: pt(3.281, 11.374), control2: pt(3.704, 12.142))
+            path.addCurve(to: pt(6.031, 12.807), control1: pt(4.417, 13.365), control2: pt(5.576, 13.012))
+            path.addCurve(to: pt(6.54, 11.737), control1: pt(6.104, 12.29), control2: pt(6.311, 11.937))
+            path.addCurve(to: pt(2.896, 7.783), control1: pt(4.764, 11.535), control2: pt(2.896, 10.849))
+            path.addCurve(to: pt(3.72, 5.636), control1: pt(2.896, 6.91), control2: pt(3.208, 6.196))
+            path.addCurve(to: pt(3.798, 3.521), control1: pt(3.637, 5.434), control2: pt(3.363, 4.621))
+            path.addCurve(to: pt(5.999, 4.341), control1: pt(3.798, 3.521), control2: pt(4.47, 3.306))
+            path.addCurve(to: pt(8.002, 4.072), control1: pt(6.637, 4.164), control2: pt(7.322, 4.075))
+            path.addCurve(to: pt(10.006, 4.341), control1: pt(8.682, 4.075), control2: pt(9.367, 4.164))
+            path.addCurve(to: pt(12.205, 3.521), control1: pt(11.534, 3.306), control2: pt(12.205, 3.521))
+            path.addCurve(to: pt(12.285, 5.636), control1: pt(12.641, 4.621), control2: pt(12.367, 5.434))
+            path.addCurve(to: pt(13.107, 7.783), control1: pt(12.798, 6.196), control2: pt(13.107, 6.91))
+            path.addCurve(to: pt(9.454, 11.731), control1: pt(13.107, 10.857), control2: pt(11.236, 11.533))
+            path.addCurve(to: pt(9.998, 13.215), control1: pt(9.742, 11.979), control2: pt(9.998, 12.467))
+            path.addCurve(to: pt(9.988, 15.407), control1: pt(9.998, 14.287), control2: pt(9.988, 15.151))
+            path.addCurve(to: pt(10.539, 15.791), control1: pt(9.988, 15.62), control2: pt(10.133, 15.869))
+            path.addCurve(to: pt(16, 8.198), control1: pt(13.713, 14.73), control2: pt(16, 11.732))
+            path.addCurve(to: pt(8, 0.198), control1: pt(16, 3.78), control2: pt(12.418, 0.198))
+            path.closeSubpath()
+            return path
+        }
+    }
+}
+
 struct SettingsFooterSection: View {
     var viewModel: SettingsViewModel
 
@@ -818,9 +962,11 @@ struct SettingsFooterSection: View {
                 }
                 .accessibilityLabel(feedback)
             } else {
-                Text("Global Translator")
+                Text("\(AppMetadata.appName) · by \(AppMetadata.author)")
                     .font(GTType.caption)
                     .foregroundStyle(GTColor.secondaryText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
 
             Spacer()

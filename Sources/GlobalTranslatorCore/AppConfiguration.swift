@@ -28,6 +28,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     public var copyScreenshotImage: Bool
     /// Directory that receives saved screenshot PNGs. Shown in Settings; user-editable.
     public var screenshotSaveDirectory: String
+    /// Whether the user dismissed or acted on the GitHub Star prompt banner.
+    public var githubStarPromptDismissed: Bool
 
     public init(
         autoTranslateEnabled: Bool = false,
@@ -45,7 +47,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         autoCopyScreenshotTranslation: Bool = false,
         saveScreenshotImage: Bool = false,
         copyScreenshotImage: Bool = false,
-        screenshotSaveDirectory: String = Self.defaultScreenshotSaveDirectory
+        screenshotSaveDirectory: String = Self.defaultScreenshotSaveDirectory,
+        githubStarPromptDismissed: Bool = false
     ) {
         self.autoTranslateEnabled = autoTranslateEnabled
         self.backend = backend
@@ -66,6 +69,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         self.copyScreenshotImage = copyScreenshotImage
         let trimmedDirectory = screenshotSaveDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         self.screenshotSaveDirectory = trimmedDirectory.isEmpty ? Self.defaultScreenshotSaveDirectory : trimmedDirectory
+        self.githubStarPromptDismissed = githubStarPromptDismissed
     }
 
     public static let defaultLocalBaseURL = URL(string: "http://127.0.0.1:11434/v1")!
@@ -116,6 +120,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         case saveScreenshotImage
         case copyScreenshotImage
         case screenshotSaveDirectory
+        case githubStarPromptDismissed
     }
 
     public init(from decoder: Decoder) throws {
@@ -146,6 +151,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         let savedDirectory = try container.decodeIfPresent(String.self, forKey: .screenshotSaveDirectory) ?? Self.defaultScreenshotSaveDirectory
         let trimmedDirectory = savedDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         screenshotSaveDirectory = trimmedDirectory.isEmpty ? Self.defaultScreenshotSaveDirectory : trimmedDirectory
+        githubStarPromptDismissed = try container.decodeIfPresent(Bool.self, forKey: .githubStarPromptDismissed) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -166,5 +172,6 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         try container.encode(saveScreenshotImage, forKey: .saveScreenshotImage)
         try container.encode(copyScreenshotImage, forKey: .copyScreenshotImage)
         try container.encode(screenshotSaveDirectory, forKey: .screenshotSaveDirectory)
+        try container.encode(githubStarPromptDismissed, forKey: .githubStarPromptDismissed)
     }
 }

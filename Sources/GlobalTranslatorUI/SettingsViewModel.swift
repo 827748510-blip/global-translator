@@ -65,6 +65,7 @@ public final class SettingsViewModel {
     )
     public var translatedApplications: [TranslatedApplication] = []
     public var healthMessage: String?
+    public var isGitHubStarPromptDismissed = false
 
     /// Whether the currently selected backend has been validated (healthy
     /// connection test, or a successful key save for cloud). Reset whenever
@@ -122,6 +123,10 @@ public final class SettingsViewModel {
 
     public var isKeyOperationInProgress: Bool {
         keyOperation == .inProgress
+    }
+
+    public var showsGitHubStarBanner: Bool {
+        !isGitHubStarPromptDismissed
     }
 
     /// Empty key field is only for first-time setup or an explicit replace.
@@ -505,6 +510,20 @@ public final class SettingsViewModel {
 
     public func openLogs() {
         actions.openLogs()
+    }
+
+    public func openGitHubRepository(dismissStarBanner: Bool = false) {
+        if dismissStarBanner && !isGitHubStarPromptDismissed {
+            isGitHubStarPromptDismissed = true
+            actions.dismissGitHubStarPrompt()
+        }
+        actions.openGitHubRepository()
+    }
+
+    public func dismissGitHubStarPrompt() {
+        guard !isGitHubStarPromptDismissed else { return }
+        isGitHubStarPromptDismissed = true
+        actions.dismissGitHubStarPrompt()
     }
 
     public func quit() {

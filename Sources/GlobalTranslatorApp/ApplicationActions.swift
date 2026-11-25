@@ -624,6 +624,18 @@ extension ApplicationController {
         NSWorkspace.shared.activateFileViewerSelecting([paths.logURL])
     }
 
+    public func openGitHubRepository() {
+        NSWorkspace.shared.open(AppMetadata.githubRepositoryURL)
+    }
+
+    public func dismissGitHubStarPrompt() {
+        guard started else { return }
+        viewModel.isGitHubStarPromptDismissed = true
+        guard !configuration.githubStarPromptDismissed else { return }
+        configuration.githubStarPromptDismissed = true
+        queueSave()
+    }
+
     public func quit() {
         components.logger.event("application_quit_requested", fields: [:])
         Task { @MainActor [weak self] in

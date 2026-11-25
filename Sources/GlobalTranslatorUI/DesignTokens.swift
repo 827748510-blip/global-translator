@@ -54,6 +54,18 @@ public enum GTColor {
     public static let selectedSegmentText = Color(nsColor: .alternateSelectedControlTextColor)
     /// Solid fallback for overlay backgrounds when Reduce Transparency is enabled.
     public static let overlaySolidFallback = panelBackground
+    /// Warm accent for the GitHub Star guidance banner (aligned with system semantic colors).
+    public static let starAccent = Color(nsColor: .systemOrange)
+    public static let starBannerFill = Color(nsColor: NSColor(name: "GTStarBannerFill", dynamicProvider: { appearance in
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        if isDark {
+            return NSColor.systemOrange.blended(withFraction: 0.78, of: .windowBackgroundColor)
+                ?? NSColor.controlBackgroundColor
+        }
+        return NSColor.systemOrange.blended(withFraction: 0.90, of: .controlBackgroundColor)
+            ?? NSColor.controlBackgroundColor
+    }))
+    public static let starBannerBorder = Color(nsColor: .systemOrange).opacity(0.28)
 }
 
 /// Shared math for equal-width button / segment rows.

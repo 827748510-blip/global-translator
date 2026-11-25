@@ -19,6 +19,7 @@ struct GlobalTranslatorCoreTests {
         #expect(configuration.promptOptimizeMode == .communicationPolish)
         #expect(configuration.screenshotTranslateHotkey == .screenshotTranslateDefault)
         #expect(!configuration.autoCopyScreenshotTranslation)
+        #expect(!configuration.githubStarPromptDismissed)
 
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = ConfigStore(url: path)
@@ -87,6 +88,21 @@ struct GlobalTranslatorCoreTests {
         #expect(object["deepSeekAPIKeyConfigured"] as? Bool == true)
         #expect(object["apiKey"] == nil)
         #expect(object["deepSeekAPIKey"] == nil)
+    }
+
+    @Test
+    func appMetadataAndGitHubStarPromptPersistence() throws {
+        #expect(AppMetadata.author == "maodashu")
+        #expect(AppMetadata.githubRepositoryURL.absoluteString == "https://github.com/827748510-blip/global-translator")
+
+        let legacy = Data(#"{"backend":"local"}"#.utf8)
+        let decodedLegacy = try JSONDecoder().decode(AppConfiguration.self, from: legacy)
+        #expect(!decodedLegacy.githubStarPromptDismissed)
+
+        let dismissed = AppConfiguration(githubStarPromptDismissed: true)
+        let encoded = try JSONEncoder().encode(dismissed)
+        let roundTrip = try JSONDecoder().decode(AppConfiguration.self, from: encoded)
+        #expect(roundTrip.githubStarPromptDismissed)
     }
 
     @Test

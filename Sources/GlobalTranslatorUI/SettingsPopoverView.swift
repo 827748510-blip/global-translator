@@ -102,6 +102,9 @@ public struct SettingsPopoverView: View {
                         GTSettingsCard {
                             MaintenanceSection(viewModel: viewModel)
                         }
+                        GTSettingsCard {
+                            AboutSection(viewModel: viewModel)
+                        }
                     }
                 }
                 .padding(.horizontal, GTPopoverMetrics.contentPadding)
@@ -117,22 +120,28 @@ public struct SettingsPopoverView: View {
             .scrollBounceBehavior(.basedOnSize)
             .scrollIndicators(.hidden)
 
-            SettingsFooterSection(viewModel: viewModel)
-                .padding(.horizontal, GTControlMetrics.cardHorizontalPadding)
-                .padding(.vertical, GTSpacing.xSmall)
-                .background(reduceTransparency ? GTColor.sectionFill : GTColor.cardSurface)
-                .clipShape(footerShape)
-                .overlay(
-                    footerShape.strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
-                )
-                .padding(.horizontal, GTPopoverMetrics.contentPadding)
-                .padding(.bottom, GTPopoverMetrics.contentPadding)
-                .onGeometryChange(for: CGFloat.self) { proxy in
-                    proxy.size.height
-                } action: { _, newHeight in
-                    footerHeight = newHeight
-                    reportPreferredHeight()
+            VStack(alignment: .leading, spacing: GTSpacing.xSmall) {
+                if viewModel.showsGitHubStarBanner {
+                    SettingsGitHubStarBanner(viewModel: viewModel)
                 }
+
+                SettingsFooterSection(viewModel: viewModel)
+                    .padding(.horizontal, GTControlMetrics.cardHorizontalPadding)
+                    .padding(.vertical, GTSpacing.xSmall)
+                    .background(reduceTransparency ? GTColor.sectionFill : GTColor.cardSurface)
+                    .clipShape(footerShape)
+                    .overlay(
+                        footerShape.strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
+                    )
+            }
+            .padding(.horizontal, GTPopoverMetrics.contentPadding)
+            .padding(.bottom, GTPopoverMetrics.contentPadding)
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.height
+            } action: { _, newHeight in
+                footerHeight = newHeight
+                reportPreferredHeight()
+            }
         }
         .frame(width: GTPopoverMetrics.width)
         .frame(maxHeight: maxHeight)

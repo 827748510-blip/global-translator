@@ -202,5 +202,7 @@ public protocol SettingsActions: AnyObject {
     func removeTranslationApplication(bundleIdentifier: String)
     func clearCache() async throws
     func openLogs()
+    func openGitHubRepository()
+    func dismissGitHubStarPrompt()
     func quit()
 }

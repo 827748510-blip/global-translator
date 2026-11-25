@@ -2,7 +2,15 @@
 
 **简体中文** | [English](README_EN.md)
 
-面向 Apple Silicon Mac 的原生全局翻译工具，提供可双击运行的 `Global Translator.app`、菜单栏控制面板、`global-translator` 命令行入口以及配套的 Chrome 浏览器扩展 **Global Translator Bridge**。
+[![Author](https://img.shields.io/badge/Author-maodashu-blue)](https://github.com/827748510-blip/global-translator)
+[![GitHub Stars](https://img.shields.io/github/stars/827748510-blip/global-translator?style=flat&label=Star)](https://github.com/827748510-blip/global-translator/stargazers)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/macOS-Apple%20Silicon-black)](https://github.com/827748510-blip/global-translator)
+
+> [!TIP]
+> 如果 **Global Translator** 帮到了你，欢迎点击仓库右上角 **Star** 支持作者 **maodashu**：[github.com/827748510-blip/global-translator](https://github.com/827748510-blip/global-translator) ⭐
+
+面向 Apple Silicon Mac 的原生全局翻译工具，由 **maodashu** 开发维护，提供可双击运行的 `Global Translator.app`、菜单栏控制面板、`global-translator` 命令行入口以及配套的 Chrome 浏览器扩展 **Global Translator Bridge**。
 
 它专为「高频跨语言阅读、沟通与看片，但不想把屏幕截图、系统音频和 API Key 交给黑盒闭源软件」的场景设计：结合系统原生 **Liquid Glass 3 分段设置面板**（翻译 / 后端 / 高级）、**Accessibility + Apple Vision OCR** 混合采集、**ScreenCaptureKit + Whisper.cpp** 本地语音转写，以及 **本地 Ollama / DeepSeek 云端**双后端（支持本地与云端真流式输出），在保持极低打扰的同时把隐私边界锁在本机。
 
@@ -129,5 +137,7 @@ ALLOW_ADHOC=1 bash scripts/make-release.sh
 
 ## 开源协议与社区贡献
 
+- **作者**：**maodashu**
 - **开源协议**：基于 [MIT License](LICENSE) 开源。
+- **支持项目**：如果觉得好用，欢迎前往 [GitHub 仓库](https://github.com/827748510-blip/global-translator) 点个 **Star** ⭐。
 - **贡献与排障**：提交 PR 前请参阅 [CONTRIBUTING.md](CONTRIBUTING.md)，安全与隐私问题请按 [SECURITY.md](SECURITY.md) 私密上报，版本记录见 [CHANGELOG.md](CHANGELOG.md)。

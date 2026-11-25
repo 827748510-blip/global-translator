@@ -35,6 +35,8 @@ private final class SpyActions: SettingsActions {
     var removedExclusions: [String] = []
     var clearCacheCallCount = 0
     var openLogsCallCount = 0
+    var openGitHubRepositoryCallCount = 0
+    var dismissGitHubStarPromptCallCount = 0
     var quitCallCount = 0
 
     var saveKeyError: Error?
@@ -143,6 +145,14 @@ private final class SpyActions: SettingsActions {
 
     func openLogs() {
         openLogsCallCount += 1
+    }
+
+    func openGitHubRepository() {
+        openGitHubRepositoryCallCount += 1
+    }
+
+    func dismissGitHubStarPrompt() {
+        dismissGitHubStarPromptCallCount += 1
     }
 
     func quit() {
@@ -807,5 +817,42 @@ struct SettingsViewModelTests {
         let viewModel = SettingsViewModel(actions: SpyActions())
         #expect(viewModel.permissionSnapshot.accessibilityTrusted == false)
         #expect(viewModel.permissionSnapshot.screenCaptureAuthorized == false)
+    }
+
+    @Test
+    func githubStarPromptShowsByDefaultAndDismissesIdempotently() {
+        let (viewModel, actions) = makeViewModel()
+        #expect(!viewModel.isGitHubStarPromptDismissed)
+        #expect(viewModel.showsGitHubStarBanner)
+
+        viewModel.dismissGitHubStarPrompt()
+        #expect(viewModel.isGitHubStarPromptDismissed)
+        #expect(!viewModel.showsGitHubStarBanner)
+        #expect(actions.dismissGitHubStarPromptCallCount == 1)
+
+        viewModel.dismissGitHubStarPrompt()
+        #expect(actions.dismissGitHubStarPromptCallCount == 1)
+    }
+
+    @Test
+    func openGitHubRepositoryFromBannerDismissesOnceAndOpens() {
+        let (viewModel, actions) = makeViewModel()
+        viewModel.openGitHubRepository(dismissStarBanner: true)
+        #expect(actions.openGitHubRepositoryCallCount == 1)
+        #expect(actions.dismissGitHubStarPromptCallCount == 1)
+        #expect(!viewModel.showsGitHubStarBanner)
+
+        viewModel.openGitHubRepository()
+        #expect(actions.openGitHubRepositoryCallCount == 2)
+        #expect(actions.dismissGitHubStarPromptCallCount == 1)
+    }
+
+    @Test
+    func openGitHubRepositoryFromAboutDoesNotDismissBanner() {
+        let (viewModel, actions) = makeViewModel()
+        viewModel.openGitHubRepository(dismissStarBanner: false)
+        #expect(actions.openGitHubRepositoryCallCount == 1)
+        #expect(actions.dismissGitHubStarPromptCallCount == 0)
+        #expect(viewModel.showsGitHubStarBanner)
     }
 }

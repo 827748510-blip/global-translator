@@ -76,6 +76,11 @@ Chrome 浏览器扩展（可选）
 
 许可证
 MIT，见随包 LICENSE。
+
+作者与项目主页
+作者：maodashu
+如果觉得好用，欢迎在 GitHub 点个 Star 支持：
+https://github.com/827748510-blip/global-translator
 GUIDE
 
 mkdir -p "$dist"

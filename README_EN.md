@@ -2,7 +2,15 @@
 
 [简体中文](README.md) | **English**
 
-A privacy-first, native global translation utility for Apple Silicon Macs, shipping with a double-clickable `Global Translator.app`, menu-bar control panel, `global-translator` CLI, and a companion Chrome Manifest V3 extension (**Global Translator Bridge**).
+[![Author](https://img.shields.io/badge/Author-maodashu-blue)](https://github.com/827748510-blip/global-translator)
+[![GitHub Stars](https://img.shields.io/github/stars/827748510-blip/global-translator?style=flat&label=Star)](https://github.com/827748510-blip/global-translator/stargazers)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/macOS-Apple%20Silicon-black)](https://github.com/827748510-blip/global-translator)
+
+> [!TIP]
+> If **Global Translator** saves you time, please consider giving the repository a **Star** to support **maodashu**: [github.com/827748510-blip/global-translator](https://github.com/827748510-blip/global-translator) ⭐
+
+A privacy-first, native global translation utility for Apple Silicon Macs built by **maodashu**, shipping with a double-clickable `Global Translator.app`, menu-bar control panel, `global-translator` CLI, and a companion Chrome Manifest V3 extension (**Global Translator Bridge**).
 
 Built for developers and everyday readers who translate across apps, codebases, screenshots, and foreign-language videos all day—without handing screen recordings, system audio, or plaintext API keys to a closed-source black box. It pairs a native macOS **Liquid Glass 3-tab UI** (`翻译` / `后端` / `高级`) with **Accessibility + on-device Apple Vision OCR**, **ScreenCaptureKit + local Whisper.cpp** audio transcription, and switchable **Local Ollama / DeepSeek Cloud** streaming backends.
 
@@ -128,5 +136,7 @@ ALLOW_ADHOC=1 bash scripts/make-release.sh
 
 ## License & Contributing
 
+- **Author**: **maodashu**
 - **License**: Released under the [MIT License](LICENSE).
+- **Support**: If you find this useful, please **Star** the [GitHub repository](https://github.com/827748510-blip/global-translator) ⭐.
 - **Community & Security**: See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR, [SECURITY.md](SECURITY.md) for vulnerability reporting, and [CHANGELOG.md](CHANGELOG.md) for release history.

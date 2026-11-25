@@ -1,4 +1,5 @@
 import AppKit
+import GlobalTranslatorCore
 
 @MainActor
 final class DesktopApplicationDelegate: NSObject, NSApplicationDelegate {
@@ -30,6 +31,10 @@ final class DesktopApplicationDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         let appItem = NSMenuItem()
         let appMenu = NSMenu(title: "全局翻译")
+        let about = NSMenuItem(title: "关于全局翻译", action: #selector(openAboutPanel), keyEquivalent: "")
+        about.target = self
+        appMenu.addItem(about)
+        appMenu.addItem(.separator())
         let settings = NSMenuItem(title: "全局翻译设置…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         appMenu.addItem(settings)
@@ -50,6 +55,34 @@ final class DesktopApplicationDelegate: NSObject, NSApplicationDelegate {
         editItem.submenu = editMenu
         menu.addItem(editItem)
         application.mainMenu = menu
+    }
+
+    @objc private func openAboutPanel() {
+        NSApplication.shared.activate()
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = .center
+        let credits = NSMutableAttributedString(
+            string: "作者：\(AppMetadata.author) · \(AppMetadata.license) 开源协议\n",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+                .foregroundColor: NSColor.secondaryLabelColor,
+                .paragraphStyle: paragraphStyle
+            ]
+        )
+        credits.append(NSAttributedString(
+            string: "GitHub 仓库（点 Star 支持）",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+                .link: AppMetadata.githubRepositoryURL,
+                .paragraphStyle: paragraphStyle
+            ]
+        ))
+        NSApplication.shared.orderFrontStandardAboutPanel(options: [
+            .applicationName: "\(AppMetadata.appName)（\(AppMetadata.displayName)）",
+            .applicationVersion: AppMetadata.shortVersion,
+            .credits: credits,
+            NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): "Copyright © 2026 \(AppMetadata.author). All rights reserved."
+        ])
     }
 
     @objc private func openSettings() { controller.showSettings() }

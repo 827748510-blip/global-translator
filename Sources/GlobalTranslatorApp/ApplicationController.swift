@@ -185,6 +185,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         viewModel.deepSeekModel = AppConfiguration.resolvedDeepSeekModel(configuration.deepSeekModel)
         viewModel.permissionSnapshot = components.permissionController.snapshot
         viewModel.keyConfigured = configuration.deepSeekAPIKeyConfigured
+        viewModel.isGitHubStarPromptDismissed = configuration.githubStarPromptDismissed
     }
 
     /// Persist the non-secret "key is configured" flag. Never logs or stores the secret.

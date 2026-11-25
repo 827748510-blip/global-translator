@@ -35,6 +35,8 @@ private final class StatusItemTestActions: SettingsActions {
     func removeTranslationApplication(bundleIdentifier: String) {}
     func clearCache() async throws {}
     func openLogs() {}
+    func openGitHubRepository() {}
+    func dismissGitHubStarPrompt() {}
     func quit() {}
 }
 

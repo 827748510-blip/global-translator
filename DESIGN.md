@@ -31,8 +31,8 @@ To eliminate long-form cognitive overload (`360pt` width), `SettingsPopoverView`
 1. **Pinned Header & Setup Banner:** Live `MenuBarStatus` icon + text, automatic translation master switch, contextual setup banner when backend or permissions block activation, and a 3-segment `SettingsTab` bar:
    - **翻译 (`translation`):** 滑词翻译 (plus inline Accessibility warning if missing), 优化场景 segmented picker + explanation, 视频翻译, 要翻译的应用 allow-list (with "添加当前" & "选择应用…"), and 截图翻译 (hotkey recorder, auto-copy/save/copy-image toggles with clipboard precedence note).
    - **后端 (`backend`):** 翻译后端 switcher (DeepSeek 云端 / 本地服务), explicit bidirectional target language note, Keychain-isolated API key entry (Enter submits, never prefilled), native menu `Picker` for models, connection test, and collapsible `DeepSeekStatsSection` (`DisclosureGroup`).
-   - **高级 (`advanced`):** 系统权限 (`辅助功能` & `屏幕录制` with clear per-permission purpose and uniquely labeled action buttons) and 维护与诊断 (`清除缓存`, `打开日志`).
-2. **Pinned Footer:** Transient inline action confirmation (`actionFeedbackMessage`) and destructive `退出应用` (`⌘Q`).
+   - **高级 (`advanced`):** 系统权限 (`辅助功能` & `屏幕录制` with clear per-permission purpose and uniquely labeled action buttons), 维护与诊断 (`清除缓存`, `打开日志`), and 关于与开源 (`Global Translator` version, `maodashu` author attribution, `MIT`, and a persistent `GitHub Star` entry).
+2. **Pinned Footer & Star Guidance Banner:** A dismissible warm-tinted GitHub Star guidance banner above the footer (persisted via `githubStarPromptDismissed`) plus the pinned footer showing `Global Translator · by maodashu` (or transient `actionFeedbackMessage`) and destructive `退出应用` (`⌘Q`).
 3. **Dynamic Sizing & Scrollbars:** `.scrollIndicators(.automatic)` with `onGeometryChange` keeping panel height fitted to the active tab up to the screen's `visibleFrame`.
 
 ## 3. Design Tokens (`DesignTokens.swift`)
