@@ -208,6 +208,7 @@ public protocol SelectionPopoverControlling: AnyObject {
     var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)? { get set }
     var optimizeMode: PromptOptimizeMode { get set }
     var copyFeedback: SelectionCopyFeedback { get }
+    var copyOriginalFeedback: SelectionCopyFeedback { get }
     func show(_ content: SelectionPopoverContent)
     func dismiss()
     func containsInteraction(at location: CGPoint) -> Bool
@@ -216,6 +217,7 @@ public protocol SelectionPopoverControlling: AnyObject {
 @MainActor
 public extension SelectionPopoverControlling {
     var isVisible: Bool { panelFrame != nil }
+    var copyOriginalFeedback: SelectionCopyFeedback { .idle }
     var onOpenSettings: (() -> Void)? {
         get { nil }
         set {}
@@ -254,6 +256,7 @@ struct SelectionPopoverSizing: Equatable {
 public final class SelectionTranslatePanelController: SelectionPopoverControlling {
     public private(set) var currentContent: SelectionPopoverContent?
     public var onCopy: ((String) -> Void)?
+    public var onCopyOriginal: ((String) -> Void)?
     public var onUserDismiss: (() -> Void)?
     public var onTranslate: (() -> Void)?
     public var onOptimize: (() -> Void)?
@@ -264,6 +267,7 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
         set { chrome.optimizeMode = newValue }
     }
     public var copyFeedback: SelectionCopyFeedback { chrome.copyFeedback }
+    public var copyOriginalFeedback: SelectionCopyFeedback { chrome.copyOriginalFeedback }
 
     private let chrome = SelectionPopoverChrome()
     private var panel: SelectionTranslatePanel?
@@ -274,6 +278,8 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     private let clipboardCoordinator: ClipboardBorrowCoordinator
     private var copyFeedbackTask: Task<Void, Never>?
     private var copyFeedbackGeneration: UInt64 = 0
+    private var copyOriginalFeedbackTask: Task<Void, Never>?
+    private var copyOriginalFeedbackGeneration: UInt64 = 0
 
     public var panelFrame: CGRect? { panel?.isVisible == true ? panel?.frame : nil }
     public var isVisible: Bool { panel?.isVisible == true }
@@ -321,7 +327,14 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     }
 
     public func show(_ content: SelectionPopoverContent) {
-        resetCopyFeedback(.idle)
+        let sameOriginal = currentContent?.original == content.original
+        let sameStatus = currentContent?.status == content.status
+        if !sameOriginal || !sameStatus {
+            resetCopyFeedback(.idle)
+        }
+        if !sameOriginal {
+            resetCopyOriginalFeedback(.idle)
+        }
         currentContent = content
         presentCurrent(resize: true)
     }
@@ -356,6 +369,7 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
             let created = NSHostingView(rootView: SelectionTranslatePopoverView(
                 chrome: chrome,
                 onCopy: { [weak self] in self?.copyCurrentTranslation() },
+                onCopyOriginal: { [weak self] in self?.copyCurrentOriginal() },
                 onTranslate: { [weak self] in self?.onTranslate?() },
                 onOptimize: { [weak self] in self?.onOptimize?() },
                 onOpenSettings: { [weak self] in
@@ -404,6 +418,7 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
 
     public func dismiss() {
         resetCopyFeedback(.idle)
+        resetCopyOriginalFeedback(.idle)
         currentContent = nil
         chrome.content = nil
         panel?.stopDismissalMonitors()
@@ -434,6 +449,25 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
         performCopyWrite(text)
     }
 
+    /// Screenshot copy-original button path: writes full untruncated OCR text.
+    public func copyCurrentOriginal() {
+        guard let current = currentContent, current.allowsCopyOriginal else { return }
+        let text = current.originalCopyText
+        guard !text.isEmpty else { return }
+        if clipboardCoordinator.isBorrowing {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.clipboardCoordinator.withMainActorExclusiveAccess {
+                    guard self.currentContent?.originalCopyText == text,
+                          self.currentContent?.allowsCopyOriginal == true else { return }
+                    self.performOriginalCopyWrite(text)
+                }
+            }
+            return
+        }
+        performOriginalCopyWrite(text)
+    }
+
     private func performCopyWrite(_ text: String) {
         do {
             try pasteboardWriter(text)
@@ -444,11 +478,28 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
         }
     }
 
+    private func performOriginalCopyWrite(_ text: String) {
+        do {
+            try pasteboardWriter(text)
+            onCopyOriginal?(text)
+            applyCopyOriginalFeedback(.copied)
+        } catch {
+            applyCopyOriginalFeedback(.failed)
+        }
+    }
+
     private func resetCopyFeedback(_ feedback: SelectionCopyFeedback) {
         copyFeedbackGeneration &+= 1
         copyFeedbackTask?.cancel()
         copyFeedbackTask = nil
         chrome.copyFeedback = feedback
+    }
+
+    private func resetCopyOriginalFeedback(_ feedback: SelectionCopyFeedback) {
+        copyOriginalFeedbackGeneration &+= 1
+        copyOriginalFeedbackTask?.cancel()
+        copyOriginalFeedbackTask = nil
+        chrome.copyOriginalFeedback = feedback
     }
 
     /// Sets copy-button chrome immediately. Does not rebuild the panel — that
@@ -467,6 +518,23 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
             }
             guard let self, !Task.isCancelled, self.copyFeedbackGeneration == token else { return }
             self.chrome.copyFeedback = .idle
+        }
+    }
+
+    private func applyCopyOriginalFeedback(_ feedback: SelectionCopyFeedback) {
+        copyOriginalFeedbackGeneration &+= 1
+        let token = copyOriginalFeedbackGeneration
+        copyOriginalFeedbackTask?.cancel()
+        chrome.copyOriginalFeedback = feedback
+        let delay = copyFeedbackDelay
+        copyOriginalFeedbackTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled, self.copyOriginalFeedbackGeneration == token else { return }
+            self.chrome.copyOriginalFeedback = .idle
         }
     }
 

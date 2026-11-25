@@ -226,11 +226,25 @@ public enum TranslationError: Error, Equatable, Sendable {
     case invalidResponse(String)
 }
 
+public enum TranslationRequestPriority: Sendable {
+    case normal
+    case high
+}
+
+public enum TranslationPriorityContext {
+    @TaskLocal public static var current: TranslationRequestPriority = .normal
+}
+
 public protocol TranslationBackend: Sendable {
     var kind: BackendKind { get }
     func healthCheck() async -> BackendHealth
     func translate(_ request: TranslationRequest) async throws -> TranslationResult
     func completePlain(system: String, user: String) async throws -> String
+    func streamPlain(
+        system: String,
+        user: String,
+        onDelta: @escaping @Sendable (String) async -> Void
+    ) async throws -> String
     func cancelOutstandingRequests() async
 }
 
@@ -238,6 +252,17 @@ public extension TranslationBackend {
     func cancelOutstandingRequests() async {}
     func completePlain(system: String, user: String) async throws -> String {
         throw TranslationError.invalidConfiguration("plain completion is not supported")
+    }
+    func streamPlain(
+        system: String,
+        user: String,
+        onDelta: @escaping @Sendable (String) async -> Void
+    ) async throws -> String {
+        let text = try await completePlain(system: system, user: user)
+        if !text.isEmpty {
+            await onDelta(text)
+        }
+        return text
     }
 }
 

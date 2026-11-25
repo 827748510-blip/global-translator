@@ -42,6 +42,8 @@ assert(background.indexOf("set-video-translate") !== -1, "background relays vide
 assert(content.indexOf("ytp-caption-segment") !== -1, "page translate skips youtube caption DOM");
 assert(cuesSource.indexOf("翻译服务不可用") !== -1, "service failure copy");
 assert(cuesSource.indexOf("未检测到外语内容") !== -1, "no-foreign copy");
+assert(cuesSource.indexOf("mutedForAsr") !== -1, "muted video ASR hint copy");
+assert(videoJs.indexOf("volumechange") !== -1, "video listens to volumechange for ASR");
 assert(popupJs.indexOf("读取本地字幕文件失败") !== -1, "popup file read error copy");
 assert(popupJs.indexOf("未检测到外语内容") !== -1, "popup no-foreign copy");
 assert(videoJs.indexOf("overlayState") !== -1, "content uses overlay state");

@@ -6,6 +6,7 @@ public protocol CredentialStoring: Sendable {
     func save(apiKey: String) throws
     func read() throws -> String?
     func delete() throws
+    func invalidateCache()
 }
 
 public extension CredentialStoring {

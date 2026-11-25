@@ -101,6 +101,61 @@ public actor TranslationCoordinator {
         return try await backend.completePlain(system: trimmedSystem, user: trimmedUser)
     }
 
+    public func streamPlain(
+        system: String,
+        user: String,
+        backend kind: BackendKind,
+        onDelta: @escaping @Sendable (String) async -> Void
+    ) async throws -> String {
+        try Task.checkCancellation()
+        let trimmedSystem = system.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedUser = user.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSystem.isEmpty, !trimmedUser.isEmpty else {
+            throw TranslationError.invalidRequest("plain completion is empty")
+        }
+        guard let backend = backends[kind] else {
+            throw TranslationCoordinatorError.backendNotConfigured(kind)
+        }
+        return try await backend.streamPlain(system: trimmedSystem, user: trimmedUser, onDelta: onDelta)
+    }
+
+    public func cachedPlainTranslation(
+        source: String,
+        backend kind: BackendKind,
+        model: String,
+        targetLanguage: String,
+        cacheScope: String
+    ) async -> String? {
+        let key = TranslationCacheKey(
+            source: source,
+            backend: kind,
+            model: model,
+            targetLanguage: targetLanguage,
+            sourceLanguage: nil,
+            cacheScope: cacheScope
+        )
+        return await cache.value(for: key)
+    }
+
+    public func storePlainTranslation(
+        _ translated: String,
+        source: String,
+        backend kind: BackendKind,
+        model: String,
+        targetLanguage: String,
+        cacheScope: String
+    ) async {
+        let key = TranslationCacheKey(
+            source: source,
+            backend: kind,
+            model: model,
+            targetLanguage: targetLanguage,
+            sourceLanguage: nil,
+            cacheScope: cacheScope
+        )
+        await cache.insert(translated, for: key)
+    }
+
     nonisolated func invalidate(revision: UInt64) {
         revisionGate.mark(revision)
     }

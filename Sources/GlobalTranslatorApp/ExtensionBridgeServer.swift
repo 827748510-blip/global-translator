@@ -11,9 +11,10 @@ public enum ExtensionBridgeError: Error, Equatable, Sendable {
     case translatorUnavailable
 }
 
-/// Aligned with the request `texts` array. `nil` is a deliberate skip
-/// (already Chinese, filtered). Indexes in `retryIndexes` were transient
-/// backend failures and must not be treated as "already asked".
+/// Aligned with the request `texts` array. Filtered items (already Chinese,
+/// URLs, identifiers) return their original text unchanged. Indexes in
+/// `retryIndexes` (`translations` entry `nil`) were transient backend failures
+/// and must not be treated as "already asked".
 public struct ExtensionBridgeTranslation: Equatable, Sendable {
     public let translations: [String?]
     public let retryIndexes: [Int]
@@ -34,8 +35,9 @@ public struct ExtensionBridgeTranslation: Equatable, Sendable {
 ///   GET  /health           -> 200 {"ok":true,"videoTranslateEnabled":Bool,"autoTranslateEnabled":Bool,"backendReady":Bool,"videoAsrStatus":String}
 ///   POST /translate        {"texts":[String],"sourceLanguage"?:String,"pageOrigin"?:String} -> 200
 ///                           {"translations":[String?], "retry":[Int]}
-///                           null is a deliberate skip; `retry` lists indexes
-///                           that failed transiently and should be asked again.
+///                           filtered items echo source text; `null` + `retry`
+///                           lists indexes that failed transiently and should
+///                           be asked again.
 ///   POST /video-translate  {"enabled":Bool} -> 200 {"ok":true,"videoTranslateEnabled":Bool}
 ///                           Requires desktop automatic translation to be active.
 ///   POST /video-asr        {"needed"?:Bool} -> 200 VideoASRSnapshot JSON

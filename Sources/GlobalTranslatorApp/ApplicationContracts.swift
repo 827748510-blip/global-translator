@@ -223,6 +223,12 @@ public protocol TranslationCoordinating: Sendable {
         visionFallbackEnabled: Bool
     ) async throws -> EngineOutput
     func completePlain(system: String, user: String, backend: BackendKind) async throws -> String
+    func streamPlain(
+        system: String,
+        user: String,
+        backend: BackendKind,
+        onDelta: @escaping @Sendable (String) async -> Void
+    ) async throws -> String
 }
 
 extension TranslationCoordinator: TranslationCoordinating {}
@@ -233,6 +239,18 @@ public extension TranslationCoordinating {
     func cancelPendingRequests() async {}
     func completePlain(system: String, user: String, backend: BackendKind) async throws -> String {
         throw TranslationError.invalidConfiguration("plain completion is not supported")
+    }
+    func streamPlain(
+        system: String,
+        user: String,
+        backend: BackendKind,
+        onDelta: @escaping @Sendable (String) async -> Void
+    ) async throws -> String {
+        let result = try await completePlain(system: system, user: user, backend: backend)
+        if !result.isEmpty {
+            await onDelta(result)
+        }
+        return result
     }
 }
 

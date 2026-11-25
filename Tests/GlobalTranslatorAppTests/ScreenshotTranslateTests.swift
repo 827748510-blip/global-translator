@@ -777,6 +777,74 @@ struct ScreenshotTranslateControllerTests {
         try await waitUntil { popover.currentContent?.status == .translated }
         #expect(popover.currentContent?.savedImagePath == directory.path + "/shot-1.png")
     }
+
+    @Test
+    func copyImageWithoutSaveOrAutoCopyCompletesAndLogsTiming() async throws {
+        let recorder = ImageArtifactRecorder()
+        let logger = RecordingLogger()
+        let ocr = FakeRegionOCR()
+        ocr.text = "Fast stream source"
+        let popover = FakeSelectionPopover()
+        let streamingTranslator = StreamingStubSelectionTranslator(
+            partials: ["快速", "快速流式结果"],
+            finalResult: "快速流式结果"
+        )
+        let controller = ScreenshotTranslateController(
+            selector: FakeRegionSelector(),
+            capturer: FakeRegionCapturer(),
+            ocr: ocr,
+            popover: popover,
+            permissions: FakePermissionController(snapshot: .allGranted),
+            logger: logger,
+            registrar: RecordingHotkeyRegistrar(),
+            translator: { streamingTranslator },
+            backendReadiness: { .ready },
+            imageCopier: { _ in recorder.recordCopy() }
+        )
+        controller.setCopyImage(true)
+        controller.handleHotkey()
+
+        try await waitUntil { popover.currentContent?.status == .translated }
+        try await waitUntil { recorder.copiedCount == 1 }
+        #expect(popover.currentContent?.displayTranslation == "快速流式结果")
+        #expect(popover.currentContent?.allowsCopyOriginal == true)
+        #expect(popover.shown.contains { $0.status == .loading && $0.displayTranslation == "快速" })
+        let timing = try #require(logger.records.first { $0.0 == "screenshot_timing" })
+        #expect(Int(timing.1["capture_ms"] ?? "") != nil)
+        #expect(Int(timing.1["ocr_ms"] ?? "") != nil)
+        #expect(Int(timing.1["translate_ms"] ?? "") != nil)
+        #expect(Int(timing.1["total_ms"] ?? "") != nil)
+    }
+}
+
+@MainActor
+private final class StreamingStubSelectionTranslator: SelectionTranslating {
+    private let partials: [String]
+    private let finalResult: String
+
+    init(partials: [String], finalResult: String) {
+        self.partials = partials
+        self.finalResult = finalResult
+    }
+
+    func translateSelection(_: String) async throws -> SelectionTranslationOutcome {
+        SelectionTranslationOutcome(text: finalResult)
+    }
+
+    func translateSelectionStreaming(
+        _: String,
+        onPartial: @escaping @MainActor @Sendable (String) -> Void
+    ) async throws -> SelectionTranslationOutcome {
+        for partial in partials {
+            onPartial(partial)
+            await Task.yield()
+        }
+        return SelectionTranslationOutcome(text: finalResult)
+    }
+
+    func optimizePrompt(_ text: String, mode _: PromptOptimizeMode) async throws -> String {
+        text
+    }
 }
 
 extension ApplicationControllerTests {

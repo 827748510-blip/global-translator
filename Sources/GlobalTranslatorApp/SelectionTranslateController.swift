@@ -24,7 +24,21 @@ public enum SelectionTranslateError: Error, Equatable, Sendable, UISafeError {
 @MainActor
 public protocol SelectionTranslating: AnyObject {
     func translateSelection(_ text: String) async throws -> SelectionTranslationOutcome
+    func translateSelectionStreaming(
+        _ text: String,
+        onPartial: @escaping @MainActor @Sendable (String) -> Void
+    ) async throws -> SelectionTranslationOutcome
     func optimizePrompt(_ text: String, mode: PromptOptimizeMode) async throws -> String
+}
+
+@MainActor
+public extension SelectionTranslating {
+    func translateSelectionStreaming(
+        _ text: String,
+        onPartial: @escaping @MainActor @Sendable (String) -> Void
+    ) async throws -> SelectionTranslationOutcome {
+        try await translateSelection(text)
+    }
 }
 
 @MainActor
@@ -510,7 +524,19 @@ public final class SelectionTranslateController {
         }
         translateTask = Task { @MainActor [weak self] in
             do {
-                let outcome = try await translator.translateSelection(snapshot.text)
+                let outcome = try await translator.translateSelectionStreaming(snapshot.text) { [weak self] partial in
+                    guard let self,
+                          !Task.isCancelled,
+                          self.presentationGeneration == generation,
+                          !self.isCaptureProtected() else { return }
+                    let trimmed = partial.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { return }
+                    self.popover.show(.loading(
+                        original: snapshot.text,
+                        screenFrame: snapshot.screenFrame,
+                        message: trimmed
+                    ))
+                }
                 guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
                 let text = outcome.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if text.isEmpty {

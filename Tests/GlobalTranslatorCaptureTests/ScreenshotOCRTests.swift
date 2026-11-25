@@ -32,9 +32,15 @@ struct ScreenshotOCRTests {
     }
 
     @Test
-    func regionOCRUsesAccurateFallbackWhenFastIsEmpty() async throws {
+    func regionOCRUsesSingleAccuratePass() async throws {
         let recognizer = RecordingVisionRecognizer(
-            fast: [],
+            fast: [
+                VisionTextObservation(
+                    text: "Fast text",
+                    boundingBox: CGRect(x: 0.1, y: 0.5, width: 0.4, height: 0.1),
+                    confidence: 0.99
+                )
+            ],
             accurate: [
                 VisionTextObservation(
                     text: "Please save",
@@ -46,25 +52,36 @@ struct ScreenshotOCRTests {
         let service = RegionVisionOCRService(recognizer: recognizer)
         let text = try await service.recognizeJoinedText(image: try #require(makeTestImage()))
         #expect(text == "Please save")
-        #expect(await recognizer.levels() == [.fast, .accurate])
+        #expect(await recognizer.levels() == [.accurate])
     }
 
     @Test
     func regionOCRKeepsChineseAndEnglish() async throws {
         let recognizer = RecordingVisionRecognizer(
-            fast: [
+            fast: [],
+            accurate: [
                 VisionTextObservation(
                     text: "Hello 世界",
                     boundingBox: CGRect(x: 0.1, y: 0.5, width: 0.5, height: 0.1),
                     confidence: 0.92
                 )
-            ],
-            accurate: []
+            ]
         )
         let service = RegionVisionOCRService(recognizer: recognizer)
         let text = try await service.recognizeJoinedText(image: try #require(makeTestImage()))
         #expect(text == "Hello 世界")
-        #expect(await recognizer.levels() == [.fast])
+        #expect(await recognizer.levels() == [.accurate])
+    }
+
+    @Test
+    func regionOCRDownsamplesOversizedScreenshotTo1600() async throws {
+        let capturingRecognizer = ImageSizeCapturingRecognizer()
+        let service = RegionVisionOCRService(recognizer: capturingRecognizer)
+        let oversized = try #require(makeTestImage(width: 3_200, height: 1_600))
+        _ = try await service.recognizeJoinedText(image: oversized)
+        let seen = try #require(await capturingRecognizer.lastSize)
+        #expect(seen.width == 1_600)
+        #expect(seen.height == 800)
     }
 
     @Test
@@ -86,5 +103,14 @@ struct ScreenshotOCRTests {
         let ordered = ScreenshotOCRAssembler.readingOrder(items)
         #expect(ordered.count == 30)
         #expect(ordered.prefix(5).map(\.text) == ["r0c4", "r0c3", "r0c2", "r0c1", "r0c0"])
+    }
+}
+
+private actor ImageSizeCapturingRecognizer: VisionTextRecognizing {
+    private(set) var lastSize: CGSize?
+
+    func recognize(image: CGImage, level _: OCRRecognitionLevel) async throws -> [VisionTextObservation] {
+        lastSize = CGSize(width: image.width, height: image.height)
+        return []
     }
 }

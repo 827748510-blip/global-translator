@@ -410,6 +410,45 @@ struct GlobalTranslatorCoreTests {
     }
 
     @Test
+    func localParserRecoversTruncatedCompactJSONOnlyWhenAllItemsAreComplete() throws {
+        let first = UUID()
+        let second = UUID()
+        let missingBraceContent = #"{"0":"第一句译文","1":"第二句译文""#
+        let envelopeData = try JSONSerialization.data(withJSONObject: [
+            "choices": [["message": ["content": missingBraceContent]]]
+        ])
+        let recovered = try TranslationResponseParser.parseChatCompletions(
+            envelopeData,
+            expectedIDs: [first, second],
+            mode: .localRelaxed
+        )
+        #expect(recovered.translations.map(\.simplifiedChineseText) == ["第一句译文", "第二句译文"])
+
+        let unescapedMidBatch = #"{"0":"第一句","1":"第二句" trailing junk"#
+        let regexRecoveredData = try JSONSerialization.data(withJSONObject: [
+            "choices": [["message": ["content": unescapedMidBatch]]]
+        ])
+        let regexRecovered = try TranslationResponseParser.parseChatCompletions(
+            regexRecoveredData,
+            expectedIDs: [first, second],
+            mode: .localRelaxed
+        )
+        #expect(regexRecovered.translations.map(\.simplifiedChineseText) == ["第一句", "第二句"])
+
+        let incompleteContent = #"{"0":"第一句","1":"未闭合"#
+        let incompleteData = try JSONSerialization.data(withJSONObject: [
+            "choices": [["message": ["content": incompleteContent]]]
+        ])
+        #expect(throws: TranslationError.invalidResponse("translation JSON is invalid")) {
+            _ = try TranslationResponseParser.parseChatCompletions(
+                incompleteData,
+                expectedIDs: [first, second],
+                mode: .localRelaxed
+            )
+        }
+    }
+
+    @Test
     func localBatchPayloadUsesCompactKeysNotUUIDs() async throws {
         let first = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         let second = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
@@ -771,6 +810,122 @@ struct SerializingTranslationBackendTests {
         _ = try await activeTask.value
         #expect(!(await base.started.contains("queued request")))
     }
+
+    @Test
+    func highPriorityCutsAheadOfNormalWaiters() async throws {
+        let base = SlowRecordingBackend()
+        let serial = SerializingTranslationBackend(base: base)
+        let first = TranslationRequest(
+            windowRevision: 1,
+            items: [TranslationItem(id: UUID(), sourceText: "first normal")]
+        )
+        let secondNormal = TranslationRequest(
+            windowRevision: 2,
+            items: [TranslationItem(id: UUID(), sourceText: "queued normal")]
+        )
+        let activeTask = Task { try await serial.translate(first) }
+        for _ in 0..<200 where await base.started.isEmpty { await Task.yield() }
+        let normalTask = Task { try await serial.translate(secondNormal) }
+        await Task.yield()
+        let highTask = Task {
+            try await TranslationPriorityContext.$current.withValue(.high) {
+                try await serial.streamPlain(system: "sys", user: "urgent shot") { _ in }
+            }
+        }
+        _ = try await (activeTask.value, normalTask.value, highTask.value)
+        #expect(await base.started == ["first normal", "plain:urgent shot", "queued normal"])
+    }
+}
+
+struct SSEStreamingTests {
+    @Test
+    func sseLineParserSplitsLinesHandlesIncompleteUTF8AndIgnoresDone() {
+        var parser = SSELineParser()
+        let utf8Emoji = Data("你".utf8)
+        let part1 = Data("data: {\"a\":\"\(utf8Emoji.count > 1 ? "" : "x")".utf8) + utf8Emoji.prefix(2)
+        let part2 = utf8Emoji.dropFirst(2) + Data("\"}\r\n\ndata: [DONE]\n: keepalive\n".utf8)
+        #expect(parser.push(part1).isEmpty)
+        let events = parser.push(part2)
+        #expect(events == ["{\"a\":\"你\"}"])
+        #expect(parser.sawDataLine)
+        #expect(parser.finish().isEmpty)
+    }
+
+    @Test
+    func thinkTagStreamFilterStripsSplitTags() {
+        var filter = ThinkTagStreamFilter()
+        #expect(filter.push("<th") == "")
+        #expect(filter.push("ink>internal") == "")
+        #expect(filter.push(" thought</th") == "")
+        #expect(filter.push("ink>\n\n你好") == "你好")
+        #expect(filter.push("，世界") == "，世界")
+        #expect(filter.finish() == "")
+    }
+
+    @Test
+    func localStreamPlainParsesSSEAndStripsThinkTags() async throws {
+        let chunks: [Data] = [
+            Data("data: {\"choices\":[{\"delta\":{\"content\":\"<thi\"}}]}\n".utf8),
+            Data("data: {\"choices\":[{\"delta\":{\"content\":\"nk>plan</think>\\n\"}}]}\n".utf8),
+            Data("data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n".utf8),
+            Data("data: {\"choices\":[{\"delta\":{\"content\":\"世界\"}}]}\n".utf8),
+            Data("data: [DONE]\n\n".utf8)
+        ]
+        let transport = ChunkedStreamingTransport(statusCode: 200, chunks: chunks)
+        let backend = try LocalOpenAIBackend(
+            baseURL: URL(string: "http://127.0.0.1:11434/v1")!,
+            model: "qwen3:4b",
+            transport: transport
+        )
+        let collector = StreamDeltaRecorder()
+        let result = try await backend.streamPlain(system: "Translate", user: "Hello world") { delta in
+            await collector.append(delta)
+        }
+        #expect(result == "你好世界")
+        #expect(await collector.deltas == ["你好", "世界"])
+        let sentRequest = try #require(await transport.requests.first)
+        let bodyData = try #require(sentRequest.httpBody)
+        let payload = try #require(try JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
+        #expect(payload["stream"] as? Bool == true)
+    }
+
+    @Test
+    func deepSeekStreamPlainParsesDeltasUsageAndInvalidatesOn401() async throws {
+        let usageStore = DeepSeekUsageStore()
+        let chunks: [Data] = [
+            Data("data: {\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}\n".utf8),
+            Data("data: {\"type\":\"response.output_text.delta\",\"delta\":\"，世界\"}\n".utf8),
+            Data("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}\n".utf8)
+        ]
+        let transport = ChunkedStreamingTransport(statusCode: 200, chunks: chunks)
+        let store = FakeCredentialStore(value: "sk-test-123")
+        let backend = DeepSeekBackend(
+            transport: transport,
+            credentialStore: store,
+            model: "deepseek-flash",
+            usageStore: usageStore
+        )
+        let collector = StreamDeltaRecorder()
+        let result = try await backend.streamPlain(system: "Translate", user: "Hello, world") { delta in
+            await collector.append(delta)
+        }
+        #expect(result == "你好，世界")
+        #expect(await collector.deltas == ["你好", "，世界"])
+        #expect(usageStore.snapshot().requestCount == 1)
+        #expect(usageStore.snapshot().inputTokens == 10)
+        #expect(usageStore.snapshot().outputTokens == 5)
+
+        let unauthTransport = ChunkedStreamingTransport(statusCode: 401, chunks: [Data("{\"error\":\"invalid\"}".utf8)])
+        let spyStore = CacheSpyCredentialStore(value: "sk-bad")
+        let unauthBackend = DeepSeekBackend(transport: unauthTransport, credentialStore: spyStore, model: "deepseek-flash", usageStore: usageStore)
+        do {
+            _ = try await unauthBackend.streamPlain(system: "Translate", user: "Hello") { _ in }
+            Issue.record("expected unauthorized error")
+        } catch let error as TranslationError {
+            #expect(error == .unauthorized)
+        }
+        #expect(spyStore.invalidateCount == 1)
+    }
 }
 
 private actor SlowRecordingBackend: TranslationBackend {
@@ -831,6 +986,57 @@ private actor FakeTransport: HTTPTransport {
             throw HTTPTransportError.networkFailure
         }
         return queuedResponses.removeFirst()
+    }
+}
+
+private actor ChunkedStreamingTransport: HTTPTransport {
+    let statusCode: Int
+    let chunks: [Data]
+    private(set) var requests: [URLRequest] = []
+
+    init(statusCode: Int, chunks: [Data]) {
+        self.statusCode = statusCode
+        self.chunks = chunks
+    }
+
+    func send(_ request: URLRequest) async throws -> HTTPResponse {
+        requests.append(request)
+        return HTTPResponse(statusCode: statusCode, headers: [:], body: Data(chunks.joined()))
+    }
+
+    func sendStreaming(
+        _ request: URLRequest,
+        onChunk: @escaping @Sendable (Data) async -> Void
+    ) async throws -> HTTPResponse {
+        requests.append(request)
+        if (200..<300).contains(statusCode) {
+            for chunk in chunks {
+                await onChunk(chunk)
+            }
+            return HTTPResponse(statusCode: statusCode, headers: [:], body: Data())
+        }
+        return HTTPResponse(statusCode: statusCode, headers: [:], body: Data(chunks.joined()))
+    }
+}
+
+private actor StreamDeltaRecorder {
+    private(set) var deltas: [String] = []
+    func append(_ value: String) { deltas.append(value) }
+}
+
+private final class CacheSpyCredentialStore: CredentialStoring, @unchecked Sendable {
+    private let lock = NSLock()
+    private let value: String?
+    private(set) var invalidateCount = 0
+
+    init(value: String?) { self.value = value }
+    func save(apiKey _: String) throws {}
+    func read() throws -> String? { value }
+    func delete() throws {}
+    func invalidateCache() {
+        lock.lock()
+        invalidateCount += 1
+        lock.unlock()
     }
 }
 

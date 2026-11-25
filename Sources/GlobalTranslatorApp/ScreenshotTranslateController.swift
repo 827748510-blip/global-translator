@@ -240,6 +240,10 @@ public final class ScreenshotTranslateController {
                 return
             }
         }
+        let prewarmTask = Task { [capturer] in
+            await capturer.prewarm()
+        }
+        defer { prewarmTask.cancel() }
         let outcome = await selector.selectRegion()
         guard !Task.isCancelled else { return }
         guard !isCaptureProtected() else {
@@ -289,6 +293,7 @@ public final class ScreenshotTranslateController {
                 message: "正在识别文字…"
             ).asScreenshotResult()
         )
+        let pipelineStartedAt = ProcessInfo.processInfo.systemUptime
         let image: CGImage
         do {
             image = try await capturer.capture(rect: rect)
@@ -308,6 +313,7 @@ public final class ScreenshotTranslateController {
             )
             return
         }
+        let captureMS = Self.elapsedMilliseconds(since: pipelineStartedAt)
         guard isCurrent(capture) else { return }
         guard !isCaptureProtected() else {
             popover.dismiss()
@@ -318,6 +324,7 @@ public final class ScreenshotTranslateController {
             guard let self else { return }
             await self.handleImageArtifacts(image, capture: capture)
         }
+        let ocrStartedAt = ProcessInfo.processInfo.systemUptime
         let recognized: String
         do {
             recognized = try await ocr.recognizeJoinedText(image: image)
@@ -325,7 +332,9 @@ public final class ScreenshotTranslateController {
         } catch is CancellationError {
             return
         } catch {
-            await artifactTask.value
+            if needsArtifactHintsBeforePresent {
+                await artifactTask.value
+            }
             guard isCurrent(capture) else { return }
             logger.event("screenshot_ocr_failed", fields: ["status": "error"])
             presentFailure(
@@ -335,6 +344,7 @@ public final class ScreenshotTranslateController {
             )
             return
         }
+        let ocrMS = Self.elapsedMilliseconds(since: ocrStartedAt)
         guard isCurrent(capture) else { return }
         guard !isCaptureProtected() else {
             popover.dismiss()
@@ -342,7 +352,9 @@ public final class ScreenshotTranslateController {
         }
         let text = recognized.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
-            await artifactTask.value
+            if needsArtifactHintsBeforePresent {
+                await artifactTask.value
+            }
             guard isCurrent(capture) else { return }
             // 图里没有文字 = 没什么可翻的，不是失败：不弹红色，也不调模型。
             logger.event("screenshot_ocr_empty", fields: [:])
@@ -355,7 +367,9 @@ public final class ScreenshotTranslateController {
         }
         switch TextFilter.selectionDecision(text) {
         case .skip:
-            await artifactTask.value
+            if needsArtifactHintsBeforePresent {
+                await artifactTask.value
+            }
             guard isCurrent(capture) else { return }
             // 只识别到 URL / 版本号 / 快捷键这类不可译内容：同样属于「无需翻译」。
             logger.event("screenshot_not_translatable", fields: [:])
@@ -366,13 +380,29 @@ public final class ScreenshotTranslateController {
             )
         case .alreadyTargetLanguage:
             // 双向互译：截图识别出的简体中文也翻译成英文，不再只提示「已是中文」。
-            await presentTranslation(original: text, screenFrame: rect, artifactTask: artifactTask)
+            await presentTranslation(
+                original: text,
+                screenFrame: rect,
+                artifactTask: artifactTask,
+                captureMS: captureMS,
+                ocrMS: ocrMS,
+                pipelineStartedAt: pipelineStartedAt
+            )
         case .noTranslationNeeded:
-            await artifactTask.value
+            if needsArtifactHintsBeforePresent {
+                await artifactTask.value
+            }
             guard isCurrent(capture) else { return }
             presentNoTranslationNeeded(original: text, screenFrame: rect)
         case .translate:
-            await presentTranslation(original: text, screenFrame: rect, artifactTask: artifactTask)
+            await presentTranslation(
+                original: text,
+                screenFrame: rect,
+                artifactTask: artifactTask,
+                captureMS: captureMS,
+                ocrMS: ocrMS,
+                pipelineStartedAt: pipelineStartedAt
+            )
         }
     }
 
@@ -391,10 +421,21 @@ public final class ScreenshotTranslateController {
         ))
     }
 
+    private var needsArtifactHintsBeforePresent: Bool {
+        saveImageEnabled || (copyImageEnabled && autoCopy)
+    }
+
+    private nonisolated static func elapsedMilliseconds(since startUptime: TimeInterval) -> Int {
+        max(0, Int(((ProcessInfo.processInfo.systemUptime - startUptime) * 1_000).rounded()))
+    }
+
     private func presentTranslation(
         original: String,
         screenFrame: CGRect,
-        artifactTask: Task<Void, Never>? = nil
+        artifactTask: Task<Void, Never>? = nil,
+        captureMS: Int = 0,
+        ocrMS: Int = 0,
+        pipelineStartedAt: TimeInterval? = nil
     ) async {
         cancelPresentation()
         guard !isCaptureProtected() else {
@@ -405,7 +446,9 @@ public final class ScreenshotTranslateController {
         let generation = presentationGeneration
         switch backendReadiness() {
         case .missingCloudKey:
-            await artifactTask?.value
+            if needsArtifactHintsBeforePresent {
+                await artifactTask?.value
+            }
             guard !Task.isCancelled, presentationGeneration == generation else { return }
             presentFailure(
                 original: original,
@@ -415,7 +458,9 @@ public final class ScreenshotTranslateController {
             )
             return
         case .localNotReady:
-            await artifactTask?.value
+            if needsArtifactHintsBeforePresent {
+                await artifactTask?.value
+            }
             guard !Task.isCancelled, presentationGeneration == generation else { return }
             presentFailure(
                 original: original,
@@ -432,7 +477,9 @@ public final class ScreenshotTranslateController {
                 .asScreenshotResult()
         ))
         guard let translator = translator() else {
-            await artifactTask?.value
+            if needsArtifactHintsBeforePresent {
+                await artifactTask?.value
+            }
             guard !Task.isCancelled, presentationGeneration == generation else { return }
             presentFailure(
                 original: original,
@@ -442,15 +489,40 @@ public final class ScreenshotTranslateController {
             )
             return
         }
+        let translateStartedAt = ProcessInfo.processInfo.systemUptime
         translateTask = Task { @MainActor [weak self] in
             do {
-                let outcome = try await translator.translateSelection(original)
-                await artifactTask?.value
+                let outcome = try await translator.translateSelectionStreaming(original) { [weak self] partial in
+                    guard let self,
+                          !Task.isCancelled,
+                          self.presentationGeneration == generation,
+                          !self.isCaptureProtected() else { return }
+                    let trimmed = partial.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { return }
+                    self.popover.show(self.withArtifactHints(
+                        SelectionPopoverContent.loading(
+                            original: original,
+                            screenFrame: screenFrame,
+                            message: trimmed
+                        ).asScreenshotResult()
+                    ))
+                }
+                if self?.needsArtifactHintsBeforePresent == true {
+                    await artifactTask?.value
+                }
                 guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
                 guard !self.isCaptureProtected() else {
                     self.popover.dismiss()
                     return
                 }
+                let translateMS = Self.elapsedMilliseconds(since: translateStartedAt)
+                let totalMS = Self.elapsedMilliseconds(since: pipelineStartedAt ?? translateStartedAt)
+                self.logger.event("screenshot_timing", fields: [
+                    "capture_ms": String(captureMS),
+                    "ocr_ms": String(ocrMS),
+                    "translate_ms": String(translateMS),
+                    "total_ms": String(totalMS)
+                ])
                 let text = outcome.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if text.isEmpty {
                     self.presentFailure(
@@ -482,10 +554,10 @@ public final class ScreenshotTranslateController {
                 guard let self, self.presentationGeneration == generation else { return }
                 self.popover.dismiss()
             } catch {
-                await artifactTask?.value
+                if self?.needsArtifactHintsBeforePresent == true {
+                    await artifactTask?.value
+                }
                 guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
-                // 模型原样回传唯一要翻的原文 = 专有名词，属于「无需翻译」而不是
-                // 失败：滑词早就这么处理，截图此前会弹红色「翻译失败」。
                 if let selection = error as? SelectionTranslateError, selection == .noTranslationNeeded {
                     self.presentNoTranslationNeeded(original: original, screenFrame: screenFrame)
                     return

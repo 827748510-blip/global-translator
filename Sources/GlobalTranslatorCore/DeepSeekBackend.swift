@@ -161,6 +161,81 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         return parsed.text
     }
 
+    public func streamPlain(
+        system: String,
+        user: String,
+        onDelta: @escaping @Sendable (String) async -> Void
+    ) async throws -> String {
+        let trimmedSystem = system.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedUser = user.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSystem.isEmpty, !trimmedUser.isEmpty else {
+            throw TranslationError.invalidRequest("plain completion is empty")
+        }
+        let apiKey: String?
+        do {
+            apiKey = try credentialStore.read()
+        } catch {
+            throw TranslationError.networkFailure
+        }
+        guard let apiKey, !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw TranslationError.missingCredential
+        }
+        let maxTokens = min(8_192, max(2_048, trimmedUser.count * 2 + 256))
+        let body = try makePlainPayload(
+            system: trimmedSystem,
+            user: trimmedUser,
+            stream: true,
+            temperature: 0.1,
+            maxTokens: maxTokens
+        )
+        var urlRequest = URLRequest(url: Self.endpointURL.appendingPathComponent("responses"))
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        urlRequest.setValue("Bearer " + apiKey, forHTTPHeaderField: "Authorization")
+        urlRequest.httpBody = body
+
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let requestedAt = Date()
+        let collector = DeepSeekSSEStreamCollector()
+        let response: HTTPResponse
+        do {
+            response = try await transport.sendStreaming(urlRequest) { chunk in
+                await collector.push(chunk, onDelta: onDelta)
+            }
+        } catch {
+            throw AdapterHTTPMapping.error(for: error)
+        }
+        if let error = AdapterHTTPMapping.error(for: response) {
+            if case .unauthorized = error {
+                credentialStore.invalidateCache()
+            }
+            throw error
+        }
+        guard (200..<300).contains(response.statusCode) else {
+            throw TranslationError.invalidResponse("unexpected DeepSeek HTTP status")
+        }
+        let finished = await collector.finish(onDelta: onDelta)
+        recordUsage(finished.usage, startedAt: startedAt, requestedAt: requestedAt)
+        if finished.failed {
+            throw TranslationError.invalidResponse("DeepSeek stream returned error event")
+        }
+        let trimmed = finished.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            return trimmed
+        }
+        if !finished.sawSSE {
+            let fallbackData = !response.body.isEmpty ? response.body : finished.rawFallback
+            if !fallbackData.isEmpty {
+                let parsed = try TranslationResponseParser.parsePlainResponsesWithUsage(fallbackData)
+                recordUsage(parsed.usage, startedAt: startedAt, requestedAt: requestedAt)
+                await onDelta(parsed.text)
+                return parsed.text
+            }
+        }
+        throw TranslationError.invalidResponse("DeepSeek stream completion is empty")
+    }
+
     public func translate(
         _ request: TranslationRequest,
         images: [VisionTranslationImage]
@@ -265,13 +340,22 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         }
     }
 
-    private func makePlainPayload(system: String, user: String) throws -> Data {
+    private func makePlainPayload(
+        system: String,
+        user: String,
+        stream: Bool = false,
+        temperature: Double = 0.3,
+        maxTokens: Int = 2_048
+    ) throws -> Data {
         let payload = PlainResponsesPayload(
             model: model,
             input: [
                 ResponseInputMessage(role: "system", content: system),
                 ResponseInputMessage(role: "user", content: user)
-            ]
+            ],
+            stream: stream,
+            temperature: temperature,
+            maxOutputTokens: maxTokens
         )
         do {
             let encoder = JSONEncoder()
@@ -407,10 +491,10 @@ private struct ResponsesText: Encodable {
 private struct PlainResponsesPayload: Encodable {
     let model: String
     let input: [ResponseInputMessage]
-    let stream = false
+    let stream: Bool
     let reasoning = ResponsesReasoning()
-    let temperature = 0.3
-    let maxOutputTokens = 2_048
+    let temperature: Double
+    let maxOutputTokens: Int
 
     private enum CodingKeys: String, CodingKey {
         case model
@@ -419,6 +503,89 @@ private struct PlainResponsesPayload: Encodable {
         case reasoning
         case temperature
         case maxOutputTokens = "max_output_tokens"
+    }
+}
+
+private actor DeepSeekSSEStreamCollector {
+    private struct UsageEnvelope: Decodable {
+        struct ResponseBody: Decodable {
+            let usage: TranslationResponseParser.RawUsage?
+        }
+        let response: ResponseBody?
+    }
+
+    private var sse = SSELineParser()
+    private var think = ThinkTagStreamFilter()
+    private var accumulated = ""
+    private var usage: DeepSeekTokenUsage?
+    private var failed = false
+    private var rawFallback = Data()
+    private let maxFallbackBytes = 65_536
+
+    func push(_ chunk: Data, onDelta: @Sendable (String) async -> Void) async {
+        if !sse.sawDataLine && rawFallback.count < maxFallbackBytes {
+            rawFallback.append(chunk.prefix(maxFallbackBytes - rawFallback.count))
+        }
+        for payload in sse.push(chunk) {
+            await handlePayload(payload, onDelta: onDelta)
+        }
+    }
+
+    func finish(onDelta: @Sendable (String) async -> Void) async -> (
+        text: String,
+        usage: DeepSeekTokenUsage?,
+        failed: Bool,
+        sawSSE: Bool,
+        rawFallback: Data
+    ) {
+        for payload in sse.finish() {
+            await handlePayload(payload, onDelta: onDelta)
+        }
+        let trailing = think.finish()
+        if !trailing.isEmpty {
+            accumulated.append(trailing)
+            await onDelta(trailing)
+        }
+        return (accumulated, usage, failed, sse.sawDataLine, rawFallback)
+    }
+
+    private func handlePayload(_ payload: String, onDelta: @Sendable (String) async -> Void) async {
+        guard let data = payload.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let eventType = json["type"] as? String else {
+            return
+        }
+        if eventType == "response.output_text.delta", let delta = json["delta"] as? String, !delta.isEmpty {
+            let visible = think.push(delta)
+            if !visible.isEmpty {
+                accumulated.append(visible)
+                await onDelta(visible)
+            }
+            return
+        }
+        if eventType == "response.completed" {
+            if let envelope = try? JSONDecoder().decode(UsageEnvelope.self, from: data),
+               let parsedUsage = envelope.response?.usage?.tokenUsage {
+                usage = parsedUsage
+            }
+            if accumulated.isEmpty,
+               let responseObject = json["response"] as? [String: Any],
+               let responseData = try? JSONSerialization.data(withJSONObject: responseObject),
+               let parsed = try? TranslationResponseParser.parsePlainResponsesWithUsage(responseData) {
+                if usage == nil {
+                    usage = parsed.usage
+                }
+                let visible = think.push(parsed.text)
+                if !visible.isEmpty {
+                    accumulated.append(visible)
+                    await onDelta(visible)
+                }
+            }
+            return
+        }
+        if eventType == "response.failed" || eventType == "error" {
+            failed = true
+        }
     }
 }
 

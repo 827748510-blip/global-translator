@@ -1138,4 +1138,74 @@ struct ExtensionBridgeSecurityHardeningTests {
         let json2 = try #require(try JSONSerialization.jsonObject(with: d2) as? [String: Any])
         #expect(json2["ok"] as? Bool == true)
     }
+
+    @MainActor
+    @Test
+    func localBridgeSplitsInvalidResponseBatchIntoSingleItemsAndRescuesHealthySiblings() async throws {
+        actor PartialInvalidJSONCoordinator: TranslationCoordinating {
+            func selectBackend(kind: BackendKind, modelIdentifier: String) async {}
+            func clearCache() async {}
+            func cancelPendingRequests() async {}
+            func translate(
+                snapshot: CaptureSnapshot,
+                backend: BackendKind,
+                modelIdentifier: String,
+                visionFallbackEnabled: Bool
+            ) async throws -> EngineOutput {
+                if snapshot.regions.count > 1 || snapshot.regions.first?.sourceText == "Bad JSON item" {
+                    throw TranslationError.invalidResponse("translation JSON is invalid")
+                }
+                let translations = snapshot.regions.map { region in
+                    RenderedTranslation(region: region, text: "译：" + region.sourceText)
+                }
+                return EngineOutput(
+                    windowRevision: snapshot.descriptor.revision,
+                    translations: translations,
+                    metrics: EngineMetrics(
+                        inputRegionCount: translations.count,
+                        eligibleRegionCount: translations.count,
+                        cacheHitCount: 0,
+                        batchCount: 1,
+                        translatedRegionCount: translations.count,
+                        durationMilliseconds: 1,
+                        status: .success
+                    )
+                )
+            }
+        }
+
+        let coordinator = PartialInvalidJSONCoordinator()
+        let permissions = FakePermissionController(snapshot: PermissionSnapshot(
+            accessibilityTrusted: false, screenCaptureAuthorized: false,
+            secureInputEnabled: false, sessionLocked: false))
+        let session = TranslationSession(
+            monitor: FakeWindowMonitor(),
+            capture: FakeCapturePipeline(),
+            overlay: FakeOverlay(),
+            permissions: permissions,
+            coordinatorFactory: { _, _ in coordinator },
+            schedulerFactory: { _, _, _ in NoopTranslationScheduler() },
+            logger: NullAppRuntimeLogger(),
+            statusHandler: { _ in }
+        )
+        session.configure(
+            backends: [],
+            backend: .local,
+            model: "test",
+            visionFallbackEnabled: false
+        )
+        session.setBridgeActive(true)
+        let result = try await session.translateBridgeTexts([
+            "First valid line",
+            "Bad JSON item",
+            "Third valid line"
+        ])
+        #expect(result.translations == [
+            "译：First valid line",
+            nil,
+            "译：Third valid line"
+        ])
+        #expect(result.retryIndexes == [1])
+        session.stop()
+    }
 }

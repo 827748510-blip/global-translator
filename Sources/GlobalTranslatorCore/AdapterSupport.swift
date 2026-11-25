@@ -674,7 +674,8 @@ enum TranslationResponseParser {
         } catch {
             let trimmed = String(decoding: data, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            if let texts = fallbackTexts(fromRaw: trimmed, count: expectedIDs.count) {
+            if let texts = recoverMalformedCompactJSON(trimmed, count: expectedIDs.count)
+                ?? fallbackTexts(fromRaw: trimmed, count: expectedIDs.count) {
                 return try localResult(
                     texts: texts,
                     expectedIDs: expectedIDs,
@@ -697,6 +698,39 @@ enum TranslationResponseParser {
         guard !trimmed.isEmpty, !trimmed.hasPrefix("{"), !trimmed.hasPrefix("[") else { return nil }
         if count == 1 { return [trimmed] }
         return LocalTranslationCleanup.splitNumberedBlob(trimmed, count: count)
+    }
+
+    private static let compactKeyValueRegex = try! NSRegularExpression(
+        pattern: #""([^"\\]+)"\s*:\s*"((?:[^"\\]|\\.)*)""#
+    )
+
+    /// Recovers complete key-value pairs when a local 4B model drops a closing
+    /// brace or leaves trailing garbage inside a `{"0":"..."}` object.
+    /// Truncated mid-string values are rejected so cut-off text never leaks out.
+    private static func recoverMalformedCompactJSON(_ trimmed: String, count: Int) -> [String]? {
+        guard count > 0, trimmed.hasPrefix("{") else { return nil }
+        if let data = (trimmed + "}").data(using: .utf8),
+           let repaired = try? JSONSerialization.jsonObject(with: data),
+           let texts = matchLocalTexts(repaired, count: count) {
+            return texts
+        }
+        let fullRange = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+        let matches = compactKeyValueRegex.matches(in: trimmed, range: fullRange)
+        guard !matches.isEmpty else { return nil }
+        var found: [Int: String] = [:]
+        for match in matches {
+            guard let keyRange = Range(match.range(at: 1), in: trimmed),
+                  let valueRange = Range(match.range(at: 2), in: trimmed) else { continue }
+            let rawKey = String(trimmed[keyRange])
+            guard let index = compactIndex(fromKey: rawKey) ?? letterIndex(fromKey: rawKey) else { continue }
+            let quoted = "\"\(trimmed[valueRange])\""
+            guard let decoded = try? JSONDecoder().decode(String.self, from: Data(quoted.utf8)) else { continue }
+            let value = decoded.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty, found[index] == nil {
+                found[index] = value
+            }
+        }
+        return LocalTranslationCleanup.alignedIndices(found, count: count)
     }
 
     private static func localResult(

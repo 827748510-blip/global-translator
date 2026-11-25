@@ -111,14 +111,8 @@ public final class RegionVisionOCRService: RegionTextRecognizing, @unchecked Sen
     }
 
     public func recognizeJoinedText(image: CGImage) async throws -> String {
-        let ocrImage = CGImageUtilities.downsample(image, maximumDimension: 2_048) ?? image
-        let fast = try await recognizer.recognize(image: ocrImage, level: .fast)
-        let selected: [VisionTextObservation]
-        if fast.isEmpty || fast.contains(where: { $0.confidence < lowConfidenceThreshold }) {
-            selected = try await recognizer.recognize(image: ocrImage, level: .accurate)
-        } else {
-            selected = fast
-        }
-        return ScreenshotOCRAssembler.joinedText(from: selected)
+        let ocrImage = CGImageUtilities.downsample(image, maximumDimension: 1_600) ?? image
+        let observations = try await recognizer.recognize(image: ocrImage, level: .accurate)
+        return ScreenshotOCRAssembler.joinedText(from: observations)
     }
 }

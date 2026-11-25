@@ -10,6 +10,7 @@ import GlobalTranslatorCore
 public final class SelectionPopoverChrome {
     public var optimizeMode: PromptOptimizeMode = .communicationPolish
     public var copyFeedback: SelectionCopyFeedback = .idle
+    public var copyOriginalFeedback: SelectionCopyFeedback = .idle
     public var content: SelectionPopoverContent?
     public var resultHeight: CGFloat?
     public var isResultScrollable: Bool = false
@@ -17,19 +18,21 @@ public final class SelectionPopoverChrome {
     public init(
         optimizeMode: PromptOptimizeMode = .communicationPolish,
         copyFeedback: SelectionCopyFeedback = .idle,
+        copyOriginalFeedback: SelectionCopyFeedback = .idle,
         content: SelectionPopoverContent? = nil,
         resultHeight: CGFloat? = nil,
         isResultScrollable: Bool = false
     ) {
         self.optimizeMode = optimizeMode
         self.copyFeedback = copyFeedback
+        self.copyOriginalFeedback = copyOriginalFeedback
         self.content = content
         self.resultHeight = resultHeight
         self.isResultScrollable = isResultScrollable
     }
 }
 
-/// Interactive selection popover: truncated original, result, 翻译 / 优化提示词 / 拷贝 / 打开设置.
+/// Interactive selection popover: truncated original, result, 翻译 / 优化提示词 / 拷贝 / 复制原文 / 打开设置.
 public struct SelectionTranslatePopoverView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -38,6 +41,7 @@ public struct SelectionTranslatePopoverView: View {
     private let explicitResultHeight: CGFloat?
     private let explicitIsResultScrollable: Bool?
     var onCopy: () -> Void = {}
+    var onCopyOriginal: () -> Void = {}
     var onTranslate: () -> Void = {}
     var onOptimize: () -> Void = {}
     var onOpenSettings: () -> Void = {}
@@ -49,6 +53,7 @@ public struct SelectionTranslatePopoverView: View {
         resultHeight: CGFloat? = nil,
         isResultScrollable: Bool = false,
         onCopy: @escaping () -> Void = {},
+        onCopyOriginal: @escaping () -> Void = {},
         onTranslate: @escaping () -> Void = {},
         onOptimize: @escaping () -> Void = {},
         onOpenSettings: @escaping () -> Void = {},
@@ -59,6 +64,7 @@ public struct SelectionTranslatePopoverView: View {
         self.explicitResultHeight = resultHeight
         self.explicitIsResultScrollable = isResultScrollable
         self.onCopy = onCopy
+        self.onCopyOriginal = onCopyOriginal
         self.onTranslate = onTranslate
         self.onOptimize = onOptimize
         self.onOpenSettings = onOpenSettings
@@ -68,6 +74,7 @@ public struct SelectionTranslatePopoverView: View {
     init(
         chrome: SelectionPopoverChrome,
         onCopy: @escaping () -> Void = {},
+        onCopyOriginal: @escaping () -> Void = {},
         onTranslate: @escaping () -> Void = {},
         onOptimize: @escaping () -> Void = {},
         onOpenSettings: @escaping () -> Void = {},
@@ -78,6 +85,7 @@ public struct SelectionTranslatePopoverView: View {
         self.explicitResultHeight = nil
         self.explicitIsResultScrollable = nil
         self.onCopy = onCopy
+        self.onCopyOriginal = onCopyOriginal
         self.onTranslate = onTranslate
         self.onOptimize = onOptimize
         self.onOpenSettings = onOpenSettings
@@ -224,17 +232,37 @@ public struct SelectionTranslatePopoverView: View {
                         )
                         .accessibilityHint(chrome.optimizeMode.optimizeAccessibilityHint)
                     }
-                    if content.allowsCopy {
+                    if content.allowsCopyOriginal {
+                        let originalTitle = chrome.copyOriginalFeedback == .idle
+                            ? "复制原文"
+                            : chrome.copyOriginalFeedback.title
                         SelectionPopoverActionButton(
-                            title: chrome.copyFeedback.title,
+                            title: originalTitle,
+                            systemImage: chrome.copyOriginalFeedback == .copied ? "checkmark" : nil,
+                            isPrimary: false,
+                            isDisabled: false,
+                            markerName: "copyOriginal",
+                            action: onCopyOriginal
+                        )
+                        .accessibilityLabel(originalTitle)
+                        .accessibilityHint(chrome.copyOriginalFeedback == .idle ? "将识别到的原文复制到剪贴板" : originalTitle)
+                    }
+                    if content.allowsCopy {
+                        let copyIdleTitle: String = {
+                            guard content.isScreenshotResult else { return SelectionCopyFeedback.idle.title }
+                            return content.allowsCopyOriginal ? "复制译文" : "复制原文"
+                        }()
+                        let copyTitle = chrome.copyFeedback == .idle ? copyIdleTitle : chrome.copyFeedback.title
+                        SelectionPopoverActionButton(
+                            title: copyTitle,
                             systemImage: chrome.copyFeedback == .copied ? "checkmark" : nil,
                             isPrimary: !content.showsOpenSettingsAction,
                             isDisabled: false,
                             markerName: "copy",
                             action: onCopy
                         )
-                        .accessibilityLabel(chrome.copyFeedback.title)
-                        .accessibilityHint(chrome.copyFeedback == .idle ? "将结果复制到剪贴板 (⌘C)" : chrome.copyFeedback.title)
+                        .accessibilityLabel(copyTitle)
+                        .accessibilityHint(chrome.copyFeedback == .idle ? "将结果复制到剪贴板 (⌘C)" : copyTitle)
                     }
                     if content.showsOpenSettingsAction {
                         SelectionPopoverActionButton(

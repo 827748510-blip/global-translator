@@ -5,8 +5,12 @@
 (() => {
   const SKIPPED_TAGS = new Set([
     "SCRIPT", "STYLE", "NOSCRIPT", "CODE", "PRE", "TEXTAREA",
-    "SVG", "CANVAS", "VIDEO", "AUDIO", "IFRAME"
+    "SVG", "MATH", "CANVAS", "VIDEO", "AUDIO", "IFRAME",
+    "KBD", "SAMP", "VAR", "OPTION"
   ]);
+  const ICON_CLASS_RE = /(?:^|\s)(?:material-icons(?:-[\w-]+)?|material-symbols(?:-[\w-]+)?|google-symbols|google-material-icons|fa|fas|far|fab|fal|fad|fa-[\w-]+|codicon|codicon-[\w-]+|iconfont|icon-font|ri-[\w-]+|bi|bi-[\w-]+|ti-[\w-]+|lucide|lucide-[\w-]+|anticon|el-icon[\w-]*|glyphicon[\w-]*|ion-[\w-]+|feather-[\w-]+|octicon[\w-]*|svg-inline--fa)(?:\s|$)/i;
+  const ICON_LIGATURE_TEXT_RE = /^[a-z0-9_ -]{1,32}$/i;
+  const NO_TRANSLATE_SELECTOR = '[translate="no"], [translate="NO"], .notranslate, [data-notranslate]';
   // Keep this aligned with TranslationCoordinator.localPageTextBatchSize.
   const CHUNK_SIZE = 3;
   const MAX_PER_ROUND = 200;
@@ -64,10 +68,43 @@
     );
   }
 
-  function shouldSkipElement(element) {
+  function hasIconClass(element) {
+    if (!element) return false;
+    const rawClass = typeof element.className === "string"
+      ? element.className
+      : (element.getAttribute ? element.getAttribute("class") : "");
+    return typeof rawClass === "string" && rawClass.length > 0 && ICON_CLASS_RE.test(rawClass);
+  }
+
+  function isNoTranslateElement(element) {
+    if (!element) return false;
+    if (element.translate === false) return true;
+    if (element.getAttribute) {
+      const translateAttr = String(element.getAttribute("translate") || "").toLowerCase();
+      if (translateAttr === "no") return true;
+    }
+    if (element.classList && element.classList.contains("notranslate")) return true;
+    return Boolean(element.closest && element.closest(NO_TRANSLATE_SELECTOR));
+  }
+
+  function isAriaHiddenIconElement(element, text) {
+    if (!element || !element.getAttribute) return false;
+    if (element.getAttribute("aria-hidden") !== "true") return false;
+    const sample = String(text || (element.textContent || "")).trim();
+    if (!sample) return true;
+    if (/[\u3400-\u9FFF\u3040-\u30FF\u1100-\u11FF\uAC00-\uD7AF]/.test(sample)) return false;
+    if (!ICON_LIGATURE_TEXT_RE.test(sample)) return false;
+    const words = sample.split(/\s+/).filter(Boolean);
+    return words.length <= 2;
+  }
+
+  function shouldSkipElement(element, text) {
     if (!element) return true;
     if (SKIPPED_TAGS.has(element.tagName)) return true;
     if (element.isContentEditable) return true;
+    if (isNoTranslateElement(element)) return true;
+    if (hasIconClass(element)) return true;
+    if (isAriaHiddenIconElement(element, text)) return true;
     if (element.closest && element.closest('[contenteditable="true"], [contenteditable=""]')) return true;
     if (element.closest && element.closest("[data-gt-video-translate], .ytp-caption-window-container, .ytp-caption-segment, .caption-window")) return true;
     return false;
@@ -78,6 +115,10 @@
     if (rect.width < 4 || rect.height < 4) return null;
     const style = getComputedStyle(element);
     if (style.visibility === "hidden" || style.display === "none" || Number(style.opacity) === 0) return null;
+    if (typeof GlobalTranslatorTextFilter.isIconFontFamily === "function" &&
+        GlobalTranslatorTextFilter.isIconFontFamily(style.fontFamily)) {
+      return null;
+    }
     const vh = typeof window !== "undefined" ? (window.innerHeight || 0) : 0;
     const inViewport = vh <= 0 || (rect.bottom >= 0 && rect.top <= vh);
     return { inViewport };
@@ -134,7 +175,7 @@
       {
         acceptNode(node) {
           if (node.nodeType === 1) {
-            if (SKIPPED_TAGS.has(node.tagName) || node.isContentEditable) {
+            if (SKIPPED_TAGS.has(node.tagName) || node.isContentEditable || isNoTranslateElement(node) || hasIconClass(node)) {
               return NodeFilter.FILTER_REJECT;
             }
             if (node.hasAttribute && (node.hasAttribute("data-gt-video-translate") || node.hasAttribute("contenteditable"))) {
@@ -166,6 +207,7 @@
     const viewportResults = [];
     const deferredResults = [];
     const cacheReapply = [];
+    const samples = [];
     const root = document.body || document.documentElement;
     if (!root) return [];
     const walker = makeWalker(root);
@@ -174,6 +216,12 @@
       const text = textOf(node);
       if (text.length < 2) continue;
       const existingEntry = peekEntry(node);
+      if (samples.length < 60 && !shouldSkipElement(node.parentElement, text)) {
+        const sampleText = existingEntry && existingEntry.translation === text && existingEntry.source
+          ? existingEntry.source
+          : text;
+        samples.push(sampleText);
+      }
       if (existingEntry) {
         if (existingEntry.translation === text) continue;
         if (existingEntry.source === text && existingEntry.translation) {
@@ -183,7 +231,7 @@
         if (existingEntry.source === text) continue;
         if (existingEntry.retryUntil && now < existingEntry.retryUntil) continue;
       }
-      if (shouldSkipElement(node.parentElement)) continue;
+      if (shouldSkipElement(node.parentElement, text)) continue;
 
       const parts = text.split(/(\r\n|[\n\r\u2028\u2029])/);
       const segments = [];
@@ -230,6 +278,10 @@
         target.push({ item, ...segment });
       }
       if (viewportResults.length >= MAX_PER_ROUND) break;
+    }
+    if (typeof GlobalTranslatorTextFilter.isLikelySimplifiedChinesePage === "function" &&
+        GlobalTranslatorTextFilter.isLikelySimplifiedChinesePage(samples, sourceLanguage)) {
+      return [];
     }
     if (cacheReapply.length > 0) {
       mutatingOwnDom = true;

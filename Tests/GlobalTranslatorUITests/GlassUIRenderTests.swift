@@ -191,7 +191,7 @@ struct GlassUIRenderTests {
         ))
         Self.expectActionSurfacesFillRow(
             screenshot.frames,
-            names: ["copy"],
+            names: ["copyOriginal", "copy"],
             detail: screenshot.tree
         )
     }

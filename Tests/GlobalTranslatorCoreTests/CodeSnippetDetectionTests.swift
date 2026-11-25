@@ -221,5 +221,6 @@ struct CodeTranslationInstructionsTests {
         let system = CodeTranslationInstructions.system(for: .toChinese, language: .generic)
         #expect(system.contains("not certain"))
         #expect(!system.contains("appears to be 代码"))
+        #expect(system.contains("Never translate code statements or language keywords"))
     }
 }

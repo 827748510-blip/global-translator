@@ -26,6 +26,23 @@ public enum HTTPTransportError: Error, Equatable, Sendable {
 
 public protocol HTTPTransport: Sendable {
     func send(_ request: URLRequest) async throws -> HTTPResponse
+    func sendStreaming(
+        _ request: URLRequest,
+        onChunk: @escaping @Sendable (Data) async -> Void
+    ) async throws -> HTTPResponse
+}
+
+public extension HTTPTransport {
+    func sendStreaming(
+        _ request: URLRequest,
+        onChunk: @escaping @Sendable (Data) async -> Void
+    ) async throws -> HTTPResponse {
+        let response = try await send(request)
+        if (200..<300).contains(response.statusCode), !response.body.isEmpty {
+            await onChunk(response.body)
+        }
+        return response
+    }
 }
 
 struct HTTPResponseAccumulator {
@@ -119,11 +136,18 @@ public final class URLSessionHTTPTransport: HTTPTransport, @unchecked Sendable {
         var response: HTTPURLResponse?
         var body: HTTPResponseAccumulator
         let continuation: CheckedContinuation<HTTPResponse, Error>
+        let streamContinuation: AsyncStream<Data>.Continuation?
+        var streamedBytes = 0
         var redirectRejected = false
         var responseTooLarge = false
 
-        init(continuation: CheckedContinuation<HTTPResponse, Error>, maximumResponseBytes: Int) {
+        init(
+            continuation: CheckedContinuation<HTTPResponse, Error>,
+            maximumResponseBytes: Int,
+            streamContinuation: AsyncStream<Data>.Continuation? = nil
+        ) {
             self.continuation = continuation
+            self.streamContinuation = streamContinuation
             body = HTTPResponseAccumulator(maximumBytes: maximumResponseBytes)
         }
     }
@@ -178,6 +202,43 @@ public final class URLSessionHTTPTransport: HTTPTransport, @unchecked Sendable {
         }
     }
 
+    public func sendStreaming(
+        _ request: URLRequest,
+        onChunk: @escaping @Sendable (Data) async -> Void
+    ) async throws -> HTTPResponse {
+        let task = session.dataTask(with: request)
+        let cancellation = RequestCancellation()
+        let (stream, streamContinuation) = AsyncStream<Data>.makeStream()
+        let consumer = Task {
+            for await chunk in stream {
+                await onChunk(chunk)
+            }
+        }
+        do {
+            let response = try await withTaskCancellationHandler {
+                try Task.checkCancellation()
+                return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<HTTPResponse, Error>) in
+                    lock.lock()
+                    pending[task.taskIdentifier] = PendingTask(
+                        continuation: continuation,
+                        maximumResponseBytes: maximumResponseBytes,
+                        streamContinuation: streamContinuation
+                    )
+                    lock.unlock()
+                    cancellation.start(task)
+                }
+            } onCancel: {
+                cancellation.cancel()
+            }
+            await consumer.value
+            return response
+        } catch {
+            streamContinuation.finish()
+            consumer.cancel()
+            throw error
+        }
+    }
+
     fileprivate func handle(
         dataTask: URLSessionDataTask,
         didReceive response: URLResponse,
@@ -186,7 +247,9 @@ public final class URLSessionHTTPTransport: HTTPTransport, @unchecked Sendable {
         lock.lock()
         if let state = pending[dataTask.taskIdentifier] {
             state.response = response as? HTTPURLResponse
-            state.body.reserveCapacity(response.expectedContentLength)
+            if state.streamContinuation == nil {
+                state.body.reserveCapacity(response.expectedContentLength)
+            }
         }
         lock.unlock()
         completionHandler(.allow)
@@ -197,16 +260,32 @@ public final class URLSessionHTTPTransport: HTTPTransport, @unchecked Sendable {
         didReceive data: Data
     ) {
         var responseTooLarge = false
+        var streamToYield: AsyncStream<Data>.Continuation?
         lock.lock()
         if let state = pending[dataTask.taskIdentifier] {
-            do {
-                try state.body.append(data)
-            } catch {
-                state.responseTooLarge = true
-                responseTooLarge = true
+            if let streamContinuation = state.streamContinuation,
+               let statusCode = state.response?.statusCode,
+               (200..<300).contains(statusCode) {
+                if data.count > maximumResponseBytes - state.streamedBytes {
+                    state.responseTooLarge = true
+                    responseTooLarge = true
+                } else {
+                    state.streamedBytes += data.count
+                    streamToYield = streamContinuation
+                }
+            } else {
+                do {
+                    try state.body.append(data)
+                } catch {
+                    state.responseTooLarge = true
+                    responseTooLarge = true
+                }
             }
         }
         lock.unlock()
+        if let streamToYield {
+            streamToYield.yield(data)
+        }
         if responseTooLarge {
             dataTask.cancel()
         }
@@ -232,6 +311,7 @@ public final class URLSessionHTTPTransport: HTTPTransport, @unchecked Sendable {
         let state = pending.removeValue(forKey: task.taskIdentifier)
         lock.unlock()
         guard let state else { return }
+        state.streamContinuation?.finish()
 
         if state.redirectRejected {
             state.continuation.resume(throwing: HTTPTransportError.redirectRejected)

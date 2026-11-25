@@ -316,6 +316,8 @@ public struct SelectionPopoverContent: Equatable, Sendable {
     public var loadingMessage: String?
     /// Whether an inline "打开设置" recovery action should appear on error.
     public var showsOpenSettingsAction: Bool
+    /// Whether this popover represents a screenshot OCR translation result.
+    public var isScreenshotResult: Bool
     /// Frozen at content creation so a long code selection is not re-detected
     /// on every SwiftUI body pass.
     public let isCodeSnippet: Bool
@@ -333,6 +335,7 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         clipboardHint: String? = nil,
         loadingMessage: String? = nil,
         showsOpenSettingsAction: Bool = false,
+        isScreenshotResult: Bool = false,
         isCodeSnippet: Bool? = nil
     ) {
         self.original = original
@@ -347,6 +350,7 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         self.clipboardHint = clipboardHint
         self.loadingMessage = loadingMessage
         self.showsOpenSettingsAction = showsOpenSettingsAction
+        self.isScreenshotResult = isScreenshotResult
         self.isCodeSnippet = isCodeSnippet ?? CodeSnippetDetector.isCode(original)
     }
 
@@ -396,15 +400,32 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         allowsPromptOptimize && !isCodeSnippet && !original.isEmpty && status != .unavailable
     }
 
+    public var originalCopyText: String {
+        original.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 截图翻译识别出原文后，允许一键复制完整 OCR 原文（非截断预览）。
+    /// 当状态为「无需翻译 / 已是中文」时，主按钮 `copyText` 本身就是原文，不重复显示两个按钮。
+    public var allowsCopyOriginal: Bool {
+        guard isScreenshotResult, !originalCopyText.isEmpty else { return false }
+        switch status {
+        case .translated, .loading, .failed:
+            return true
+        case .alreadyChinese, .noTranslationNeeded, .optimizing, .optimized, .unavailable:
+            return false
+        }
+    }
+
     public func asScreenshotResult() -> SelectionPopoverContent {
         var copy = self
         copy.allowsPromptOptimize = false
         copy.allowsRetranslate = false
+        copy.isScreenshotResult = true
         return copy
     }
 
     public var showsActionButtons: Bool {
-        showsTranslateAction || showsOptimizeAction || allowsCopy || showsOpenSettingsAction
+        showsTranslateAction || showsOptimizeAction || allowsCopyOriginal || allowsCopy || showsOpenSettingsAction
     }
 
     public var copyText: String {

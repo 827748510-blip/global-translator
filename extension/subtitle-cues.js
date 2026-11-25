@@ -3,7 +3,8 @@
 (function (root) {
   const MESSAGES = Object.freeze({
     serviceUnavailable: "翻译服务不可用",
-    noForeign: "未检测到外语内容"
+    noForeign: "未检测到外语内容",
+    mutedForAsr: "视频当前静音，取消静音后可启用本机语音字幕转写"
   });
 
   const DEFAULTS = Object.freeze({

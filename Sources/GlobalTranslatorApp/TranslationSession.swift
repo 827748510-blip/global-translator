@@ -227,6 +227,30 @@ public final class TranslationSession {
                     throw CancellationError()
                 } catch let error as ExtensionBridgeError {
                     throw error
+                } catch TranslationError.invalidResponse(let reason) where slice.count > 1 {
+                    // A single malformed item in a 3-item local batch should not
+                    // fail its healthy siblings or loop retries across the batch.
+                    for (offset, item) in slice.enumerated() {
+                        try Task.checkCancellation()
+                        guard isBridgeActive else { throw ExtensionBridgeError.translatorInactive }
+                        do {
+                            let single = try await translateBridgeSlice(
+                                [item],
+                                sourceLanguage: sourceLanguage,
+                                pageOrigin: pageOrigin,
+                                coordinator: coordinator
+                            )
+                            results.append(contentsOf: single)
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch let error as ExtensionBridgeError {
+                            throw error
+                        } catch {
+                            logger.event("bridge_item_failed", fields: ["reason": String(describing: error), "batch_reason": reason])
+                            results.append(nil)
+                            retryIndexes.append(index + offset)
+                        }
+                    }
                 } catch {
                     logger.event("bridge_item_failed", fields: ["reason": String(describing: error)])
                     for offset in 0..<slice.count {
@@ -313,6 +337,21 @@ public final class TranslationSession {
     /// snippets (`foo()`, `x = 1`) look like identifiers to `TextFilter` and
     /// would otherwise be skipped without a popover.
     public func translateSelection(_ text: String) async throws -> SelectionTranslationOutcome {
+        try await TranslationPriorityContext.$current.withValue(.high) {
+            try await performTranslateSelection(text)
+        }
+    }
+
+    public func translateSelectionStreaming(
+        _ text: String,
+        onPartial: @escaping @MainActor @Sendable (String) -> Void
+    ) async throws -> SelectionTranslationOutcome {
+        try await TranslationPriorityContext.$current.withValue(.high) {
+            try await performTranslateSelectionStreaming(text, onPartial: onPartial)
+        }
+    }
+
+    private func performTranslateSelection(_ text: String) async throws -> SelectionTranslationOutcome {
         try ensureSelectionCaptureAllowed()
         guard let coordinator = selectionCoordinator else { throw SelectionTranslateError.translatorUnavailable }
         let limited = SelectionTranslateSupport.limitSelectionSource(text)
@@ -746,22 +785,182 @@ public final class TranslationSession {
     }
 
     public func optimizePrompt(_ text: String, mode: PromptOptimizeMode) async throws -> String {
+        try await TranslationPriorityContext.$current.withValue(.high) {
+            try ensureSelectionCaptureAllowed()
+            guard let coordinator = selectionCoordinator else { throw SelectionTranslateError.translatorUnavailable }
+            let capped = SelectionTranslateSupport.cappedSource(text)
+            guard TextFilter.shouldOfferPromptOptimization(capped) else {
+                throw SelectionTranslateError.emptyResult
+            }
+            await coordinator.selectBackend(kind: backend, modelIdentifier: model)
+            try ensureSelectionCaptureAllowed()
+            let optimized = try await coordinator.completePlain(
+                system: PromptOptimizationInstructions.system(for: mode),
+                user: PromptOptimizationInstructions.userContent(for: capped, mode: mode),
+                backend: backend
+            )
+            let trimmed = optimized.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { throw SelectionTranslateError.emptyResult }
+            return trimmed
+        }
+    }
+
+    private func performTranslateSelectionStreaming(
+        _ text: String,
+        onPartial: @escaping @MainActor @Sendable (String) -> Void
+    ) async throws -> SelectionTranslationOutcome {
         try ensureSelectionCaptureAllowed()
         guard let coordinator = selectionCoordinator else { throw SelectionTranslateError.translatorUnavailable }
-        let capped = SelectionTranslateSupport.cappedSource(text)
-        guard TextFilter.shouldOfferPromptOptimization(capped) else {
+        guard let live = coordinator as? TranslationCoordinator else {
+            return try await performTranslateSelection(text)
+        }
+        let limited = SelectionTranslateSupport.limitSelectionSource(text)
+        if let detection = CodeSnippetDetector.detect(limited.text) {
+            let plan = CodeTranslationSupport.prepareSource(text)
+            guard !plan.chunks.isEmpty else { throw SelectionTranslateError.emptyResult }
+            if plan.chunks.count == 1 {
+                let sourceChunk = plan.chunks[0]
+                let direction = SelectionTranslationDirection.toChinese
+                if let cached = await live.cachedPlainTranslation(
+                    source: sourceChunk,
+                    backend: backend,
+                    model: model,
+                    targetLanguage: direction.targetLanguage,
+                    cacheScope: "selection_code"
+                ) {
+                    return SelectionTranslationOutcome(text: cached, sourceWasTruncated: plan.didTruncate)
+                }
+                logger.event("selection_code_detected", fields: ["language": detection.language.displayName])
+                await coordinator.selectBackend(kind: backend, modelIdentifier: model)
+                try ensureSelectionCaptureAllowed()
+                let accumulator = SelectionStreamAccumulator(prefix: "", onPartial: onPartial)
+                let raw = try await live.streamPlain(
+                    system: CodeTranslationInstructions.system(for: direction, language: detection.language),
+                    user: CodeTranslationInstructions.userContent(
+                        for: sourceChunk,
+                        language: detection.language,
+                        partIndex: 1,
+                        partCount: 1
+                    ),
+                    backend: backend
+                ) { delta in
+                    await accumulator.push(delta)
+                }
+                await accumulator.flush()
+                try Task.checkCancellation()
+                try ensureSelectionCaptureAllowed()
+                let explanation = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !explanation.isEmpty else { throw SelectionTranslateError.emptyResult }
+                let source = sourceChunk.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard explanation.caseInsensitiveCompare(source) != .orderedSame else {
+                    throw SelectionTranslateError.emptyResult
+                }
+                await live.storePlainTranslation(
+                    explanation,
+                    source: sourceChunk,
+                    backend: backend,
+                    model: model,
+                    targetLanguage: direction.targetLanguage,
+                    cacheScope: "selection_code"
+                )
+                return SelectionTranslationOutcome(text: explanation, sourceWasTruncated: plan.didTruncate)
+            }
+            return try await translateCodeSelection(text, detection: detection, coordinator: coordinator)
+        }
+
+        switch TextFilter.selectionDecision(limited.text) {
+        case .translate, .noTranslationNeeded, .alreadyTargetLanguage:
+            break
+        case .skip:
             throw SelectionTranslateError.emptyResult
         }
+        let direction = TextFilter.selectionDirection(limited.text) ?? .toChinese
+        let plan = SelectionTranslateSupport.prepareSource(text, direction: direction)
+        guard !plan.chunks.isEmpty else { throw SelectionTranslateError.emptyResult }
+
+        if plan.chunks.count > 1 && backend == .deepSeekCloud {
+            return try await performTranslateSelection(text)
+        }
+
+        var parts = Array(repeating: "", count: plan.chunks.count)
+        var allCached = true
+        for (index, chunk) in plan.chunks.enumerated() {
+            if let cached = await live.cachedPlainTranslation(
+                source: chunk,
+                backend: backend,
+                model: model,
+                targetLanguage: direction.targetLanguage,
+                cacheScope: "selection_stream"
+            ) {
+                parts[index] = cached
+            } else {
+                allCached = false
+            }
+        }
+        if allCached {
+            let joined = SelectionTranslateSupport.joinTranslatedChunks(parts)
+            if !joined.isEmpty {
+                return SelectionTranslationOutcome(text: joined, sourceWasTruncated: plan.didTruncate)
+            }
+        }
+
         await coordinator.selectBackend(kind: backend, modelIdentifier: model)
+        for (index, chunk) in plan.chunks.enumerated() where parts[index].isEmpty {
+            try Task.checkCancellation()
+            try ensureSelectionCaptureAllowed()
+            let completedPrefix = SelectionTranslateSupport.joinTranslatedChunks(Array(parts.prefix(index)))
+            let accumulator = SelectionStreamAccumulator(prefix: completedPrefix, onPartial: onPartial)
+            let resolved: String
+            do {
+                let raw = try await live.streamPlain(
+                    system: SelectionFallbackInstructions.system(for: direction),
+                    user: SelectionFallbackInstructions.userContent(for: chunk),
+                    backend: backend
+                ) { delta in
+                    await accumulator.push(delta)
+                }
+                await accumulator.flush()
+                try Task.checkCancellation()
+                try ensureSelectionCaptureAllowed()
+                let cleaned = SelectionTranslateSupport.cleanPlainFallback(raw, original: chunk)
+                if !cleaned.isEmpty && !CopiedSourceDetector.translationCopiesSource(cleaned, source: chunk) {
+                    resolved = cleaned
+                } else if plan.chunks.count == 1,
+                          !cleaned.isEmpty,
+                          SelectionTranslateSupport.isProperNounPhrase(chunk) {
+                    throw SelectionTranslateError.noTranslationNeeded
+                } else {
+                    resolved = try await Self.translateOneSelectionChunk(
+                        chunk,
+                        coordinator: coordinator,
+                        backend: backend,
+                        model: model,
+                        permissions: permissions,
+                        logger: logger,
+                        revision: nextSelectionRevision(),
+                        direction: direction
+                    )
+                }
+            } catch let error as SelectionTranslateError
+                where error == .noTranslationNeeded && plan.chunks.count > 1 {
+                throw SelectionTranslateError.emptyResult
+            } catch let error as TranslationError {
+                throw Self.selectionError(from: error)
+            }
+            parts[index] = resolved
+            await live.storePlainTranslation(
+                resolved,
+                source: chunk,
+                backend: backend,
+                model: model,
+                targetLanguage: direction.targetLanguage,
+                cacheScope: "selection_stream"
+            )
+        }
         try ensureSelectionCaptureAllowed()
-        let optimized = try await coordinator.completePlain(
-            system: PromptOptimizationInstructions.system(for: mode),
-            user: PromptOptimizationInstructions.userContent(for: capped, mode: mode),
-            backend: backend
-        )
-        let trimmed = optimized.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw SelectionTranslateError.emptyResult }
-        return trimmed
+        let joined = SelectionTranslateSupport.joinTranslatedChunks(parts)
+        guard !joined.isEmpty else { throw SelectionTranslateError.emptyResult }
+        return SelectionTranslationOutcome(text: joined, sourceWasTruncated: plan.didTruncate)
     }
 
     private func ensureSelectionCaptureAllowed() throws {
@@ -1266,5 +1465,46 @@ public final class TranslationSession {
             guard isRunning, revision == activeRevision || revision == submittedRevision else { return }
             handle(error)
         }
+    }
+}
+
+private actor SelectionStreamAccumulator {
+    private let prefix: String
+    private let onPartial: @MainActor @Sendable (String) -> Void
+    private var currentChunk = ""
+    private var lastEmitUptime: TimeInterval = 0
+    private let minInterval: TimeInterval = 0.05
+
+    init(prefix: String, onPartial: @escaping @MainActor @Sendable (String) -> Void) {
+        self.prefix = prefix
+        self.onPartial = onPartial
+    }
+
+    func push(_ delta: String) async {
+        guard !delta.isEmpty else { return }
+        currentChunk.append(delta)
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastEmitUptime >= minInterval else { return }
+        lastEmitUptime = now
+        let display = Self.joined(prefix: prefix, current: currentChunk)
+        guard !display.isEmpty else { return }
+        await MainActor.run {
+            onPartial(display)
+        }
+    }
+
+    func flush() async {
+        let display = Self.joined(prefix: prefix, current: currentChunk)
+        guard !display.isEmpty else { return }
+        await MainActor.run {
+            onPartial(display)
+        }
+    }
+
+    private static func joined(prefix: String, current: String) -> String {
+        let trimmedCurrent = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        if prefix.isEmpty { return trimmedCurrent }
+        if trimmedCurrent.isEmpty { return prefix }
+        return prefix + SelectionTranslateSupport.chunkJoinSeparator + trimmedCurrent
     }
 }

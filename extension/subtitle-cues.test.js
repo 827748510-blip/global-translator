@@ -214,6 +214,24 @@ const betweenCues = cues.overlayState({
 });
 assertDeep(betweenCues, { show: false, cueText: "", message: "" }, "hide between foreign cues");
 
+assertEqual(
+  cues.MESSAGES.mutedForAsr,
+  "视频当前静音，取消静音后可启用本机语音字幕转写",
+  "muted ASR hint message"
+);
+const mutedHint = cues.overlayState({
+  enabled: true,
+  cues: [],
+  time: 1,
+  probed: true,
+  noForeignMessage: cues.MESSAGES.mutedForAsr
+});
+assertDeep(
+  mutedHint,
+  { show: true, cueText: "", message: "视频当前静音，取消静音后可启用本机语音字幕转写" },
+  "muted video without captions shows ASR hint"
+);
+
 assertDeep(cues.desktopVideoPrefFromPing({ ok: true, videoTranslateEnabled: true }, null),
   { write: true, enabled: true }, "health true writes on");
 assertDeep(cues.desktopVideoPrefFromPing({ ok: true, videoTranslateEnabled: false }, null),

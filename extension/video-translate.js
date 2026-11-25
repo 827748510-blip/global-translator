@@ -214,10 +214,13 @@
     return captions;
   }
 
-  function youtubeNoForeignMessage() {
+  function noForeignOverlayMessage(video) {
     if (sidecarCues.length > 0) return "";
     if (Youtube && Youtube.isActivePage() && Youtube.MESSAGES) {
       return Youtube.MESSAGES.noYouTubeCaptions || "";
+    }
+    if (video && !video.paused && !video.ended && (video.muted || (typeof video.volume === "number" && video.volume <= 0))) {
+      return (Cues.MESSAGES && Cues.MESSAGES.mutedForAsr) || "";
     }
     return "";
   }
@@ -403,7 +406,7 @@
       serviceError,
       waitTimedOut,
       probed,
-      noForeignMessage: youtubeNoForeignMessage(),
+      noForeignMessage: noForeignOverlayMessage(video),
       asrStatus: isPrimary ? asrStatus : "",
       asrMessage: isPrimary ? asrMessage : ""
     });
@@ -564,6 +567,14 @@
     });
   }
 
+  function onVideoAudioOrPlaybackChange(event) {
+    safe(() => {
+      const video = event.target;
+      syncAsr();
+      renderVideo(video, primaryVideo());
+    });
+  }
+
   function bindVideo(video) {
     if (boundVideos.has(video)) return;
     boundVideos.add(video);
@@ -572,6 +583,9 @@
     video.addEventListener("seeked", onTimeUpdate);
     video.addEventListener("loadedmetadata", onTimeUpdate);
     video.addEventListener("emptied", onTimeUpdate);
+    video.addEventListener("volumechange", onVideoAudioOrPlaybackChange);
+    video.addEventListener("play", onVideoAudioOrPlaybackChange);
+    video.addEventListener("pause", onVideoAudioOrPlaybackChange);
     const onPipChange = () => safe(scheduleRenderAll);
     pipListeners.set(video, onPipChange);
     video.addEventListener("enterpictureinpicture", onPipChange);
@@ -597,6 +611,9 @@
     video.removeEventListener("seeked", onTimeUpdate);
     video.removeEventListener("loadedmetadata", onTimeUpdate);
     video.removeEventListener("emptied", onTimeUpdate);
+    video.removeEventListener("volumechange", onVideoAudioOrPlaybackChange);
+    video.removeEventListener("play", onVideoAudioOrPlaybackChange);
+    video.removeEventListener("pause", onVideoAudioOrPlaybackChange);
     const onPipChange = pipListeners.get(video);
     if (onPipChange) {
       video.removeEventListener("enterpictureinpicture", onPipChange);
