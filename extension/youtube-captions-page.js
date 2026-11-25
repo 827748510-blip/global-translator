@@ -75,19 +75,25 @@
   function collectCaptionText(root) {
     function collect(node, selector) {
       const parts = [];
-      function walk(target) {
-        if (!target || !target.querySelectorAll) return;
-        const nodes = target.querySelectorAll(selector);
+      if (!node || !node.querySelectorAll) return parts;
+      const containers = node.querySelectorAll(".ytp-caption-window-container, .caption-window, .ytp-caption-window-bottom, .html5-video-player, ytd-player");
+      const scopes = containers.length > 0 ? containers : [node];
+      for (let s = 0; s < scopes.length; s++) {
+        const scopeTarget = scopes[s];
+        if (!scopeTarget || !scopeTarget.querySelectorAll) continue;
+        const nodes = scopeTarget.querySelectorAll(selector);
         for (let i = 0; i < nodes.length; i++) {
           const text = String(nodes[i].textContent || "").replace(/\s+/g, " ").trim();
           if (text && parts[parts.length - 1] !== text) parts.push(text);
         }
-        const all = target.querySelectorAll("*");
-        for (let i = 0; i < all.length; i++) {
-          if (all[i] && all[i].shadowRoot) walk(all[i].shadowRoot);
+        if (scopeTarget.shadowRoot && scopeTarget.shadowRoot.querySelectorAll) {
+          const shadowNodes = scopeTarget.shadowRoot.querySelectorAll(selector);
+          for (let i = 0; i < shadowNodes.length; i++) {
+            const text = String(shadowNodes[i].textContent || "").replace(/\s+/g, " ").trim();
+            if (text && parts[parts.length - 1] !== text) parts.push(text);
+          }
         }
       }
-      walk(node);
       return parts;
     }
     const scope = root || document;
@@ -208,6 +214,22 @@
   wrapFetch();
   wrapXHR();
 
+  const domObserver = new MutationObserver(scheduleLive);
+
+  function startDomObserver() {
+    try {
+      const target = document.querySelector(".ytp-caption-window-container, .html5-video-player, ytd-player")
+        || document.body || document.documentElement;
+      if (target) {
+        domObserver.observe(target, { childList: true, subtree: true, characterData: true });
+      }
+    } catch (_error) {}
+  }
+
+  function stopDomObserver() {
+    try { domObserver.disconnect(); } catch (_error) {}
+  }
+
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
     if (event.origin !== location.origin) return;
@@ -215,9 +237,11 @@
     if (!data || data.source !== SOURCE_ISOLATED) return;
     if (data.kind === "hello") {
       relay = true;
+      startDomObserver();
       replay();
     } else if (data.kind === "bye") {
       relay = false;
+      stopDomObserver();
       lastTimedText = null;
       if (liveTimer) {
         clearTimeout(liveTimer);
@@ -228,9 +252,4 @@
 
   document.addEventListener("yt-navigate-finish", emitNavigate);
   window.addEventListener("yt-navigate-finish", emitNavigate);
-
-  const domObserver = new MutationObserver(scheduleLive);
-  try {
-    domObserver.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
-  } catch (_error) {}
 })();

@@ -23,14 +23,10 @@ public struct OverlayView: View {
             .lineLimit(GTOverlayMetrics.maxLines)
             .truncationMode(.tail)
             .fixedSize(horizontal: false, vertical: true)
-            .frame(
-                maxWidth: GTOverlayMetrics.maxTextWidth,
-                alignment: .leading
-            )
             .padding(.horizontal, GTOverlayMetrics.horizontalPadding)
             .padding(.vertical, GTOverlayMetrics.verticalPadding)
-            // Fill the whole panel, not just the text's intrinsic width, so the
-            // patch also covers the original text underneath.
+            // Fill the whole panel so wide source regions do not leave empty gaps
+            // and the patch covers the original text underneath.
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             // Solid fill, not a translucent material: a material still lets the
             // English source show through, which defeats the in-place patch.

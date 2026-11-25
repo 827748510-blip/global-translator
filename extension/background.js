@@ -45,18 +45,60 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // POST so Chrome attaches `Origin: chrome-extension://<id>` — the app
     // rejects origin-less GETs, which is exactly what a plain fetch is.
     // Health does not touch Ollama/DeepSeek; never queue it behind page or
-    // video /translate or Chrome's sendResponse channel times out and the
-    // content script used to clobber storage.local to false.
+    // video /translate or Chrome's sendResponse channel times out.
     fetch(ENDPOINT + "/health", { method: "POST" })
       .then(async (response) => {
         let videoTranslateEnabled = false;
+        let autoTranslateEnabled = false;
+        let backendReady = false;
+        let blockedReason = "";
+        let videoAsrStatus = "idle";
         try {
           const payload = await response.json();
           videoTranslateEnabled = payload.videoTranslateEnabled === true;
+          autoTranslateEnabled = payload.autoTranslateEnabled === true;
+          backendReady = payload.backendReady === true;
+          blockedReason = typeof payload.blockedReason === "string" ? payload.blockedReason : "";
+          videoAsrStatus = typeof payload.videoAsrStatus === "string" ? payload.videoAsrStatus : "idle";
         } catch (_error) {}
-        sendResponse({ ok: response.ok, videoTranslateEnabled });
+        sendResponse({
+          ok: response.ok,
+          videoTranslateEnabled,
+          autoTranslateEnabled,
+          backendReady,
+          blockedReason,
+          videoAsrStatus
+        });
       })
-      .catch(() => sendResponse({ ok: false, videoTranslateEnabled: false }));
+      .catch(() => sendResponse({
+        ok: false,
+        videoTranslateEnabled: false,
+        autoTranslateEnabled: false,
+        backendReady: false,
+        blockedReason: "",
+        videoAsrStatus: "idle"
+      }));
+    return true;
+  }
+  if (message.type === "set-video-translate") {
+    const enabled = message.enabled === true;
+    fetch(ENDPOINT + "/video-translate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled })
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          sendResponse({ ok: false, videoTranslateEnabled: !enabled, error: "http " + response.status });
+          return;
+        }
+        const payload = await response.json();
+        sendResponse({
+          ok: payload.ok !== false,
+          videoTranslateEnabled: payload.videoTranslateEnabled === true
+        });
+      })
+      .catch((error) => sendResponse({ ok: false, videoTranslateEnabled: !enabled, error: String(error) }));
     return true;
   }
   if (message.type === "video-asr") {

@@ -15,14 +15,18 @@ struct RegionSelectionOverlayTests {
     }
 
     @Test
-    func regionPanelIsNonactivatingAndCapturesMouseWithoutBecomingKey() {
+    func regionPanelIsNonactivatingAndSupportsEscapeKeyWithoutBecomingMain() {
         let panel = RegionSelectionPanel(contentRect: CGRect(x: 0, y: 0, width: 200, height: 200))
+        var escaped = 0
+        panel.onEscape = { escaped += 1 }
         #expect(!panel.ignoresMouseEvents)
         #expect(panel.styleMask.contains(.borderless))
         #expect(panel.styleMask.contains(.nonactivatingPanel))
-        #expect(!panel.canBecomeKey)
+        #expect(panel.canBecomeKey)
         #expect(!panel.canBecomeMain)
         #expect(panel.level == .screenSaver)
+        panel.cancelOperation(nil)
+        #expect(escaped == 1)
         #expect(NullRegionSelector().isSelecting == false)
     }
 
@@ -55,5 +59,32 @@ struct RegionSelectionOverlayTests {
         let outcome = await selection.value
         #expect(outcome == .cancelled)
         #expect(!overlay.isSelecting)
+    }
+
+    @Test
+    func crossScreenDragClampsPreviewToStartingDisplay() async throws {
+        let screens = NSScreen.screens
+        guard let primary = screens.first else { return }
+        let overlay = RegionSelectionOverlayController(screensProvider: { [primary] })
+        let selection = Task { @MainActor in
+            await overlay.selectRegion()
+        }
+        defer { overlay.cancel() }
+        try await waitUntil { overlay.isSelecting }
+
+        let start = CGPoint(x: primary.frame.maxX - 40, y: primary.frame.midY)
+        let outside = CGPoint(x: primary.frame.maxX + 200, y: primary.frame.midY + 60)
+        overlay.handlePointerForTesting(.down, at: start)
+        overlay.handlePointerForTesting(.dragged, at: outside)
+        let preview = overlay.displayedSelectionRectForTesting
+        #expect(preview.maxX <= primary.frame.maxX + 0.01)
+
+        overlay.handlePointerForTesting(.up, at: outside)
+        let outcome = await selection.value
+        guard case .completed(let finalRect) = outcome else {
+            Issue.record("expected completed rect")
+            return
+        }
+        #expect(finalRect.maxX <= primary.frame.maxX + 0.01)
     }
 }

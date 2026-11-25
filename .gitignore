@@ -10,11 +10,12 @@ DerivedData/
 # Release & Staging Artifacts
 /dist/
 
-# macOS System Files
+# OS System Files
 .DS_Store
 .AppleDouble
 .LSOverride
 ._*
+Thumbs.db
 
 # AI Assistants & Editor Caches
 /.codegraph
@@ -34,6 +35,12 @@ gt-resume-shots/
 node_modules/
 coverage/
 *.log
+test-results/
+screenshots/
+videos/
+traces/
+*.heapsnapshot
+*.hprof
 
 # Local Secrets & Signing Credentials (Safety Net)
 .env
@@ -41,3 +48,4 @@ coverage/
 *.pem
 *.p12
 *.mobileprovision
+*.key

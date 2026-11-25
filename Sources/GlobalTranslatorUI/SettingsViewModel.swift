@@ -1,7 +1,27 @@
 import Foundation
-import Combine
+import Observation
 import GlobalTranslatorCore
 import GlobalTranslatorCapture
+
+/// Top-level navigation tabs inside the menu-bar settings popover.
+public enum SettingsTab: String, CaseIterable, Equatable, Hashable, Sendable, Identifiable {
+    case translation
+    case backend
+    case advanced
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .translation:
+            return "翻译"
+        case .backend:
+            return "后端"
+        case .advanced:
+            return "高级"
+        }
+    }
+}
 
 /// View model for the settings popover. Presentation only — all backend,
 /// keychain, and permission work is delegated to the injected `SettingsActions`.
@@ -9,62 +29,85 @@ import GlobalTranslatorCapture
 /// Security invariant: `keyDraft` starts empty and is never populated from a
 /// stored key. It is cleared only after a successful save.
 @MainActor
-public final class SettingsViewModel: ObservableObject {
+@Observable
+public final class SettingsViewModel {
     // MARK: - Integration-pushed state
 
     /// Current runtime status shown in the status item and popover header.
-    @Published public var status: MenuBarStatus = .off
-    @Published public var isAutomaticTranslationEnabled = false
-    @Published public var isSelectionTranslateEnabled = true
-    @Published public var isVideoTranslateEnabled = false
-    @Published public var promptOptimizeMode: PromptOptimizeMode = .communicationPolish
-    @Published public var autoCopyScreenshotTranslation = false
-    @Published public var saveScreenshotImage = false
-    @Published public var copyScreenshotImage = false
-    @Published public var screenshotSaveDirectory = AppConfiguration.defaultScreenshotSaveDirectory
-    @Published public var screenshotTranslateHotkey = KeyboardShortcutSpec.screenshotTranslateDefault
-    @Published public var isRecordingScreenshotHotkey = false
-    @Published public var screenshotHotkeyConflictMessage: String?
-    @Published public var selectedBackend: BackendKind = .deepSeekCloud
-    @Published public var keyConfigured = false
-    @Published public var localBaseURL = ""
-    @Published public var localModel = ""
-    @Published public var deepSeekModel = AppConfiguration.defaultDeepSeekModel
-    @Published public var availableModels: [String] = []
-    @Published public var permissionSnapshot = PermissionSnapshot(
+    public var status: MenuBarStatus = .off {
+        didSet {
+            guard oldValue != status else { return }
+            onStatusChange?(status)
+        }
+    }
+    public var isAutomaticTranslationEnabled = false
+    public var isSelectionTranslateEnabled = true
+    public var isVideoTranslateEnabled = false
+    public var promptOptimizeMode: PromptOptimizeMode = .communicationPolish
+    public var autoCopyScreenshotTranslation = false
+    public var saveScreenshotImage = false
+    public var copyScreenshotImage = false
+    public var screenshotSaveDirectory = AppConfiguration.defaultScreenshotSaveDirectory
+    public var screenshotTranslateHotkey = KeyboardShortcutSpec.screenshotTranslateDefault
+    public var isRecordingScreenshotHotkey = false
+    public var screenshotHotkeyConflictMessage: String?
+    public var selectedBackend: BackendKind = .deepSeekCloud
+    public var keyConfigured = false
+    public var localBaseURL = ""
+    public var localModel = ""
+    public var deepSeekModel = AppConfiguration.defaultDeepSeekModel
+    public var availableModels: [String] = []
+    public var permissionSnapshot = PermissionSnapshot(
         accessibilityTrusted: false,
         screenCaptureAuthorized: false,
         secureInputEnabled: false,
         sessionLocked: false
     )
-    @Published public var translatedApplications: [TranslatedApplication] = []
-    @Published public var healthMessage: String?
+    public var translatedApplications: [TranslatedApplication] = []
+    public var healthMessage: String?
 
     /// Whether the currently selected backend has been validated (healthy
     /// connection test, or a successful key save for cloud). Reset whenever
     /// the backend selection or local configuration changes.
-    @Published public var backendReady = false
+    public var backendReady = false
+
+    // MARK: - Navigation & feedback state
+
+    public var selectedTab: SettingsTab = .translation
+    public var actionFeedbackMessage: String?
 
     // MARK: - User-editable state
 
     /// Never prefilled; cleared on successful save only.
-    @Published public var keyDraft = ""
+    public var keyDraft = ""
     /// When a key is marked configured, the SecureField stays hidden until
     /// the user explicitly chooses 替换密钥. Switching backends must not open it
     /// and must not read Keychain to decide.
-    @Published public var isReplacingKey = false
-    @Published public var keyOperation: KeyOperationState = .idle
-    @Published public var connectionTest: ConnectionTestState = .idle
+    public var isReplacingKey = false
+    public var keyOperation: KeyOperationState = .idle
+    public var connectionTest: ConnectionTestState = .idle
 
     // MARK: - Confirmation state
 
-    @Published public var isDeleteKeyConfirmationPresented = false
-    @Published public var isClearCacheConfirmationPresented = false
+    public var isDeleteKeyConfirmationPresented = false
+    public var isClearCacheConfirmationPresented = false
 
     /// 窗口覆盖层与扩展桥的目标语言固定为简体中文；划词/截图方向按内容判定。
     public let targetLanguageDisplayName = "简体中文"
 
+    @ObservationIgnored
+    public var onStatusChange: ((MenuBarStatus) -> Void)?
+
+    @ObservationIgnored
     private let actions: SettingsActions
+    @ObservationIgnored
+    private var lastValidatedLocalBaseURL: String?
+    @ObservationIgnored
+    private var lastValidatedLocalModels: Set<String> = []
+    @ObservationIgnored
+    private var actionFeedbackGeneration: UInt64 = 0
+    @ObservationIgnored
+    private var actionFeedbackTask: Task<Void, Never>?
 
     public init(actions: SettingsActions) {
         self.actions = actions
@@ -224,6 +267,8 @@ public final class SettingsViewModel: ObservableObject {
         selectedBackend = kind
         connectionTest = .idle
         backendReady = false
+        lastValidatedLocalBaseURL = nil
+        lastValidatedLocalModels = []
         isReplacingKey = false
         keyDraft = ""
         keyOperation = .idle
@@ -246,6 +291,7 @@ public final class SettingsViewModel: ObservableObject {
                 backendReady = true
             }
             keyOperation = .idle
+            showActionFeedback("已保存 API Key 到钥匙串")
         } catch {
             // Draft is preserved so the user can retry; it is never logged.
             keyOperation = .failure(Self.describe(error))
@@ -271,6 +317,7 @@ public final class SettingsViewModel: ObservableObject {
             isReplacingKey = false
             backendReady = false
             keyOperation = .idle
+            showActionFeedback("已删除 API Key")
         } catch {
             keyOperation = .failure(Self.describe(error))
         }
@@ -309,8 +356,17 @@ public final class SettingsViewModel: ObservableObject {
                 healthMessage = health.message
                 backendReady = true
                 availableModels = supportedModels
+                if selectedBackend == .local {
+                    lastValidatedLocalBaseURL = localBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                    lastValidatedLocalModels = Set(supportedModels)
+                } else {
+                    lastValidatedLocalBaseURL = nil
+                    lastValidatedLocalModels = []
+                }
                 adoptCloudModelIfNeeded(from: supportedModels)
             case .modelUnavailable:
+                lastValidatedLocalBaseURL = nil
+                lastValidatedLocalModels = []
                 if !supportedModels.isEmpty {
                     availableModels = supportedModels
                 }
@@ -337,6 +393,8 @@ public final class SettingsViewModel: ObservableObject {
                 healthMessage = message
                 backendReady = false
             case .unavailable, .invalidCredentials, .invalidConfiguration:
+                lastValidatedLocalBaseURL = nil
+                lastValidatedLocalModels = []
                 // Only `.healthy` (and an adoptable cloud model list) counts
                 // as success; failure statuses show fixed UI-safe Chinese
                 // text, never the raw backend message.
@@ -349,6 +407,8 @@ public final class SettingsViewModel: ObservableObject {
                 }
             }
         } catch {
+            lastValidatedLocalBaseURL = nil
+            lastValidatedLocalModels = []
             let message = Self.describe(error)
             connectionTest = .failed(message)
             healthMessage = message
@@ -361,8 +421,19 @@ public final class SettingsViewModel: ObservableObject {
     public func commitLocalConfiguration() {
         let trimmedURL = localBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedURL.isEmpty else { return }
-        // Any local config change invalidates previous validation.
-        backendReady = false
+        let modelMatchesValidated = selectedBackend == .local
+            && backendReady
+            && trimmedURL == lastValidatedLocalBaseURL
+            && !localModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && lastValidatedLocalModels.contains(localModel)
+        if modelMatchesValidated {
+            showActionFeedback("已切换本地模型")
+        } else {
+            backendReady = false
+            lastValidatedLocalBaseURL = nil
+            lastValidatedLocalModels = []
+            showActionFeedback("已更新本地配置，请测试连接")
+        }
         actions.setLocalConfiguration(baseURL: trimmedURL, model: localModel)
     }
 
@@ -422,6 +493,7 @@ public final class SettingsViewModel: ObservableObject {
         isClearCacheConfirmationPresented = false
         do {
             try await actions.clearCache()
+            showActionFeedback("已清除本地翻译缓存")
         } catch {
             healthMessage = Self.describe(error)
         }
@@ -437,6 +509,22 @@ public final class SettingsViewModel: ObservableObject {
 
     public func quit() {
         actions.quit()
+    }
+
+    public func showActionFeedback(_ message: String, duration: Duration = .seconds(2)) {
+        actionFeedbackGeneration &+= 1
+        let generation = actionFeedbackGeneration
+        actionFeedbackTask?.cancel()
+        actionFeedbackMessage = message
+        actionFeedbackTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: duration)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled, self.actionFeedbackGeneration == generation else { return }
+            self.actionFeedbackMessage = nil
+        }
     }
 
     // MARK: - Error description

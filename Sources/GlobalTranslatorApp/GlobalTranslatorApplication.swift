@@ -33,7 +33,7 @@ public final class GlobalTranslatorApplicationRunner: NSObject {
         }
 
         let timer = Timer(
-            timeInterval: 0.1,
+            timeInterval: 0.5,
             target: self,
             selector: #selector(pollWorkerState),
             userInfo: nil,

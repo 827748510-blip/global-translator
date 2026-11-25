@@ -46,7 +46,7 @@ public enum OverlayLayout {
         ceil(font.ascender - font.descender + font.leading)
     }
 
-    /// Conservative text measurement for panel sizing. Long CJK text wraps at
+    /// Fast TextKit text measurement for panel sizing. Long CJK text wraps at
     /// `maxWidth`; height is capped at `maxLines` (the view truncates with an
     /// ellipsis at the same limit).
     public static func estimatedTextSize(
@@ -56,15 +56,22 @@ public enum OverlayLayout {
         font: NSFont = NSFont.preferredFont(forTextStyle: .callout)
     ) -> CGSize {
         let lineHeight = estimatedLineHeight(for: font)
-        let constrained = CGSize(width: maxWidth, height: .greatestFiniteMagnitude)
-        let measured = (text as NSString).boundingRect(
-            with: constrained,
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: [.font: font]
-        )
-        let cappedHeight = min(ceil(measured.height), lineHeight * CGFloat(maxLines))
+        guard !text.isEmpty, maxWidth > 0 else {
+            return CGSize(width: 0, height: lineHeight)
+        }
+        let storage = NSTextStorage(string: text, attributes: [.font: font])
+        let manager = NSLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: maxWidth, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        container.widthTracksTextView = false
+        container.maximumNumberOfLines = max(1, maxLines)
+        manager.addTextContainer(container)
+        storage.addLayoutManager(manager)
+        manager.ensureLayout(for: container)
+        let used = manager.usedRect(for: container)
+        let cappedHeight = min(ceil(used.height), lineHeight * CGFloat(maxLines))
         return CGSize(
-            width: min(ceil(measured.width), maxWidth),
+            width: min(ceil(used.width), maxWidth),
             height: max(cappedHeight, lineHeight)
         )
     }
@@ -134,9 +141,11 @@ public final class OverlayPanelController {
     /// for verifying root-content updates without introspecting SwiftUI.
     private var panelContents: [UUID: String] = [:]
     private var sourceFrames: [UUID: CGRect] = [:]
-    private var hoverTask: Task<Void, Never>?
+    nonisolated(unsafe) private var mouseMonitors: [Any] = []
+    private var lastHoverSampleTime: TimeInterval = 0
     private var invalidatedThroughRevision: UInt64?
     private let visibleFramesProvider: () -> [CGRect]
+    public var shouldSuppressHoverRaise: () -> Bool
 
     public var panelCount: Int {
         panels.count
@@ -147,23 +156,25 @@ public final class OverlayPanelController {
         panelContents[id]
     }
 
-    public init() {
-        self.visibleFramesProvider = { NSScreen.screens.map(\.visibleFrame) }
-    }
-
-    /// Test seam: inject screen visible frames without touching real displays.
-    public init(visibleFramesProvider: @escaping () -> [CGRect]) {
+    public init(
+        visibleFramesProvider: @escaping () -> [CGRect] = { NSScreen.screens.map(\.visibleFrame) },
+        shouldSuppressHoverRaise: @escaping () -> Bool = { false }
+    ) {
         self.visibleFramesProvider = visibleFramesProvider
+        self.shouldSuppressHoverRaise = shouldSuppressHoverRaise
     }
 
-    deinit { hoverTask?.cancel() }
+    deinit {
+        for monitor in mouseMonitors { NSEvent.removeMonitor(monitor) }
+    }
 
     func panelLevel(for id: UUID) -> NSWindow.Level? { panels[id]?.level }
 
     func updateHover(at point: CGPoint) {
+        let suppressed = shouldSuppressHoverRaise()
         for (id, panel) in panels {
             let area = panel.frame.union(sourceFrames[id] ?? panel.frame).insetBy(dx: -4, dy: -4)
-            let level: NSWindow.Level = area.contains(point) ? .screenSaver : .floating
+            let level: NSWindow.Level = (!suppressed && area.contains(point)) ? .screenSaver : .floating
             if panel.level != level {
                 panel.level = level
                 if level == .screenSaver { panel.orderFrontRegardless() }
@@ -173,19 +184,38 @@ public final class OverlayPanelController {
 
     private func trackHover() {
         guard !panels.isEmpty else {
-            hoverTask?.cancel()
-            hoverTask = nil
+            stopMouseMonitors()
             return
         }
         updateHover(at: NSEvent.mouseLocation)
-        guard hoverTask == nil else { return }
-        hoverTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-                guard let self, !self.panels.isEmpty else { return }
+        guard mouseMonitors.isEmpty else { return }
+        var monitors: [Any] = []
+        let handler: (NSEvent) -> Void = { [weak self] _ in
+            guard let self else { return }
+            assert(Thread.isMainThread)
+            MainActor.assumeIsolated {
+                guard !self.panels.isEmpty else { return }
+                let now = ProcessInfo.processInfo.systemUptime
+                guard now - self.lastHoverSampleTime >= 0.05 else { return }
+                self.lastHoverSampleTime = now
                 self.updateHover(at: NSEvent.mouseLocation)
             }
         }
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved, handler: handler) {
+            monitors.append(global)
+        }
+        if let local = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved, handler: { event in
+            handler(event)
+            return event
+        }) {
+            monitors.append(local)
+        }
+        mouseMonitors = monitors
+    }
+
+    private func stopMouseMonitors() {
+        for monitor in mouseMonitors { NSEvent.removeMonitor(monitor) }
+        mouseMonitors = []
     }
 
     /// Replaces the overlay set with the given translations for `revision`.
@@ -200,17 +230,18 @@ public final class OverlayPanelController {
 
         for translation in translations {
             guard !translation.text.isEmpty else { continue }
-            let origin = translation.region.screenFrame.origin
-            guard let visibleFrame = OverlayLayout.owningVisibleFrame(
-                for: origin,
-                in: visibleFrames
-            ) else { continue }
+            let screenFrame = translation.region.screenFrame
+            let center = CGPoint(x: screenFrame.midX, y: screenFrame.midY)
+            guard let visibleFrame = OverlayLayout.owningVisibleFrame(for: center, in: visibleFrames)
+                ?? OverlayLayout.owningVisibleFrame(for: screenFrame.origin, in: visibleFrames) else {
+                continue
+            }
 
             seen.insert(translation.id)
-            sourceFrames[translation.id] = translation.region.screenFrame
+            sourceFrames[translation.id] = screenFrame
             let contentSize = OverlayLayout.contentSize(forText: translation.text)
             let frame = OverlayLayout.placementFrame(
-                originalFrame: translation.region.screenFrame,
+                originalFrame: screenFrame,
                 contentSize: contentSize,
                 screenVisibleFrame: visibleFrame
             )
@@ -253,7 +284,6 @@ public final class OverlayPanelController {
         panels.removeAll()
         panelContents.removeAll()
         sourceFrames.removeAll()
-        hoverTask?.cancel()
-        hoverTask = nil
+        stopMouseMonitors()
     }
 }
