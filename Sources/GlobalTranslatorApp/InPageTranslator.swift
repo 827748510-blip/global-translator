@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import GlobalTranslatorCore
 
@@ -74,16 +75,36 @@ public actor CDPInPageTranslator: InPageTranslating {
         return available && owns(windowPID: windowPID)
     }
 
-    /// Only the browser instance exposing the debug port gets in-page
-    /// translation; windows of any other process with the same bundle
-    /// identifier (e.g. a main Chrome running next to the dedicated
-    /// debug-profile instance) must reach the bubble pipeline instead of
-    /// being silently swallowed. Unknown PIDs (query failure or a caller
-    /// without one) keep the legacy claim-everything behavior so
-    /// single-instance setups are unaffected.
+    /// Only the browser instance exposing the debug port owned by the current
+    /// OS user gets in-page translation; unknown PIDs or missing browser PIDs
+    /// fail closed so normal/foreign windows fall through to the bubble
+    /// pipeline instead of risking misattribution.
     private func owns(windowPID: Int32) -> Bool {
-        guard windowPID > 0, let browserPID else { return true }
+        guard windowPID > 0, let browserPID else { return false }
         return browserPID == windowPID
+    }
+
+    private static func isOwnedByCurrentUser(pid: Int32) -> Bool {
+        guard pid > 0 else { return false }
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.stride)
+        let read = Darwin.proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size)
+        guard read == size else { return false }
+        return info.pbi_uid == getuid()
+    }
+
+    static func validatedWebSocketURL(_ raw: String, port: UInt16) -> URL? {
+        guard let components = URLComponents(string: raw),
+              components.scheme?.lowercased() == "ws",
+              components.user == nil,
+              components.password == nil,
+              let host = components.host?.lowercased(),
+              ["127.0.0.1", "localhost", "::1"].contains(host),
+              components.port == Int(port),
+              components.path.hasPrefix("/devtools/") else {
+            return nil
+        }
+        return components.url
     }
 
     /// Main-process PID of the debug-enabled browser, resolved through the
@@ -94,10 +115,15 @@ public actor CDPInPageTranslator: InPageTranslating {
               (response as? HTTPURLResponse)?.statusCode == 200,
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let webSocketURL = object["webSocketDebuggerUrl"] as? String,
+              Self.validatedWebSocketURL(webSocketURL, port: port) != nil,
               let payload = try? await rpc(webSocketURL: webSocketURL, method: "SystemInfo.getProcessInfo", params: [:]),
               let processes = payload["processInfo"] as? [[String: Any]] else { return nil }
         for process in processes where process["type"] as? String == "browser" {
-            if let id = process["id"] as? Int { return Int32(id) }
+            if let id = process["id"] as? Int {
+                let candidate = Int32(clamping: id)
+                guard Self.isOwnedByCurrentUser(pid: candidate) else { return nil }
+                return candidate
+            }
         }
         return nil
     }
@@ -107,10 +133,7 @@ public actor CDPInPageTranslator: InPageTranslating {
         // other CDP targets (background tabs, automation browsers sharing the
         // debug port) are skipped so the wrong page is never rewritten.
         for page in try await pageTargets() {
-            let focused = try await rpc(page: page, method: "Runtime.evaluate", params: [
-                "expression": Self.focusScript,
-                "returnByValue": true
-            ])
+            let focused = try await evaluateInIsolatedWorld(page: page, expression: Self.focusScript)
             guard Self.resultValue(focused) as? Bool == true else { continue }
             activePageIdentifier = page.identifier
             extractionTargetURL = page.url
@@ -123,10 +146,7 @@ public actor CDPInPageTranslator: InPageTranslating {
     private var activePageIdentifier: String?
 
     private func extractTexts(from page: PageTarget) async throws -> [InPageText] {
-        let payload = try await rpc(page: page, method: "Runtime.evaluate", params: [
-            "expression": Self.extractScript,
-            "returnByValue": true
-        ])
+        let payload = try await evaluateInIsolatedWorld(page: page, expression: Self.extractScript)
         if let exception = payload["exceptionDetails"] as? [String: Any] {
             let detail = (exception["exception"] as? [String: Any])?["description"] as? String
                 ?? (exception["text"] as? String) ?? "script exception"
@@ -138,13 +158,25 @@ public actor CDPInPageTranslator: InPageTranslating {
             throw CDPError.requestFailed(message)
         }
         guard let entries = decoded as? [[String: Any]] else { return [] }
-        return entries.compactMap { entry in
+        var seenNodeIDs: Set<String> = []
+        var collected: [InPageText] = []
+        collected.reserveCapacity(min(entries.count, 200))
+        for entry in entries.prefix(200) {
             guard let nodeID = entry["id"] as? String,
-                  let text = entry["text"] as? String, !text.isEmpty else { return nil }
+                  !nodeID.isEmpty,
+                  seenNodeIDs.insert(nodeID).inserted,
+                  let text = entry["text"] as? String,
+                  !text.isEmpty,
+                  text.count <= 4_000 else { continue }
             let id = nodeIdentifier(for: nodeID)
-            return InPageText(nodeID: nodeID, id: id, text: text,
-                              sourceLanguage: (entry["sourceLanguage"] as? String).flatMap(TranslationSourceLanguage.init))
+            collected.append(InPageText(
+                nodeID: nodeID,
+                id: id,
+                text: text,
+                sourceLanguage: (entry["sourceLanguage"] as? String).flatMap(TranslationSourceLanguage.init)
+            ))
         }
+        return collected
     }
 
     public func apply(_ replacements: [InPageReplacement]) async throws {
@@ -152,12 +184,12 @@ public actor CDPInPageTranslator: InPageTranslating {
         let targets = try await pageTargets()
         let page = targets.first { $0.identifier == activePageIdentifier }
             ?? targets.first { $0.url == extractionTargetURL }
-            ?? targets.first
         guard let page else { return }
-        let map = Dictionary(uniqueKeysWithValues: replacements.compactMap { replacement -> (String, String)? in
+        let pairs = replacements.compactMap { replacement -> (String, String)? in
             let text = replacement.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return text.isEmpty ? nil : (replacement.nodeID, text)
-        })
+        }
+        let map = Dictionary(pairs, uniquingKeysWith: { _, latest in latest })
         let json = try JSONSerialization.data(withJSONObject: map)
         let expression = "(() => { const m = \(String(decoding: json, as: UTF8.self));"
             + " let applied = 0;"
@@ -168,10 +200,7 @@ public actor CDPInPageTranslator: InPageTranslating {
             + " window.__gtTranslator.entries[id] = { source: trimmed, translation: m[id] };"
             + " node.nodeValue = original.replace(trimmed, m[id]); applied++; } } } }"
             + " return String(applied); })()"
-        let payload = try await rpc(page: page, method: "Runtime.evaluate", params: [
-            "expression": expression,
-            "returnByValue": true
-        ])
+        let payload = try await evaluateInIsolatedWorld(page: page, expression: expression)
         _ = Self.resultValue(payload)
     }
 
@@ -199,21 +228,52 @@ public actor CDPInPageTranslator: InPageTranslating {
         return targets.compactMap { target in
             guard let identifier = target["id"] as? String,
                   let webSocketURL = target["webSocketDebuggerUrl"] as? String,
+                  Self.validatedWebSocketURL(webSocketURL, port: port) != nil,
                   let kind = target["type"] as? String, kind == "page",
                   let pageURL = target["url"] as? String, pageURL.hasPrefix("http") else { return nil }
             return PageTarget(identifier: identifier, url: pageURL, kind: kind, webSocketURL: webSocketURL)
         }
     }
 
-    private func rpc(page: PageTarget, method: String, params: [String: Any]) async throws -> [String: Any] {
-        try await rpc(webSocketURL: page.webSocketURL, method: method, params: params)
-    }
-
-    private func rpc(webSocketURL: String, method: String, params: [String: Any]) async throws -> [String: Any] {
-        guard let url = URL(string: webSocketURL) else { throw URLError(.badURL) }
+    private func evaluateInIsolatedWorld(page: PageTarget, expression: String) async throws -> [String: Any] {
+        guard let url = Self.validatedWebSocketURL(page.webSocketURL, port: port) else {
+            throw CDPError.requestFailed("untrusted websocket url")
+        }
         let webSocket = urlSession.webSocketTask(with: url)
         webSocket.resume()
         defer { webSocket.cancel(with: .normalClosure, reason: nil) }
+        let frameTree = try await sendRPC(on: webSocket, method: "Page.getFrameTree", params: [:])
+        guard let frame = frameTree["frameTree"] as? [String: Any],
+              let rootFrame = frame["frame"] as? [String: Any],
+              let frameID = rootFrame["id"] as? String, !frameID.isEmpty else {
+            throw CDPError.requestFailed("missing root frame id")
+        }
+        let world = try await sendRPC(on: webSocket, method: "Page.createIsolatedWorld", params: [
+            "frameId": frameID,
+            "worldName": "GlobalTranslatorIsolated",
+            "grantUniveralAccess": false
+        ])
+        guard let contextID = world["executionContextId"] as? Int else {
+            throw CDPError.requestFailed("missing isolated executionContextId")
+        }
+        return try await sendRPC(on: webSocket, method: "Runtime.evaluate", params: [
+            "expression": expression,
+            "contextId": contextID,
+            "returnByValue": true
+        ])
+    }
+
+    private func rpc(webSocketURL: String, method: String, params: [String: Any]) async throws -> [String: Any] {
+        guard let url = Self.validatedWebSocketURL(webSocketURL, port: port) else {
+            throw CDPError.requestFailed("untrusted websocket url")
+        }
+        let webSocket = urlSession.webSocketTask(with: url)
+        webSocket.resume()
+        defer { webSocket.cancel(with: .normalClosure, reason: nil) }
+        return try await sendRPC(on: webSocket, method: method, params: params)
+    }
+
+    private func sendRPC(on webSocket: URLSessionWebSocketTask, method: String, params: [String: Any]) async throws -> [String: Any] {
         let requestID = Int.random(in: 1...1_000_000)
         let body: [String: Any] = ["id": requestID, "method": method, "params": params]
         let data = try JSONSerialization.data(withJSONObject: body)

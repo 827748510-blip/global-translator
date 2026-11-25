@@ -422,6 +422,11 @@ extension ApplicationController {
         let previous = viewModel.permissionSnapshot
         let snapshot = components.permissionController.snapshot
         viewModel.permissionSnapshot = snapshot
+        if snapshot.sessionLocked || snapshot.secureInputEnabled {
+            screenshotTranslate?.handleProtectionState()
+            selectionTranslate?.handleProtectionState()
+            videoASR?.handleProtectionState()
+        }
         let grantsChanged = previous.accessibilityTrusted != snapshot.accessibilityTrusted
             || previous.screenCaptureAuthorized != snapshot.screenCaptureAuthorized
         guard !configurationLoadFailed else { return }

@@ -61,5 +61,24 @@ const path = require("node:path");
   const toggleRes = await sendHealth({ type: "set-video-translate", enabled: true });
   assert.equal(toggleRes.ok, true);
   assert.equal(toggleRes.videoTranslateEnabled, true);
+
+  // Security regressions: pageOrigin isolation & inactive/muted tab ASR block
+  const sendWithSender = (message, sender) =>
+    new Promise(resolve => assert.equal(listener(message, sender, resolve), true));
+  const preCount = requests.length;
+  await sendWithSender(
+    { type: "translate", texts: ["Hello"] },
+    { tab: { url: "https://bank.example/login" } }
+  );
+  const postedBody = JSON.parse(requests[preCount].options.body);
+  assert.equal(postedBody.pageOrigin, "https://bank.example");
+
+  const blockedAsr = await sendWithSender(
+    { type: "video-asr", needed: true },
+    { tab: { url: "https://evil.example/watch", active: true, audible: false, mutedInfo: { muted: true } } }
+  );
+  assert.equal(blockedAsr.needed, false);
+  assert.equal(blockedAsr.running, false);
+  assert.equal(requests.length, preCount + 1);
   console.log("extension/background.test.js ok");
 })().catch(error => { console.error(error); process.exitCode = 1; });

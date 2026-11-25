@@ -171,6 +171,8 @@ public final class TranslationSession {
 
     public func clearCache() async {
         await coordinator?.clearCache()
+        await bridgeCoordinator?.clearCache()
+        await selectionCoordinator?.clearCache()
     }
 
     /// Translates texts arriving from the browser-extension bridge. Bypasses
@@ -193,7 +195,11 @@ public final class TranslationSession {
     /// `TranslationCoordinator.localPageTextBatchSize` and the extension
     /// `CHUNK_SIZE`. Transient chunk failures do not 500 the whole HTTP
     /// request; those indexes go back to the extension as `retry`.
-    public func translateBridgeTexts(_ texts: [String], sourceLanguage: TranslationSourceLanguage? = nil) async throws -> ExtensionBridgeTranslation {
+    public func translateBridgeTexts(
+        _ texts: [String],
+        sourceLanguage: TranslationSourceLanguage? = nil,
+        pageOrigin: String? = nil
+    ) async throws -> ExtensionBridgeTranslation {
         guard isBridgeActive else { throw ExtensionBridgeError.translatorInactive }
         guard bridgeCoordinator != nil else { throw ExtensionBridgeError.translatorUnavailable }
         let capped = Array(texts.prefix(400))
@@ -204,12 +210,15 @@ public final class TranslationSession {
             let chunkSize = TranslationCoordinator.localPageTextBatchSize
             var index = 0
             while index < capped.count {
+                try Task.checkCancellation()
                 guard isBridgeActive else { throw ExtensionBridgeError.translatorInactive }
                 let end = min(index + chunkSize, capped.count)
                 let slice = Array(capped[index..<end])
                 do {
-                    let part = try await translateBridgeSlice(slice, sourceLanguage: sourceLanguage)
+                    let part = try await translateBridgeSlice(slice, sourceLanguage: sourceLanguage, pageOrigin: pageOrigin)
                     results.append(contentsOf: part)
+                } catch is CancellationError {
+                    throw CancellationError()
                 } catch let error as ExtensionBridgeError {
                     throw error
                 } catch {
@@ -224,7 +233,9 @@ public final class TranslationSession {
             return ExtensionBridgeTranslation(translations: results, retryIndexes: retryIndexes)
         }
         do {
-            return ExtensionBridgeTranslation(translations: try await translateBridgeSlice(capped, sourceLanguage: sourceLanguage))
+            return ExtensionBridgeTranslation(translations: try await translateBridgeSlice(capped, sourceLanguage: sourceLanguage, pageOrigin: pageOrigin))
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let error as ExtensionBridgeError {
             throw error
         } catch {
@@ -240,7 +251,11 @@ public final class TranslationSession {
         }
     }
 
-    private func translateBridgeSlice(_ texts: [String], sourceLanguage: TranslationSourceLanguage?) async throws -> [String?] {
+    private func translateBridgeSlice(
+        _ texts: [String],
+        sourceLanguage: TranslationSourceLanguage?,
+        pageOrigin: String?
+    ) async throws -> [String?] {
         guard let coordinator = bridgeCoordinator else { throw ExtensionBridgeError.translatorUnavailable }
         let regions = texts.map { text in
             TextRegion(id: UUID(), sourceText: text, screenFrame: .zero,
@@ -252,9 +267,11 @@ public final class TranslationSession {
         let descriptor = ActiveWindowDescriptor(
             pid: 0, bundleIdentifier: "extension.bridge", windowID: nil,
             frame: .zero, revision: 0, invalidatesOverlay: false)
+        let scope = pageOrigin.map { "bridge:\($0)" } ?? "bridge:unscoped"
         let snapshot = CaptureSnapshot(
             window: CapturedWindow(descriptor: descriptor, regions: eligible, source: .pageText),
-            sourceLanguage: sourceLanguage
+            sourceLanguage: sourceLanguage,
+            cacheScope: scope
         )
         await coordinator.selectBackend(kind: backend, modelIdentifier: model)
         let output = try await coordinator.translate(
@@ -283,6 +300,7 @@ public final class TranslationSession {
     /// snippets (`foo()`, `x = 1`) look like identifiers to `TextFilter` and
     /// would otherwise be skipped without a popover.
     public func translateSelection(_ text: String) async throws -> SelectionTranslationOutcome {
+        try ensureSelectionCaptureAllowed()
         guard let coordinator = selectionCoordinator else { throw SelectionTranslateError.translatorUnavailable }
         let limited = SelectionTranslateSupport.limitSelectionSource(text)
         if let detection = CodeSnippetDetector.detect(limited.text) {
@@ -309,6 +327,7 @@ public final class TranslationSession {
         parts.reserveCapacity(plan.chunks.count)
         for chunk in plan.chunks {
             try Task.checkCancellation()
+            try ensureSelectionCaptureAllowed()
             do {
                 let translated = try await translateOneSelectionChunk(
                     chunk,
@@ -349,6 +368,7 @@ public final class TranslationSession {
         parts.reserveCapacity(plan.chunks.count)
         for (index, chunk) in plan.chunks.enumerated() {
             try Task.checkCancellation()
+            try ensureSelectionCaptureAllowed()
             let raw = try await coordinator.completePlain(
                 system: CodeTranslationInstructions.system(
                     for: direction,
@@ -493,6 +513,7 @@ public final class TranslationSession {
             logger.event("selection_plain_fallback", fields: ["status": "skipped", "reason": "too_long"])
             throw SelectionTranslateError.emptyResult
         }
+        try ensureSelectionCaptureAllowed()
         let raw: String
         do {
             raw = try await coordinator.completePlain(
@@ -575,12 +596,14 @@ public final class TranslationSession {
     }
 
     public func optimizePrompt(_ text: String, mode: PromptOptimizeMode) async throws -> String {
+        try ensureSelectionCaptureAllowed()
         guard let coordinator = selectionCoordinator else { throw SelectionTranslateError.translatorUnavailable }
         let capped = SelectionTranslateSupport.cappedSource(text)
         guard TextFilter.shouldOfferPromptOptimization(capped) else {
             throw SelectionTranslateError.emptyResult
         }
         await coordinator.selectBackend(kind: backend, modelIdentifier: model)
+        try ensureSelectionCaptureAllowed()
         let optimized = try await coordinator.completePlain(
             system: PromptOptimizationInstructions.system(for: mode),
             user: PromptOptimizationInstructions.userContent(for: capped, mode: mode),
@@ -589,6 +612,16 @@ public final class TranslationSession {
         let trimmed = optimized.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw SelectionTranslateError.emptyResult }
         return trimmed
+    }
+
+    private func ensureSelectionCaptureAllowed() throws {
+        let currentPermissions = permissions.snapshot
+        if currentPermissions.secureInputEnabled {
+            throw CaptureError.protected(.secureInput)
+        }
+        if currentPermissions.sessionLocked {
+            throw CaptureError.protected(.sessionLocked)
+        }
     }
 
     public func handleWindow(_ descriptor: ActiveWindowDescriptor?) {
@@ -758,7 +791,16 @@ public final class TranslationSession {
     private func runInPageTranslation(descriptor: ActiveWindowDescriptor, inPage: any InPageTranslating) async -> InPageOutcome {
         do {
             logger.event("inpage_stage", fields: ["stage": "extract"])
-            let texts = try await inPage.extract(windowRevision: descriptor.revision)
+            let rawTexts = try await inPage.extract(windowRevision: descriptor.revision)
+            var seenIDs = Set<UUID>()
+            var seenNodeIDs = Set<String>()
+            var texts: [InPageText] = []
+            texts.reserveCapacity(min(rawTexts.count, 200))
+            for item in rawTexts.prefix(200) {
+                guard seenIDs.insert(item.id).inserted,
+                      seenNodeIDs.insert(item.nodeID).inserted else { continue }
+                texts.append(item)
+            }
             logger.event("inpage_stage", fields: ["stage": "extracted", "count": String(texts.count)])
             guard !texts.isEmpty else { return .applied(0) }
             overlay.hideAll()
@@ -781,7 +823,7 @@ public final class TranslationSession {
                     snapshot: snapshot, backend: backend, modelIdentifier: model,
                     visionFallbackEnabled: visionFallbackEnabled
                 )
-                let nodeByRegion = Dictionary(uniqueKeysWithValues: group.map { ($0.id, $0.nodeID) })
+                let nodeByRegion = Dictionary(group.map { ($0.id, $0.nodeID) }, uniquingKeysWith: { first, _ in first })
                 replacements += output.translations.compactMap { translation -> InPageReplacement? in
                     guard let nodeID = nodeByRegion[translation.region.id], !translation.text.isEmpty else { return nil }
                     return InPageReplacement(nodeID: nodeID, text: translation.text)

@@ -2,21 +2,117 @@ import ApplicationServices
 import AppKit
 import CoreGraphics
 import Foundation
+import os
+
+private struct UncheckedCFBox<Value>: @unchecked Sendable {
+    let value: Value
+}
+
+final class AXObserverRegistration: @unchecked Sendable {
+    private struct State: @unchecked Sendable {
+        weak var monitor: ActiveWindowMonitor?
+        var observer: UncheckedCFBox<AXObserver>?
+        var application: UncheckedCFBox<AXUIElement>?
+        var window: UncheckedCFBox<AXUIElement>?
+        var invalidated = false
+    }
+
+    private struct Teardown: Sendable {
+        let observer: UncheckedCFBox<AXObserver>?
+        let application: UncheckedCFBox<AXUIElement>?
+        let window: UncheckedCFBox<AXUIElement>?
+    }
+
+    private let state: OSAllocatedUnfairLock<State>
+    private let notifications: [UncheckedCFBox<CFString>]
+
+    init(monitor: ActiveWindowMonitor, observer: AXObserver, application: AXUIElement, notifications: [CFString]) {
+        self.notifications = notifications.map(UncheckedCFBox.init)
+        self.state = OSAllocatedUnfairLock(initialState: State(
+            monitor: monitor,
+            observer: UncheckedCFBox(value: observer),
+            application: UncheckedCFBox(value: application),
+            window: nil,
+            invalidated: false
+        ))
+    }
+
+    func activeMonitor() -> ActiveWindowMonitor? {
+        state.withLock { current in
+            current.invalidated ? nil : current.monitor
+        }
+    }
+
+    func updateWindow(_ window: AXUIElement?) {
+        let wrapped = window.map(UncheckedCFBox.init)
+        let stale = state.withLock { current -> Teardown? in
+            guard !current.invalidated else { return nil }
+            let previous = current.window
+            current.window = wrapped
+            return Teardown(observer: current.observer, application: nil, window: previous)
+        }
+        if let previous = stale?.window?.value, let observer = stale?.observer?.value {
+            for notification in notifications {
+                AXObserverRemoveNotification(observer, previous, notification.value)
+            }
+        }
+    }
+
+    func invalidate() {
+        let teardown = state.withLock { current -> Teardown? in
+            guard !current.invalidated else { return nil }
+            current.invalidated = true
+            let result = Teardown(
+                observer: current.observer,
+                application: current.application,
+                window: current.window
+            )
+            current.monitor = nil
+            current.observer = nil
+            current.application = nil
+            current.window = nil
+            return result
+        }
+        guard let observer = teardown?.observer?.value else { return }
+        if let window = teardown?.window?.value {
+            for notification in notifications {
+                AXObserverRemoveNotification(observer, window, notification.value)
+            }
+        }
+        if let application = teardown?.application?.value {
+            for notification in notifications {
+                AXObserverRemoveNotification(observer, application, notification.value)
+            }
+        }
+        CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+    }
+
+    deinit {
+        invalidate()
+    }
+}
 
 @MainActor
 extension ActiveWindowMonitor {
     func installAXObserver(for pid: pid_t) {
         if observedApplication != nil, observer != nil, observedPID == pid { return }
-        if observedApplication != nil { removeAXObserver() }
+        if observedApplication != nil || axRegistration != nil { removeAXObserver() }
         let application = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(application, 0.2)
         var created: AXObserver?
         guard AXObserverCreate(pid, Self.axCallback, &created) == .success, let created else { return }
-        let refcon = Unmanaged.passUnretained(self).toOpaque()
+        let registration = AXObserverRegistration(
+            monitor: self,
+            observer: created,
+            application: application,
+            notifications: axNotifications
+        )
+        let refcon = Unmanaged.passUnretained(registration).toOpaque()
         for notification in axNotifications {
             AXObserverAddNotification(created, application, notification, refcon)
         }
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(created), .commonModes)
+        axRegistration = registration
         observer = created
         observedApplication = application
         observedPID = pid
@@ -27,15 +123,14 @@ extension ActiveWindowMonitor {
 
     func removeAXObserver() {
         imageNotificationLabels.removeAll()
-        guard let observer else {
-            observedApplication = nil
-            observedWindow = nil
-            observedPID = nil
-            return
+        if let registration = axRegistration {
+            registration.invalidate()
+            axRegistration = nil
+        } else if let observer {
+            unregisterNotifications(for: observedWindow, observer: observer)
+            unregisterNotifications(for: observedApplication, observer: observer)
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         }
-        unregisterNotifications(for: observedWindow, observer: observer)
-        unregisterNotifications(for: observedApplication, observer: observer)
-        CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         self.observer = nil
         observedApplication = nil
         observedWindow = nil
@@ -108,12 +203,12 @@ extension ActiveWindowMonitor {
     }
 
     private func registerWindowNotifications(_ window: AXUIElement) {
-        guard let observer else { return }
+        guard let observer, let registration = axRegistration else { return }
         if let observedWindow,
            CFEqual(observedWindow as CFTypeRef, window as CFTypeRef) { return }
-        unregisterNotifications(for: observedWindow, observer: observer)
+        registration.updateWindow(window)
         observedWindow = window
-        let refcon = Unmanaged.passUnretained(self).toOpaque()
+        let refcon = Unmanaged.passUnretained(registration).toOpaque()
         for notification in axNotifications {
             AXObserverAddNotification(observer, window, notification, refcon)
         }
@@ -140,7 +235,8 @@ extension ActiveWindowMonitor {
 
     private static let axCallback: AXObserverCallback = { _, element, notification, refcon in
         guard let refcon else { return }
-        let monitor = Unmanaged<ActiveWindowMonitor>.fromOpaque(refcon).takeUnretainedValue()
+        let registration = Unmanaged<AXObserverRegistration>.fromOpaque(refcon).takeUnretainedValue()
+        guard let monitor = registration.activeMonitor() else { return }
         var role: CFTypeRef?
         AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
         let isMetadata = notification == kAXValueChangedNotification as CFString || notification == kAXTitleChangedNotification as CFString

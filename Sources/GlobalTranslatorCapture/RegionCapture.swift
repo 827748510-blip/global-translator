@@ -42,12 +42,18 @@ public struct NullRegionCapturer: RegionScreenCapturing {
 @available(macOS 14.0, *)
 public final class ScreenCaptureKitRegionCapturer: RegionScreenCapturing, @unchecked Sendable {
     public let maximumDimension: Int
+    private let permissions: any PermissionControlling
 
-    public init(maximumDimension: Int = 4_096) {
+    public init(
+        maximumDimension: Int = 4_096,
+        permissions: any PermissionControlling = SystemPermissionController()
+    ) {
         self.maximumDimension = min(max(maximumDimension, 1), 8_192)
+        self.permissions = permissions
     }
 
     public func capture(rect: CGRect) async throws -> CGImage {
+        try permissions.snapshot.validateCapture(source: .visionOCR)
         guard ScreenshotTranslateSupport.isUsableRegion(rect) else {
             throw CaptureError.invalidWindow
         }
@@ -81,7 +87,9 @@ public final class ScreenCaptureKitRegionCapturer: RegionScreenCapturing, @unche
         configuration.height = min(outputHeight, maximumDimension)
         configuration.showsCursor = false
         configuration.capturesAudio = false
+        try permissions.snapshot.validateCapture(source: .visionOCR)
         let image = try await captureImage(filter: filter, configuration: configuration)
+        try permissions.snapshot.validateCapture(source: .visionOCR)
         return RegionCaptureFallback.croppedIfFullDisplay(
             image,
             selection: rect,

@@ -249,7 +249,7 @@ public final class RegionSelectionOverlayController: RegionSelectionPresenting {
             MainActor.assumeIsolated {
                 self.handlePointer(phase, at: location)
             }
-            return event
+            return nil
         }) {
             monitors.append(local)
         }

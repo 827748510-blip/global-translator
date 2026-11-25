@@ -1023,3 +1023,84 @@ struct BridgeRateLimiterTests {
         #expect(!limiter.allow())
     }
 }
+
+struct ExtensionBridgeSecurityHardeningTests {
+    @Test
+    func setVideoTranslateRequiresAutoTranslateEnabled() async throws {
+        let current = OSAllocatedUnfairLock(initialState: false)
+        let session = URLSession(configuration: .ephemeral)
+        let server = ExtensionBridgeServer(
+            port: 0,
+            videoTranslateEnabled: { current.withLock { $0 } },
+            setVideoTranslateEnabled: { next in
+                current.withLock {
+                    $0 = next
+                    return $0
+                }
+            },
+            autoTranslateEnabled: { false }
+        ) { texts, _ in
+            ExtensionBridgeTranslation(translations: texts.map { $0 })
+        }
+        server.start()
+        defer { server.stop() }
+        var port: UInt16?
+        for _ in 0..<200 where port == nil {
+            port = server.boundPort
+            if port == nil { try? await Task.sleep(for: .milliseconds(10)) }
+        }
+        let resolvedPort = try #require(port)
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(resolvedPort)/video-translate")!)
+        req.httpMethod = "POST"
+        req.setValue(ExtensionBridgeServer.allowedOrigin, forHTTPHeaderField: "Origin")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data("{\"enabled\":true}".utf8)
+        let (_, response) = try await session.data(for: req)
+        #expect((response as? HTTPURLResponse)?.statusCode == 503)
+        #expect(!current.withLock { $0 })
+    }
+
+    @Test
+    func bridgeRejectsInvalidHostAndMalformedVideoAsrPayload() async throws {
+        let session = URLSession(configuration: .ephemeral)
+        let server = ExtensionBridgeServer(port: 0) { texts in
+            ExtensionBridgeTranslation(translations: texts.map { $0 })
+        }
+        server.start()
+        defer { server.stop() }
+        var port: UInt16?
+        for _ in 0..<200 where port == nil {
+            port = server.boundPort
+            if port == nil { try? await Task.sleep(for: .milliseconds(10)) }
+        }
+        let resolvedPort = try #require(port)
+
+        var badAsr = URLRequest(url: URL(string: "http://127.0.0.1:\(resolvedPort)/video-asr")!)
+        badAsr.httpMethod = "POST"
+        badAsr.setValue(ExtensionBridgeServer.allowedOrigin, forHTTPHeaderField: "Origin")
+        badAsr.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        badAsr.httpBody = Data("{\"needed\":\"yes\"}".utf8)
+        let (_, badAsrRes) = try await session.data(for: badAsr)
+        #expect((badAsrRes as? HTTPURLResponse)?.statusCode == 400)
+
+        var badHost = URLRequest(url: URL(string: "http://127.0.0.1:\(resolvedPort)/health")!)
+        badHost.httpMethod = "POST"
+        badHost.setValue(ExtensionBridgeServer.allowedOrigin, forHTTPHeaderField: "Origin")
+        badHost.setValue("evil.example:9233", forHTTPHeaderField: "Host")
+        let (_, badHostRes) = try await session.data(for: badHost)
+        #expect((badHostRes as? HTTPURLResponse)?.statusCode == 403)
+    }
+
+    @Test
+    func cdpTranslatorValidatesWebSocketLoopbackAndHandlesDuplicateNodeIDsSafely() async throws {
+        #expect(CDPInPageTranslator.validatedWebSocketURL("ws://127.0.0.1:9222/devtools/page/1", port: 9222) != nil)
+        #expect(CDPInPageTranslator.validatedWebSocketURL("wss://evil.example/ws", port: 9222) == nil)
+        #expect(CDPInPageTranslator.validatedWebSocketURL("ws://127.0.0.1:9999/devtools/page/1", port: 9222) == nil)
+        #expect(CDPInPageTranslator.validatedWebSocketURL("ws://127.0.0.1:9222/not-devtools", port: 9222) == nil)
+
+        let translator = CDPInPageTranslator(port: 9222)
+        // Unknown PID must fail closed even before probing.
+        let applicable = await translator.isApplicable(bundleIdentifier: "com.apple.Safari", windowPID: 0)
+        #expect(!applicable)
+    }
+}

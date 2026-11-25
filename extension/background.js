@@ -16,15 +16,35 @@ function enqueueBridgeFetch(work, lane) {
   return bridgeQueue.enqueue(work, lane);
 }
 
+function extractPageOrigin(sender) {
+  const rawUrl = sender && (sender.url || (sender.tab && sender.tab.url));
+  if (typeof rawUrl !== "string" || !rawUrl) return null;
+  if (typeof URL === "function") {
+    try {
+      const parsed = new URL(rawUrl);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+      if (!parsed.origin || parsed.origin === "null") return null;
+      return parsed.origin;
+    } catch (_error) {
+      return null;
+    }
+  }
+  const match = /^(https?):\/\/([^/?#@]+)(?:[/?#]|$)/i.exec(rawUrl);
+  return match ? `${match[1].toLowerCase()}://${match[2].toLowerCase()}` : null;
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== "object") return false;
   if (message.type === "translate" && Array.isArray(message.texts)) {
     const lane = message.lane === "video" ? "video" : "page";
+    const pageOrigin = extractPageOrigin(sender);
+    const bodyObject = { texts: message.texts, sourceLanguage: message.sourceLanguage };
+    if (pageOrigin) bodyObject.pageOrigin = pageOrigin;
     enqueueBridgeFetch(() =>
       fetch(ENDPOINT + "/translate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ texts: message.texts, sourceLanguage: message.sourceLanguage })
+        body: JSON.stringify(bodyObject)
       })
         .then(async (response) => {
           if (!response.ok) {
@@ -103,6 +123,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message.type === "video-asr") {
     const needed = message.needed === true;
+    if (needed && sender && sender.tab) {
+      const tab = sender.tab;
+      const muted = Boolean(tab.mutedInfo && tab.mutedInfo.muted === true);
+      if (tab.active === false || tab.audible === false || muted || !extractPageOrigin(sender)) {
+        sendResponse({
+          ok: true,
+          enabled: false,
+          needed: false,
+          running: false,
+          status: "idle",
+          message: "",
+          cues: []
+        });
+        return true;
+      }
+    }
     fetch(ENDPOINT + "/video-asr", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

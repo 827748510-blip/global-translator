@@ -32,8 +32,8 @@ public enum GTType {
 
 /// Semantic colors only — no raw hex (see DESIGN.md §3).
 public enum GTColor {
-    public static let primaryText = Color.primary
-    public static let secondaryText = Color.secondary
+    public static let primaryText = Color(nsColor: .labelColor)
+    public static let secondaryText = Color(nsColor: .secondaryLabelColor)
     public static let accent = Color.accentColor
     public static let destructive = Color(nsColor: .systemRed)
     public static let sectionFill = Color(nsColor: .controlBackgroundColor)

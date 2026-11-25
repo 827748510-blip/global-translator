@@ -351,7 +351,7 @@ struct GTEqualWidthHStack: Layout {
         let proposedWidth = proposal.width ?? subviews.reduce(CGFloat.zero) { $0 + $1.sizeThatFits(.unspecified).width }
         let itemWidth = GTEqualWidthMetrics.itemWidth(total: proposedWidth, count: count, spacing: spacing)
         let height = subviews.map {
-            $0.sizeThatFits(ProposedViewSize(width: itemWidth, height: proposal.height)).height
+            $0.sizeThatFits(ProposedViewSize(width: itemWidth, height: nil)).height
         }.max() ?? 0
         return CGSize(width: proposedWidth, height: height)
     }
@@ -379,14 +379,31 @@ struct GTEqualWidthSegmentedPicker<Value: Hashable>: View {
     var title: (Value) -> String
     var isEnabled: Bool = true
     var height: CGFloat = GTSelectionMetrics.modePickerHeight
+    var usesCardSurfaceTrack: Bool = false
     var accessibilityLabelText: String = ""
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var hoveredOption: Value?
     @Namespace private var segmentNamespace
 
+    private var trackRadius: CGFloat {
+        usesCardSurfaceTrack ? GTRadius.card : GTRadius.row
+    }
+
+    private var activeRadius: CGFloat {
+        max(4, trackRadius - 3)
+    }
+
+    private var trackBackground: Color {
+        if usesCardSurfaceTrack {
+            return reduceTransparency ? GTColor.sectionFill : GTColor.cardSurface
+        }
+        return GTColor.segmentTrack
+    }
+
     var body: some View {
-        GTEqualWidthHStack(spacing: 1) {
+        GTEqualWidthHStack(spacing: 2) {
             ForEach(options, id: \.self) { option in
                 let isSelected = option == selection
                 let isHovered = option == hoveredOption
@@ -394,19 +411,20 @@ struct GTEqualWidthSegmentedPicker<Value: Hashable>: View {
                     select(option)
                 } label: {
                     Text(title(option))
-                        .font(GTType.secondary.weight(.medium))
+                        .font(GTType.secondary.weight(isSelected ? .semibold : .medium))
                         .lineLimit(1)
                         .minimumScaleFactor(0.75)
                         .padding(.horizontal, GTSpacing.xxSmall)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .padding(.vertical, 4)
+                        .frame(maxWidth: .infinity, minHeight: max(22, height - 6))
                         .foregroundStyle(isSelected ? GTColor.selectedSegmentText : GTColor.primaryText)
                         .background {
                             if isSelected {
-                                RoundedRectangle(cornerRadius: GTRadius.row - 1, style: .continuous)
+                                RoundedRectangle(cornerRadius: activeRadius, style: .continuous)
                                     .fill(GTColor.accent)
                                     .matchedGeometryEffect(id: "activeSegment", in: segmentNamespace)
                             } else if isHovered && isEnabled {
-                                RoundedRectangle(cornerRadius: GTRadius.row - 1, style: .continuous)
+                                RoundedRectangle(cornerRadius: activeRadius, style: .continuous)
                                     .fill(GTColor.hoverFill)
                             }
                         }
@@ -420,15 +438,16 @@ struct GTEqualWidthSegmentedPicker<Value: Hashable>: View {
                 .accessibilityAddTraits(isSelected ? .isSelected : AccessibilityTraits())
             }
         }
-        .padding(1)
-        .frame(minHeight: height)
-        .frame(maxWidth: .infinity)
-        .background(GTColor.segmentTrack)
-        .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+        .padding(3)
+        .frame(maxWidth: .infinity, minHeight: height)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(trackBackground)
+        .clipShape(RoundedRectangle(cornerRadius: trackRadius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous)
+            RoundedRectangle(cornerRadius: trackRadius, style: .continuous)
                 .strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
         )
+        .segmentPickerSurfaceMarker(accessibilityLabelText)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: selection)
         .onKeyPress(.leftArrow) {
             stepSelection(by: -1)
@@ -461,11 +480,231 @@ struct GTEqualWidthSegmentedPicker<Value: Hashable>: View {
     }
 }
 
+/// Unified pill button styles matching `DESIGN.md` primary / secondary / destructive hierarchy.
+enum GTPillButtonVariant {
+    case primary
+    case secondary
+    case destructive
+}
+
+struct GTPillButtonStyle: ButtonStyle {
+    let variant: GTPillButtonVariant
+    var compact: Bool = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        PillBody(configuration: configuration, variant: variant, compact: compact)
+    }
+
+    private struct PillBody: View {
+        let configuration: Configuration
+        let variant: GTPillButtonVariant
+        let compact: Bool
+        @Environment(\.isEnabled) private var isEnabled
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        @State private var isHovered = false
+
+        var body: some View {
+            let shape = RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous)
+            configuration.label
+                .font((compact ? GTType.caption : GTType.secondary).weight(variant == .primary ? .semibold : .medium))
+                .foregroundStyle(foregroundColor)
+                .padding(.horizontal, compact ? 8 : 10)
+                .padding(.vertical, compact ? 2 : 4)
+                .frame(minHeight: compact ? 22 : 26)
+                .background(backgroundFill)
+                .clipShape(shape)
+                .overlay(
+                    shape.strokeBorder(borderColor, lineWidth: GTControlMetrics.fieldStrokeWidth)
+                )
+                .contentShape(shape)
+                .scaleEffect(configuration.isPressed && !reduceMotion && isEnabled ? 0.97 : 1)
+                .animation(reduceMotion ? nil : .timingCurve(0.23, 1, 0.32, 1, duration: 0.12), value: configuration.isPressed)
+                .onHover { isHovered = $0 }
+        }
+
+        private var foregroundColor: Color {
+            if !isEnabled { return GTColor.secondaryText }
+            switch variant {
+            case .primary:
+                return GTColor.selectedSegmentText
+            case .secondary:
+                return GTColor.primaryText
+            case .destructive:
+                return GTColor.destructive
+            }
+        }
+
+        @ViewBuilder
+        private var backgroundFill: some View {
+            switch variant {
+            case .primary:
+                if !isEnabled {
+                    GTColor.segmentTrack
+                } else {
+                    isHovered ? GTColor.accent.opacity(0.88) : GTColor.accent
+                }
+            case .secondary:
+                isHovered && isEnabled ? GTColor.hoverFill : GTColor.fieldFill
+            case .destructive:
+                ZStack {
+                    GTColor.cardSurface
+                    GTColor.destructive.opacity(isHovered && isEnabled ? 0.16 : 0.08)
+                }
+            }
+        }
+
+        private var borderColor: Color {
+            switch variant {
+            case .primary:
+                return .clear
+            case .secondary:
+                return GTColor.hairline
+            case .destructive:
+                return GTColor.destructive.opacity(isEnabled ? 0.45 : 0.25)
+            }
+        }
+    }
+}
+
+struct GTPrimaryPillButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        GTPillButtonStyle(variant: .primary).makeBody(configuration: configuration)
+    }
+}
+
+struct GTSecondaryPillButtonStyle: ButtonStyle {
+    var compact: Bool = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        GTPillButtonStyle(variant: .secondary, compact: compact).makeBody(configuration: configuration)
+    }
+}
+
+/// High-contrast pill style for destructive actions so red labels never wash out on glass.
+struct GTDestructivePillButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        GTPillButtonStyle(variant: .destructive).makeBody(configuration: configuration)
+    }
+}
+
+/// Native NSMenu-backed model selector with explicit light/dark field styling.
+struct GTModelMenuPicker: View {
+    let options: [String]
+    @Binding var selection: String
+    var placeholder: String = "请选择"
+    var onChange: (() -> Void)?
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Menu {
+            ForEach(options, id: \.self) { option in
+                Button {
+                    if selection != option {
+                        selection = option
+                        onChange?()
+                    }
+                } label: {
+                    if option == selection {
+                        Label(option, systemImage: "checkmark")
+                    } else {
+                        Text(option)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: GTSpacing.xSmall) {
+                Text(selection.isEmpty ? placeholder : selection)
+                    .font(GTType.body)
+                    .foregroundStyle(selection.isEmpty ? GTColor.secondaryText : GTColor.primaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: GTSpacing.xSmall)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(GTType.caption)
+                    .foregroundStyle(GTColor.secondaryText)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, GTSpacing.small)
+            .padding(.vertical, GTSpacing.xxSmall)
+            .frame(maxWidth: .infinity, minHeight: GTControlMetrics.fieldHeight, alignment: .leading)
+            .background(isHovered ? GTColor.hoverFill : GTColor.fieldFill)
+            .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous)
+                    .strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
+            )
+            .contentShape(Rectangle())
+        }
+        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func segmentPickerSurfaceMarker(_ name: String) -> some View {
+        #if DEBUG
+        if !name.isEmpty {
+            background {
+                SegmentPickerSurfaceMarker(name: name)
+                    .allowsHitTesting(false)
+            }
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
+}
+
+#if DEBUG
+enum SegmentPickerSurface {
+    static let identifierPrefix = "segment-picker-surface."
+
+    static func identifier(_ name: String) -> String {
+        identifierPrefix + name
+    }
+}
+
+private struct SegmentPickerSurfaceMarker: NSViewRepresentable {
+    var name: String
+
+    func makeNSView(context _: Context) -> NSView {
+        let view = SegmentPickerSurfaceNSView()
+        configure(view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context _: Context) {
+        configure(nsView)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView _: NSView, context _: Context) -> CGSize? {
+        guard proposal.width != nil, proposal.height != nil else { return nil }
+        return proposal.replacingUnspecifiedDimensions()
+    }
+
+    private func configure(_ view: NSView) {
+        view.identifier = NSUserInterfaceItemIdentifier(SegmentPickerSurface.identifier(name))
+        view.setAccessibilityElement(false)
+        view.alphaValue = 0
+    }
+}
+
+private final class SegmentPickerSurfaceNSView: NSView {
+    override func hitTest(_: NSPoint) -> NSView? { nil }
+}
+#endif
+
 /// Three-scene control used in settings and the selection popover.
 struct GTOptimizeModePicker: View {
     @Binding var selection: PromptOptimizeMode
     var isEnabled: Bool = true
     var height: CGFloat = GTSelectionMetrics.modePickerHeight
+    var usesCardSurfaceTrack: Bool = false
 
     var body: some View {
         GTEqualWidthSegmentedPicker(
@@ -474,6 +713,7 @@ struct GTOptimizeModePicker: View {
             title: { $0.title },
             isEnabled: isEnabled,
             height: height,
+            usesCardSurfaceTrack: usesCardSurfaceTrack,
             accessibilityLabelText: "优化场景"
         )
         .accessibilityValue(selection.title)

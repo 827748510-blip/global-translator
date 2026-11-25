@@ -74,24 +74,32 @@ public struct NullSelectedTextReader: SelectedTextReading {
 @MainActor
 public protocol ClipboardSelectionFallingBack: Sendable {
     func copySelectedTextRestoringClipboard() async -> String?
+    func copySelectedTextRestoringClipboard(expectedPID: Int32?) async -> String?
+}
+
+@MainActor
+public extension ClipboardSelectionFallingBack {
+    func copySelectedTextRestoringClipboard(expectedPID _: Int32?) async -> String? {
+        await copySelectedTextRestoringClipboard()
+    }
 }
 
 /// Reads AX `selectedText` / selected range on the focused element.
 ///
-/// Clipboard ⌘C is used when the pasteboard can be fully snapshotted and:
-/// - AX reports a non-empty range but no string (legacy path), or
-/// - the caller allows it after a real mouse-drag selection (Electron / Feishu
-///   often expose empty `selectedText` and a zero range).
+/// Clipboard ⌘C is used when the pasteboard can be fully snapshotted and
+/// `allowClipboardFallback` is enabled after a real drag selection.
 @MainActor
 public struct AXSelectedTextReader: SelectedTextReading, @unchecked Sendable {
     public let attributeReader: any AXAttributeReading
     public let clipboard: (any ClipboardSelectionFallingBack)?
+    private let permissions: any PermissionControlling
     private let frontmostApplication: () -> FrontmostApplicationInfo?
     private let primaryDisplayFrame: () -> CGRect?
 
     public init(
         attributeReader: any AXAttributeReading = SystemAXAttributeReader(),
         clipboard: (any ClipboardSelectionFallingBack)? = RestoringClipboardSelectionFallback(),
+        permissions: any PermissionControlling = SystemPermissionController(),
         frontmostApplication: @escaping () -> FrontmostApplicationInfo? = {
             AXSelectedTextReader.systemFrontmostApplication()
         },
@@ -101,11 +109,16 @@ public struct AXSelectedTextReader: SelectedTextReading, @unchecked Sendable {
     ) {
         self.attributeReader = attributeReader
         self.clipboard = clipboard
+        self.permissions = permissions
         self.frontmostApplication = frontmostApplication
         self.primaryDisplayFrame = primaryDisplayFrame
     }
 
     public func readSelection(mouseLocation: CGPoint, allowClipboardFallback: Bool) async -> SelectedTextReadResult {
+        let initialPermissions = permissions.snapshot
+        if initialPermissions.secureInputEnabled || initialPermissions.sessionLocked {
+            return .empty
+        }
         guard let app = frontmostApplication() else { return .unavailable }
         let focused = attributeReader.focusedElement(for: app.pid)
         let window = attributeReader.focusedWindow(for: app.pid)
@@ -123,8 +136,15 @@ public struct AXSelectedTextReader: SelectedTextReading, @unchecked Sendable {
         let hasPositiveRange = candidates.contains { element in
             (attributeReader.selectedTextRange(of: element)?.length ?? 0) > 0
         }
-        if (allowClipboardFallback || hasPositiveRange),
-           let copied = await clipboard?.copySelectedTextRestoringClipboard() {
+        if allowClipboardFallback,
+           let copied = await clipboard?.copySelectedTextRestoringClipboard(expectedPID: app.pid) {
+            let postPermissions = permissions.snapshot
+            if postPermissions.secureInputEnabled || postPermissions.sessionLocked {
+                return .empty
+            }
+            if frontmostApplication()?.pid != app.pid {
+                return .empty
+            }
             let resolved = copied.trimmingCharacters(in: .whitespacesAndNewlines)
             if !resolved.isEmpty {
                 let anchor = candidates.first { element in

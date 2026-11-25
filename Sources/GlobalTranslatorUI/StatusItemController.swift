@@ -197,7 +197,7 @@ public final class StatusItemController: NSObject {
         let screen = buttonWindow?.screen ?? NSScreen.main
         let visibleFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let availableHeight = visibleFrame.height
-        let maxHeight = min(GTPopoverMetrics.defaultMaxHeight, max(240, availableHeight - 80))
+        let maxHeight = min(780, max(240, availableHeight - 60))
         let size = NSSize(width: GTPopoverMetrics.width, height: maxHeight)
         let buttonFrame = buttonWindow.map { $0.convertToScreen(button.frame) }
         let screenFrame = screen?.frame ?? visibleFrame
@@ -284,7 +284,7 @@ public final class StatusItemController: NSObject {
         let buttonWindow = button.window
         let screen = buttonWindow?.screen ?? NSScreen.main
         let visibleFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        currentMaxHeight = min(GTPopoverMetrics.defaultMaxHeight, max(240, visibleFrame.height - 80))
+        currentMaxHeight = min(780, max(240, visibleFrame.height - 60))
         let clampedHeight = max(240, min(dropdownPanel.frame.height, currentMaxHeight))
         let size = NSSize(width: GTPopoverMetrics.width, height: clampedHeight)
         let buttonFrame = buttonWindow.map { $0.convertToScreen(button.frame) }

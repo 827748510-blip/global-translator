@@ -79,12 +79,18 @@
   function listVideos() {
     const all = Array.prototype.slice.call(document.querySelectorAll("video"));
     const main = document.querySelector("video.html5-main-video");
-    if (main) {
+    if (main && isVisibleVideo(main)) {
       const rest = all.filter((video) => video !== main && isVisibleVideo(video));
       return [main].concat(rest);
     }
-    const visible = all.filter(isVisibleVideo);
-    return visible.length > 0 ? visible : all;
+    return all.filter(isVisibleVideo);
+  }
+
+  function isAudiblePlayingVideo(video) {
+    if (!video || !isVisibleVideo(video)) return false;
+    if (video.paused || video.ended || video.muted) return false;
+    if (typeof video.volume === "number" && video.volume <= 0) return false;
+    return true;
   }
 
   function primaryVideo(videos) {
@@ -335,8 +341,8 @@
       asrMessage: isPrimary ? asrMessage : ""
     });
     const asrBit = Asr && Asr.overlayBits ? Asr.overlayBits(asrStatus) : "asr0";
-    if (Youtube && typeof Youtube.overlayDebugBits === "function") {
-      if (isDebugEnabled()) {
+    if (isDebugEnabled()) {
+      if (Youtube && typeof Youtube.overlayDebugBits === "function") {
         const bits = Youtube.overlayDebugBits({
           cues,
           time,
@@ -350,7 +356,7 @@
         record.host.setAttribute("data-gt-vt", asrBit);
       }
     } else {
-      record.host.setAttribute("data-gt-vt", asrBit);
+      record.host.removeAttribute("data-gt-vt");
     }
 
     const isNotice = !state.cueText && !!state.message;
@@ -702,7 +708,8 @@
     const video = primaryVideo();
     const captions = video ? captionCues(video) : [];
     const foreign = Cues.hasForeignCues(captions);
-    const want = probed && Asr && Asr.shouldRequest ? Asr.shouldRequest(foreign) : (probed && !foreign);
+    const activeAudio = document.visibilityState === "visible" && isAudiblePlayingVideo(video);
+    const want = activeAudio && (probed && Asr && Asr.shouldRequest ? Asr.shouldRequest(foreign) : (probed && !foreign));
     if (!want) {
       if (asrWanted) postAsr(false, video);
       asrWanted = false;

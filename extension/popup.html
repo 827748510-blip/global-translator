@@ -35,6 +35,7 @@
     }
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body {
     font-family: -apple-system, "PingFang SC", sans-serif;
     background: var(--bg);
@@ -126,6 +127,15 @@
     color: var(--text-secondary);
     overflow-wrap: anywhere;
     word-break: break-word;
+  }
+  #videoExtras {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  #sidecarName:empty,
+  #sidecarError:empty {
+    display: none;
   }
   #sidecarError {
     font-size: 12px;
