@@ -101,6 +101,3 @@ public final class ScreenCaptureKitWindowCapturer: ScreenCaptureProviding, @unch
         }
     }
 }
-
-@available(macOS 14.0, *)
-public typealias ScreenCaptureKitCapturer = ScreenCaptureKitWindowCapturer
