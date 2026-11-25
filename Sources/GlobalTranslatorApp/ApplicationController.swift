@@ -380,9 +380,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
                 }
             },
             onEvent: { [weak self] code, fields in
-                Task { @MainActor in
-                    self?.components.logger.event(code, fields: fields)
-                }
+                self?.components.logger.event(code, fields: fields)
             }
         )
         videoASR?.setVideoTranslateEnabled(configuration.videoTranslateEnabled)

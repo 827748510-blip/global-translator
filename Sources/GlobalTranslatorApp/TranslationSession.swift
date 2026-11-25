@@ -201,8 +201,9 @@ public final class TranslationSession {
         pageOrigin: String? = nil
     ) async throws -> ExtensionBridgeTranslation {
         guard isBridgeActive else { throw ExtensionBridgeError.translatorInactive }
-        guard bridgeCoordinator != nil else { throw ExtensionBridgeError.translatorUnavailable }
+        guard let coordinator = bridgeCoordinator else { throw ExtensionBridgeError.translatorUnavailable }
         let capped = Array(texts.prefix(400))
+        await coordinator.selectBackend(kind: backend, modelIdentifier: model)
         if backend == .local {
             var results: [String?] = []
             var retryIndexes: [Int] = []
@@ -215,7 +216,12 @@ public final class TranslationSession {
                 let end = min(index + chunkSize, capped.count)
                 let slice = Array(capped[index..<end])
                 do {
-                    let part = try await translateBridgeSlice(slice, sourceLanguage: sourceLanguage, pageOrigin: pageOrigin)
+                    let part = try await translateBridgeSlice(
+                        slice,
+                        sourceLanguage: sourceLanguage,
+                        pageOrigin: pageOrigin,
+                        coordinator: coordinator
+                    )
                     results.append(contentsOf: part)
                 } catch is CancellationError {
                     throw CancellationError()
@@ -233,7 +239,14 @@ public final class TranslationSession {
             return ExtensionBridgeTranslation(translations: results, retryIndexes: retryIndexes)
         }
         do {
-            return ExtensionBridgeTranslation(translations: try await translateBridgeSlice(capped, sourceLanguage: sourceLanguage, pageOrigin: pageOrigin))
+            return ExtensionBridgeTranslation(
+                translations: try await translateBridgeSlice(
+                    capped,
+                    sourceLanguage: sourceLanguage,
+                    pageOrigin: pageOrigin,
+                    coordinator: coordinator
+                )
+            )
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as ExtensionBridgeError {
@@ -254,9 +267,9 @@ public final class TranslationSession {
     private func translateBridgeSlice(
         _ texts: [String],
         sourceLanguage: TranslationSourceLanguage?,
-        pageOrigin: String?
+        pageOrigin: String?,
+        coordinator: any TranslationCoordinating
     ) async throws -> [String?] {
-        guard let coordinator = bridgeCoordinator else { throw ExtensionBridgeError.translatorUnavailable }
         let regions = texts.map { text in
             TextRegion(id: UUID(), sourceText: text, screenFrame: .zero,
                        confidence: 1, source: .accessibility, windowRevision: 0)
@@ -273,7 +286,6 @@ public final class TranslationSession {
             sourceLanguage: sourceLanguage,
             cacheScope: scope
         )
-        await coordinator.selectBackend(kind: backend, modelIdentifier: model)
         let output = try await coordinator.translate(
             snapshot: snapshot,
             backend: backend,
@@ -281,6 +293,7 @@ public final class TranslationSession {
             visionFallbackEnabled: visionFallbackEnabled
         )
         var translated: [UUID: String] = [:]
+        translated.reserveCapacity(output.translations.count)
         for translation in output.translations where !translation.text.isEmpty {
             translated[translation.region.id] = translation.text
         }
@@ -323,26 +336,88 @@ public final class TranslationSession {
         let plan = SelectionTranslateSupport.prepareSource(text, direction: direction)
         guard !plan.chunks.isEmpty else { throw SelectionTranslateError.emptyResult }
         await coordinator.selectBackend(kind: backend, modelIdentifier: model)
-        var parts: [String] = []
-        parts.reserveCapacity(plan.chunks.count)
-        for chunk in plan.chunks {
-            try Task.checkCancellation()
-            try ensureSelectionCaptureAllowed()
+        var parts = Array(repeating: "", count: plan.chunks.count)
+        if plan.chunks.count > 1 && backend == .deepSeekCloud {
+            let maxConcurrency = min(3, plan.chunks.count)
+            let sharedRevision = nextSelectionRevision()
+            let activeBackend = backend
+            let activeModel = model
+            let activePermissions = permissions
+            let activeLogger = logger
             do {
-                let translated = try await translateOneSelectionChunk(
-                    chunk,
-                    coordinator: coordinator,
-                    revision: nextSelectionRevision(),
-                    direction: direction
-                )
-                parts.append(translated)
+                try await withThrowingTaskGroup(of: (Int, String).self) { group in
+                    var nextIndex = 0
+                    while nextIndex < maxConcurrency {
+                        try ensureSelectionCaptureAllowed()
+                        let index = nextIndex
+                        let chunk = plan.chunks[index]
+                        nextIndex += 1
+                        group.addTask {
+                            let translated = try await Self.translateOneSelectionChunk(
+                                chunk,
+                                coordinator: coordinator,
+                                backend: activeBackend,
+                                model: activeModel,
+                                permissions: activePermissions,
+                                logger: activeLogger,
+                                revision: sharedRevision,
+                                direction: direction
+                            )
+                            return (index, translated)
+                        }
+                    }
+                    while let (index, translated) = try await group.next() {
+                        parts[index] = translated
+                        if nextIndex < plan.chunks.count {
+                            try Task.checkCancellation()
+                            try ensureSelectionCaptureAllowed()
+                            let nextChunkIndex = nextIndex
+                            let chunk = plan.chunks[nextChunkIndex]
+                            nextIndex += 1
+                            group.addTask {
+                                let translated = try await Self.translateOneSelectionChunk(
+                                    chunk,
+                                    coordinator: coordinator,
+                                    backend: activeBackend,
+                                    model: activeModel,
+                                    permissions: activePermissions,
+                                    logger: activeLogger,
+                                    revision: sharedRevision,
+                                    direction: direction
+                                )
+                                return (nextChunkIndex, translated)
+                            }
+                        }
+                    }
+                }
             } catch let error as SelectionTranslateError
                 where error == .noTranslationNeeded && plan.chunks.count > 1 {
-                // One short brand-name chunk inside a longer selection must not
-                // turn the whole translation into 「专有名词，无需翻译」.
                 throw SelectionTranslateError.emptyResult
             }
+        } else {
+            for (index, chunk) in plan.chunks.enumerated() {
+                try Task.checkCancellation()
+                try ensureSelectionCaptureAllowed()
+                do {
+                    parts[index] = try await Self.translateOneSelectionChunk(
+                        chunk,
+                        coordinator: coordinator,
+                        backend: backend,
+                        model: model,
+                        permissions: permissions,
+                        logger: logger,
+                        revision: nextSelectionRevision(),
+                        direction: direction
+                    )
+                } catch let error as SelectionTranslateError
+                    where error == .noTranslationNeeded && plan.chunks.count > 1 {
+                    // One short brand-name chunk inside a longer selection must not
+                    // turn the whole translation into 「专有名词，无需翻译」.
+                    throw SelectionTranslateError.emptyResult
+                }
+            }
         }
+        try ensureSelectionCaptureAllowed()
         let joined = SelectionTranslateSupport.joinTranslatedChunks(parts)
         guard !joined.isEmpty else { throw SelectionTranslateError.emptyResult }
         return SelectionTranslationOutcome(text: joined, sourceWasTruncated: plan.didTruncate)
@@ -364,35 +439,83 @@ public final class TranslationSession {
         let direction = SelectionTranslationDirection.toChinese
         logger.event("selection_code_detected", fields: ["language": detection.language.displayName])
         await coordinator.selectBackend(kind: backend, modelIdentifier: model)
-        var parts: [String] = []
-        parts.reserveCapacity(plan.chunks.count)
-        for (index, chunk) in plan.chunks.enumerated() {
-            try Task.checkCancellation()
-            try ensureSelectionCaptureAllowed()
-            let raw = try await coordinator.completePlain(
-                system: CodeTranslationInstructions.system(
-                    for: direction,
-                    language: detection.language
-                ),
-                user: CodeTranslationInstructions.userContent(
-                    for: chunk,
-                    language: detection.language,
-                    partIndex: index + 1,
-                    partCount: plan.chunks.count
-                ),
-                backend: backend
-            )
-            try Task.checkCancellation()
-            let explanation = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !explanation.isEmpty else { throw SelectionTranslateError.emptyResult }
-            let source = chunk.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard explanation.caseInsensitiveCompare(source) != .orderedSame else {
-                // An echoed snippet is not an explanation. Fail honestly rather
-                // than showing raw code as the translated result.
-                throw SelectionTranslateError.emptyResult
+        let systemPrompt = CodeTranslationInstructions.system(
+            for: direction,
+            language: detection.language
+        )
+        let activeBackend = backend
+        var parts = Array(repeating: "", count: plan.chunks.count)
+        if plan.chunks.count > 1 && activeBackend == .deepSeekCloud {
+            let maxConcurrency = min(3, plan.chunks.count)
+            try await withThrowingTaskGroup(of: (Int, String).self) { group in
+                var nextIndex = 0
+                func spawn(_ index: Int) {
+                    let chunk = plan.chunks[index]
+                    let userContent = CodeTranslationInstructions.userContent(
+                        for: chunk,
+                        language: detection.language,
+                        partIndex: index + 1,
+                        partCount: plan.chunks.count
+                    )
+                    group.addTask {
+                        let raw = try await coordinator.completePlain(
+                            system: systemPrompt,
+                            user: userContent,
+                            backend: activeBackend
+                        )
+                        try Task.checkCancellation()
+                        let explanation = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !explanation.isEmpty else { throw SelectionTranslateError.emptyResult }
+                        let source = chunk.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard explanation.caseInsensitiveCompare(source) != .orderedSame else {
+                            throw SelectionTranslateError.emptyResult
+                        }
+                        return (index, explanation)
+                    }
+                }
+                while nextIndex < maxConcurrency {
+                    try Task.checkCancellation()
+                    try ensureSelectionCaptureAllowed()
+                    spawn(nextIndex)
+                    nextIndex += 1
+                }
+                while let (index, explanation) = try await group.next() {
+                    parts[index] = explanation
+                    if nextIndex < plan.chunks.count {
+                        try Task.checkCancellation()
+                        try ensureSelectionCaptureAllowed()
+                        spawn(nextIndex)
+                        nextIndex += 1
+                    }
+                }
             }
-            parts.append(explanation)
+        } else {
+            for (index, chunk) in plan.chunks.enumerated() {
+                try Task.checkCancellation()
+                try ensureSelectionCaptureAllowed()
+                let raw = try await coordinator.completePlain(
+                    system: systemPrompt,
+                    user: CodeTranslationInstructions.userContent(
+                        for: chunk,
+                        language: detection.language,
+                        partIndex: index + 1,
+                        partCount: plan.chunks.count
+                    ),
+                    backend: activeBackend
+                )
+                try Task.checkCancellation()
+                let explanation = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !explanation.isEmpty else { throw SelectionTranslateError.emptyResult }
+                let source = chunk.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard explanation.caseInsensitiveCompare(source) != .orderedSame else {
+                    // An echoed snippet is not an explanation. Fail honestly rather
+                    // than showing raw code as the translated result.
+                    throw SelectionTranslateError.emptyResult
+                }
+                parts[index] = explanation
+            }
         }
+        try ensureSelectionCaptureAllowed()
         let joined = SelectionTranslateSupport.joinTranslatedChunks(parts)
         guard !joined.isEmpty else { throw SelectionTranslateError.emptyResult }
         logger.event("selection_code_translated", fields: [
@@ -403,9 +526,13 @@ public final class TranslationSession {
         return SelectionTranslationOutcome(text: joined, sourceWasTruncated: plan.didTruncate)
     }
 
-    private func translateOneSelectionChunk(
+    private nonisolated static func translateOneSelectionChunk(
         _ text: String,
         coordinator: any TranslationCoordinating,
+        backend: BackendKind,
+        model: String,
+        permissions: any PermissionControlling,
+        logger: any AppRuntimeLogger,
         revision: UInt64,
         direction: SelectionTranslationDirection
     ) async throws -> String {
@@ -413,6 +540,8 @@ public final class TranslationSession {
             return try await structuredSelectionChunk(
                 text,
                 coordinator: coordinator,
+                backend: backend,
+                model: model,
                 revision: revision,
                 direction: direction
             )
@@ -425,6 +554,9 @@ public final class TranslationSession {
             return try await plainSelectionFallback(
                 text,
                 coordinator: coordinator,
+                backend: backend,
+                permissions: permissions,
+                logger: logger,
                 reason: Self.fallbackReason(for: error),
                 direction: direction
             )
@@ -432,15 +564,20 @@ public final class TranslationSession {
             return try await plainSelectionFallback(
                 text,
                 coordinator: coordinator,
+                backend: backend,
+                permissions: permissions,
+                logger: logger,
                 reason: "empty",
                 direction: direction
             )
         }
     }
 
-    private func structuredSelectionChunk(
+    private nonisolated static func structuredSelectionChunk(
         _ text: String,
         coordinator: any TranslationCoordinating,
+        backend: BackendKind,
+        model: String,
         revision: UInt64,
         direction: SelectionTranslationDirection
     ) async throws -> String {
@@ -487,12 +624,12 @@ public final class TranslationSession {
     /// return brand names verbatim ("Figma", "Python", "npm") and occasionally
     /// emit truncated JSON, both of which surfaced as 「翻译失败」. Network,
     /// credential, and timeout failures are *not* replayed.
-    private static func isRecoverableSelectionFailure(_ error: TranslationError) -> Bool {
+    private nonisolated static func isRecoverableSelectionFailure(_ error: TranslationError) -> Bool {
         if case .invalidResponse = error { return true }
         return false
     }
 
-    private static func fallbackReason(for error: TranslationError) -> String {
+    private nonisolated static func fallbackReason(for error: TranslationError) -> String {
         if case .invalidResponse(let message) = error, message.contains("copied the source") {
             return "copied_source"
         }
@@ -503,9 +640,12 @@ public final class TranslationSession {
     /// 「专有名词，无需翻译」 instead of a red failure; a genuine translation is
     /// returned as-is. Long chunks stay on the structured path because the
     /// plain completion budget could silently truncate them.
-    private func plainSelectionFallback(
+    private nonisolated static func plainSelectionFallback(
         _ text: String,
         coordinator: any TranslationCoordinating,
+        backend: BackendKind,
+        permissions: any PermissionControlling,
+        logger: any AppRuntimeLogger,
         reason: String,
         direction: SelectionTranslationDirection
     ) async throws -> String {
@@ -513,7 +653,7 @@ public final class TranslationSession {
             logger.event("selection_plain_fallback", fields: ["status": "skipped", "reason": "too_long"])
             throw SelectionTranslateError.emptyResult
         }
-        try ensureSelectionCaptureAllowed()
+        try Self.ensureSelectionCaptureAllowed(permissions: permissions)
         let raw: String
         do {
             raw = try await coordinator.completePlain(
@@ -549,12 +689,22 @@ public final class TranslationSession {
         return cleaned
     }
 
+    private nonisolated static func ensureSelectionCaptureAllowed(permissions: any PermissionControlling) throws {
+        let currentPermissions = permissions.snapshot
+        if currentPermissions.secureInputEnabled {
+            throw CaptureError.protected(.secureInput)
+        }
+        if currentPermissions.sessionLocked {
+            throw CaptureError.protected(.sessionLocked)
+        }
+    }
+
     private func nextSelectionRevision() -> UInt64 {
         selectionRevision &+= 1
         return selectionRevision
     }
 
-    private static func runSelectionTranslate(
+    private nonisolated static func runSelectionTranslate(
         _ coordinator: any TranslationCoordinating,
         snapshot: CaptureSnapshot,
         backend: BackendKind,
@@ -579,7 +729,7 @@ public final class TranslationSession {
         )
     }
 
-    private static func selectionError(from error: TranslationError) -> Error {
+    private nonisolated static func selectionError(from error: TranslationError) -> Error {
         switch error {
         case .invalidResponse, .invalidRequest:
             return SelectionTranslateError.emptyResult
@@ -848,9 +998,56 @@ public final class TranslationSession {
         }
     }
 
+    private struct RegionContentKey: Hashable {
+        let source: RegionSource
+        let text: String
+    }
+
+    private struct RenderedDisplayKey: Hashable {
+        let id: UUID
+        let text: String
+        let x: Double
+        let y: Double
+        let w: Double
+        let h: Double
+
+        init(_ rendered: RenderedTranslation) {
+            self.id = rendered.id
+            self.text = rendered.text
+            let frame = rendered.region.screenFrame
+            self.x = frame.origin.x
+            self.y = frame.origin.y
+            self.w = frame.size.width
+            self.h = frame.size.height
+        }
+    }
+
+    private static func fifoBuckets<T, Key: Hashable>(_ items: [T], key: (T) -> Key) -> [Key: [T]] {
+        var map: [Key: [T]] = [:]
+        map.reserveCapacity(items.count)
+        for item in items.reversed() {
+            map[key(item), default: []].append(item)
+        }
+        return map
+    }
+
     private func sameContent(_ lhs: [TextRegion], _ rhs: [TextRegion]) -> Bool {
-        lhs.map { "\($0.source.rawValue):\($0.sourceText)" }.sorted()
-            == rhs.map { "\($0.source.rawValue):\($0.sourceText)" }.sorted()
+        guard lhs.count == rhs.count else { return false }
+        var counts: [RegionContentKey: Int] = [:]
+        counts.reserveCapacity(lhs.count)
+        for region in lhs {
+            counts[RegionContentKey(source: region.source, text: region.sourceText), default: 0] += 1
+        }
+        for region in rhs {
+            let key = RegionContentKey(source: region.source, text: region.sourceText)
+            guard let remaining = counts[key], remaining > 0 else { return false }
+            if remaining == 1 {
+                counts.removeValue(forKey: key)
+            } else {
+                counts[key] = remaining - 1
+            }
+        }
+        return counts.isEmpty
     }
 
     private func receive(_ output: EngineOutput) {
@@ -876,12 +1073,13 @@ public final class TranslationSession {
             return
         }
         guard sameContent(submittedRegions, confirmedRegions) else { return }
-        var available = output.translations
+        var buckets = Self.fifoBuckets(output.translations) {
+            RegionContentKey(source: $0.region.source, text: $0.region.sourceText)
+        }
         let remapped = confirmedRegions.compactMap { region -> RenderedTranslation? in
-            guard let index = available.firstIndex(where: {
-                $0.region.sourceText == region.sourceText && $0.region.source == region.source
-            }) else { return nil }
-            return RenderedTranslation(region: region, text: available.remove(at: index).text)
+            let key = RegionContentKey(source: region.source, text: region.sourceText)
+            guard let match = buckets[key]?.popLast() else { return nil }
+            return RenderedTranslation(region: region, text: match.text)
         }
         let translations = preservingIdentifiers(remapped)
         let updated = display(translations, revision: activeRevision)
@@ -932,10 +1130,9 @@ public final class TranslationSession {
     }
 
     private func reusableTranslations(for regions: [TextRegion]) -> [RenderedTranslation] {
-        var previous = lastRendered
+        var buckets = Self.fifoBuckets(lastRendered) { $0.region.sourceText }
         return regions.compactMap { region in
-            guard let index = previous.firstIndex(where: { $0.region.sourceText == region.sourceText }) else { return nil }
-            let retained = previous.remove(at: index)
+            guard let retained = buckets[region.sourceText]?.popLast() else { return nil }
             return RenderedTranslation(region: identifiedRegion(region, id: retained.id), text: retained.text)
         }
     }
@@ -944,21 +1141,22 @@ public final class TranslationSession {
     /// onto the freshly captured regions so they render at the current
     /// coordinates. Regions already covered by `retained` are skipped.
     private func deferredTranslations(_ output: EngineOutput, matching regions: [TextRegion], excluding retained: [RenderedTranslation]) -> [RenderedTranslation] {
-        var available = output.translations
+        let excludedTexts = Set(retained.map(\.region.sourceText))
+        var buckets = Self.fifoBuckets(output.translations) {
+            RegionContentKey(source: $0.region.source, text: $0.region.sourceText)
+        }
         return regions.compactMap { region in
-            guard !retained.contains(where: { $0.region.sourceText == region.sourceText }),
-                  let index = available.firstIndex(where: {
-                      $0.region.sourceText == region.sourceText && $0.region.source == region.source
-                  }) else { return nil }
-            return RenderedTranslation(region: region, text: available.remove(at: index).text)
+            guard !excludedTexts.contains(region.sourceText) else { return nil }
+            let key = RegionContentKey(source: region.source, text: region.sourceText)
+            guard let match = buckets[key]?.popLast() else { return nil }
+            return RenderedTranslation(region: region, text: match.text)
         }
     }
 
     private func preservingIdentifiers(_ translations: [RenderedTranslation]) -> [RenderedTranslation] {
-        var previous = lastRendered
+        var buckets = Self.fifoBuckets(lastRendered) { $0.region.sourceText }
         return translations.map { translation in
-            guard let index = previous.firstIndex(where: { $0.region.sourceText == translation.region.sourceText }) else { return translation }
-            let retained = previous.remove(at: index)
+            guard let retained = buckets[translation.region.sourceText]?.popLast() else { return translation }
             return RenderedTranslation(region: identifiedRegion(translation.region, id: retained.id), text: translation.text)
         }
     }
@@ -970,10 +1168,12 @@ public final class TranslationSession {
 
     @discardableResult
     private func display(_ translations: [RenderedTranslation], revision: UInt64) -> Bool {
-        let changed = translations.count != lastRendered.count || translations.contains { translation in
-            !lastRendered.contains { previous in
-                previous.id == translation.id && previous.text == translation.text && previous.region.screenFrame == translation.region.screenFrame
-            }
+        let changed: Bool
+        if translations.count != lastRendered.count {
+            changed = true
+        } else {
+            let previousSet = Set(lastRendered.map(RenderedDisplayKey.init))
+            changed = translations.contains { !previousSet.contains(RenderedDisplayKey($0)) }
         }
         if changed { overlay.update(translations: translations, revision: revision) }
         lastRendered = translations
@@ -1020,9 +1220,28 @@ public final class TranslationSession {
     }
 
     private func makeEventSink() -> EngineEventSink {
-        { [weak self] event in
-            Task { @MainActor [weak self] in
-                self?.handle(event)
+        let logger = self.logger
+        return { [weak self] event in
+            switch event {
+            case .stateChanged(let state):
+                logger.event("engine_state", fields: ["status": state.rawValue])
+            case .snapshotReceived(let count, let revision):
+                logger.event("engine_snapshot", fields: ["region_count": String(count), "revision": String(revision)])
+            case .batchCompleted(let count):
+                logger.event("engine_batch", fields: ["item_count": String(count)])
+            case .completed(let metrics):
+                logger.event("engine_completed", fields: [
+                    "status": metrics.status.rawValue,
+                    "translated_count": String(metrics.translatedRegionCount),
+                    "duration_ms": String(metrics.durationMilliseconds)
+                ])
+            case .failed(let status):
+                logger.event("engine_failed", fields: ["status": status.rawValue])
+            case .captureBlocked(let error, let revision):
+                Task { @MainActor [weak self] in
+                    guard let self, self.isRunning, revision == self.activeRevision || revision == self.submittedRevision else { return }
+                    self.handle(error)
+                }
             }
         }
     }

@@ -297,7 +297,10 @@ extension ApplicationController {
             || (health.status == .modelUnavailable && !health.availableModels.isEmpty) else {
             throw ApplicationActionError.backendUnhealthy(health.status)
         }
-        try components.credentialStore.save(apiKey: value)
+        let credentialStore = components.credentialStore
+        try await Task.detached(priority: .userInitiated) {
+            try credentialStore.save(apiKey: value)
+        }.value
         persistDeepSeekAPIKeyConfigured(true)
         viewModel.isReplacingKey = false
         viewModel.keyDraft = ""
@@ -333,7 +336,10 @@ extension ApplicationController {
     }
 
     public func deleteAPIKey() async throws {
-        try components.credentialStore.delete()
+        let credentialStore = components.credentialStore
+        try await Task.detached(priority: .userInitiated) {
+            try credentialStore.delete()
+        }.value
         persistDeepSeekAPIKeyConfigured(false)
         viewModel.isReplacingKey = false
         viewModel.keyDraft = ""

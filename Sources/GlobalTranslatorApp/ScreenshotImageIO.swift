@@ -1,6 +1,8 @@
 import AppKit
 import Darwin
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 
 /// 截图翻译的落盘 / 剪贴板动作。PNG 写入、目录创建、文件名都在这里，便于测试注入。
 public enum ScreenshotImageIO {
@@ -10,8 +12,21 @@ public enum ScreenshotImageIO {
         case writeFailed
     }
 
+    private static let timestampCalendar = Calendar(identifier: .gregorian)
+
     public static func pngData(_ image: CGImage) -> Data? {
-        NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            data,
+            UTType.png.identifier as CFString,
+            1,
+            nil
+        ) else {
+            return nil
+        }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return data as Data
     }
 
     /// 后台编码。4K 截图的 PNG 编码在主线程要几十到几百毫秒，期间弹层和快捷键
@@ -136,10 +151,25 @@ public enum ScreenshotImageIO {
     }
 
     public static func defaultFilename(now: Date = Date()) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let stamp = formatter.string(from: now)
+        let components = timestampCalendar.dateComponents(
+            [.year, .month, .day, .hour, .minute, .second],
+            from: now
+        )
+        let year = components.year ?? 1970
+        let month = components.month ?? 1
+        let day = components.day ?? 1
+        let hour = components.hour ?? 0
+        let minute = components.minute ?? 0
+        let second = components.second ?? 0
+        let stamp = String(
+            format: "%04d%02d%02d-%02d%02d%02d",
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second
+        )
         let suffix = UUID().uuidString.prefix(4)
         return "截图翻译-\(stamp)-\(suffix).png"
     }

@@ -156,7 +156,8 @@ public final class SelectionTranslatePanel: NSPanel {
 
     @MainActor
     func containsOwnedUI(at location: CGPoint, windows: [NSWindow]? = nil) -> Bool {
-        SelectionPopoverHitTesting.containsInteraction(
+        if frame.contains(location) { return true }
+        return SelectionPopoverHitTesting.containsInteraction(
             panelFrame: frame,
             location: location,
             auxiliaryFrames: SelectionPopoverHitTesting.auxiliaryFrames(
@@ -504,7 +505,8 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
             let measured = SelectionPopoverLayout.measuredWrappedHeight(
                 for: hint,
                 width: textWidth,
-                font: hintFont
+                font: hintFont,
+                maxHeight: hintMaxHeight + hintLineHeight
             )
             chromeHeight += min(measured, hintMaxHeight)
         }
@@ -522,12 +524,16 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
             }
         }
 
+        let resultMaxMeasureHeight: CGFloat? = maxHeight.isFinite
+            ? max(resultLineHeight, maxHeight - chromeHeight + resultLineHeight * 2)
+            : nil
         let fullResultHeight = max(
             resultLineHeight,
             SelectionPopoverLayout.measuredWrappedHeight(
                 for: content.displayTranslation,
                 width: textWidth,
-                font: resultMeasuringFont
+                font: resultMeasuringFont,
+                maxHeight: resultMaxMeasureHeight
             )
         )
         let desiredHeight = chromeHeight + fullResultHeight

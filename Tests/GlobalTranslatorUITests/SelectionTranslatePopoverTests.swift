@@ -425,4 +425,11 @@ struct SelectionTranslatePopoverTests {
         #expect(dismissed == 1)
         #expect(controller.currentContent == nil)
     }
+
+    @Test
+    func panelContainsOwnedUIShortCircuitsInsidePanelFrame() {
+        let panel = SelectionTranslatePanel(contentRect: CGRect(x: 100, y: 200, width: 220, height: 120))
+        #expect(panel.containsOwnedUI(at: CGPoint(x: 150, y: 250), windows: []))
+        #expect(!panel.containsOwnedUI(at: CGPoint(x: 500, y: 500), windows: []))
+    }
 }

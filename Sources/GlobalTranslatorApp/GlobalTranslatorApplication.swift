@@ -32,15 +32,17 @@ public final class GlobalTranslatorApplicationRunner: NSObject {
             throw error
         }
 
-        let timer = Timer(
-            timeInterval: 0.5,
-            target: self,
-            selector: #selector(pollWorkerState),
-            userInfo: nil,
-            repeats: true
-        )
-        stopTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
+        if !worker.notifiesOnStop {
+            let timer = Timer(
+                timeInterval: 0.5,
+                target: self,
+                selector: #selector(pollWorkerState),
+                userInfo: nil,
+                repeats: true
+            )
+            stopTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
         defer {
             stopTimer?.invalidate()
             stopTimer = nil

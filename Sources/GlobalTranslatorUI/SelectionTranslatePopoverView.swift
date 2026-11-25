@@ -476,17 +476,19 @@ enum SelectionPopoverLayout {
     static func measuredWrappedHeight(
         for text: String,
         width: CGFloat,
-        font: NSFont
+        font: NSFont,
+        maxHeight: CGFloat? = nil
     ) -> CGFloat {
         let lineHeight = OverlayLayout.estimatedLineHeight(for: font)
         guard !text.isEmpty else { return lineHeight }
+        let containerHeight = (maxHeight.map { $0.isFinite ? max($0, lineHeight) : nil } ?? nil) ?? .greatestFiniteMagnitude
         let storage = NSTextStorage(
             string: text,
             attributes: [.font: font]
         )
         let manager = NSLayoutManager()
         let container = NSTextContainer(
-            size: CGSize(width: width, height: .greatestFiniteMagnitude)
+            size: CGSize(width: width, height: containerHeight)
         )
         container.lineFragmentPadding = 0
         container.widthTracksTextView = false

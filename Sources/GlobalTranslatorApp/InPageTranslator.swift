@@ -53,6 +53,19 @@ public actor CDPInPageTranslator: InPageTranslating {
     private var lastProbeResult = false
     private var browserPID: Int32?
     private var nodeIdentifiers: [String: UUID] = [:]
+    private var cachedSession: IsolatedSession?
+    private var nextRPCID = 1
+
+    private struct IsolatedSession {
+        let targetID: String
+        let webSocketURL: String
+        let webSocket: URLSessionWebSocketTask
+        let contextID: Int
+    }
+
+    deinit {
+        cachedSession?.webSocket.cancel(with: .normalClosure, reason: nil)
+    }
 
     public init(port: UInt16 = 9_222) {
         self.port = port
@@ -132,7 +145,14 @@ public actor CDPInPageTranslator: InPageTranslating {
         // Only the OS-focused, visible tab of the browser is translated —
         // other CDP targets (background tabs, automation browsers sharing the
         // debug port) are skipped so the wrong page is never rewritten.
-        for page in try await pageTargets() {
+        var targets = try await pageTargets()
+        if let activeID = activePageIdentifier,
+           let activeIndex = targets.firstIndex(where: { $0.identifier == activeID }),
+           activeIndex > 0 {
+            let active = targets.remove(at: activeIndex)
+            targets.insert(active, at: 0)
+        }
+        for page in targets {
             let focused = try await evaluateInIsolatedWorld(page: page, expression: Self.focusScript)
             guard Self.resultValue(focused) as? Bool == true else { continue }
             activePageIdentifier = page.identifier
@@ -236,31 +256,72 @@ public actor CDPInPageTranslator: InPageTranslating {
     }
 
     private func evaluateInIsolatedWorld(page: PageTarget, expression: String) async throws -> [String: Any] {
+        if let cached = cachedSession,
+           cached.targetID == page.identifier,
+           cached.webSocketURL == page.webSocketURL {
+            do {
+                return try await sendRPC(on: cached.webSocket, method: "Runtime.evaluate", params: [
+                    "expression": expression,
+                    "contextId": cached.contextID,
+                    "returnByValue": true
+                ])
+            } catch {
+                cached.webSocket.cancel(with: .normalClosure, reason: nil)
+                cachedSession = nil
+            }
+        } else if let stale = cachedSession {
+            stale.webSocket.cancel(with: .normalClosure, reason: nil)
+            cachedSession = nil
+        }
+
+        let session = try await openIsolatedSession(for: page)
+        cachedSession = session
+        do {
+            return try await sendRPC(on: session.webSocket, method: "Runtime.evaluate", params: [
+                "expression": expression,
+                "contextId": session.contextID,
+                "returnByValue": true
+            ])
+        } catch {
+            session.webSocket.cancel(with: .normalClosure, reason: nil)
+            if cachedSession?.webSocket === session.webSocket {
+                cachedSession = nil
+            }
+            throw error
+        }
+    }
+
+    private func openIsolatedSession(for page: PageTarget) async throws -> IsolatedSession {
         guard let url = Self.validatedWebSocketURL(page.webSocketURL, port: port) else {
             throw CDPError.requestFailed("untrusted websocket url")
         }
         let webSocket = urlSession.webSocketTask(with: url)
         webSocket.resume()
-        defer { webSocket.cancel(with: .normalClosure, reason: nil) }
-        let frameTree = try await sendRPC(on: webSocket, method: "Page.getFrameTree", params: [:])
-        guard let frame = frameTree["frameTree"] as? [String: Any],
-              let rootFrame = frame["frame"] as? [String: Any],
-              let frameID = rootFrame["id"] as? String, !frameID.isEmpty else {
-            throw CDPError.requestFailed("missing root frame id")
+        do {
+            let frameTree = try await sendRPC(on: webSocket, method: "Page.getFrameTree", params: [:])
+            guard let frame = frameTree["frameTree"] as? [String: Any],
+                  let rootFrame = frame["frame"] as? [String: Any],
+                  let frameID = rootFrame["id"] as? String, !frameID.isEmpty else {
+                throw CDPError.requestFailed("missing root frame id")
+            }
+            let world = try await sendRPC(on: webSocket, method: "Page.createIsolatedWorld", params: [
+                "frameId": frameID,
+                "worldName": "GlobalTranslatorIsolated",
+                "grantUniveralAccess": false
+            ])
+            guard let contextID = world["executionContextId"] as? Int else {
+                throw CDPError.requestFailed("missing isolated executionContextId")
+            }
+            return IsolatedSession(
+                targetID: page.identifier,
+                webSocketURL: page.webSocketURL,
+                webSocket: webSocket,
+                contextID: contextID
+            )
+        } catch {
+            webSocket.cancel(with: .normalClosure, reason: nil)
+            throw error
         }
-        let world = try await sendRPC(on: webSocket, method: "Page.createIsolatedWorld", params: [
-            "frameId": frameID,
-            "worldName": "GlobalTranslatorIsolated",
-            "grantUniveralAccess": false
-        ])
-        guard let contextID = world["executionContextId"] as? Int else {
-            throw CDPError.requestFailed("missing isolated executionContextId")
-        }
-        return try await sendRPC(on: webSocket, method: "Runtime.evaluate", params: [
-            "expression": expression,
-            "contextId": contextID,
-            "returnByValue": true
-        ])
     }
 
     private func rpc(webSocketURL: String, method: String, params: [String: Any]) async throws -> [String: Any] {
@@ -274,7 +335,9 @@ public actor CDPInPageTranslator: InPageTranslating {
     }
 
     private func sendRPC(on webSocket: URLSessionWebSocketTask, method: String, params: [String: Any]) async throws -> [String: Any] {
-        let requestID = Int.random(in: 1...1_000_000)
+        let requestID = nextRPCID
+        nextRPCID &+= 1
+        if nextRPCID <= 0 { nextRPCID = 1 }
         let body: [String: Any] = ["id": requestID, "method": method, "params": params]
         let data = try JSONSerialization.data(withJSONObject: body)
         try await webSocket.send(.string(String(decoding: data, as: UTF8.self)))
@@ -344,10 +407,17 @@ public actor CDPInPageTranslator: InPageTranslating {
     private static let extractScript = """
     (() => {
       try {
-      if (!window.__gtTranslator) window.__gtTranslator = { nodes: {}, next: 0 };
+      if (!window.__gtTranslator) window.__gtTranslator = { nodes: {}, nodeIds: new WeakMap(), next: 0 };
       const store = window.__gtTranslator;
       if (!store.entries) store.entries = {};
       if (!store.requested) store.requested = {};
+      if (!store.nodeIds) {
+        store.nodeIds = new WeakMap();
+        for (const existing in store.nodes) {
+          const n = store.nodes[existing];
+          if (n) store.nodeIds.set(n, existing);
+        }
+      }
       const rawLang = document.documentElement.lang || '';
       const match = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*$/.exec(rawLang);
       const pageLang = rawLang.length <= 63 && match && match[0] === rawLang ? rawLang.toLowerCase() : null;
@@ -357,7 +427,8 @@ public actor CDPInPageTranslator: InPageTranslating {
         (parts[0] === 'zh' && script !== 'hans' &&
           (script === 'hant' || ['tw', 'hk', 'mo'].includes(parts[script ? 2 : 1])));
       const results = [];
-      const skipped = ['SCRIPT', 'STYLE', 'NOSCRIPT', 'CODE', 'PRE', 'TEXTAREA'];
+      const pendingWrites = [];
+      const skipped = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'CODE', 'PRE', 'TEXTAREA']);
       const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
       let node;
       while ((node = walker.nextNode())) {
@@ -370,24 +441,30 @@ public actor CDPInPageTranslator: InPageTranslating {
         const cjk = /[\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF]/.test(text);
         if (cjk && !kana && !hangul && !foreignCJKPage && !/[A-Za-z]/.test(text)) continue;
         const element = node.parentElement;
-        if (!element || skipped.indexOf(element.tagName) !== -1) continue;
+        if (!element || skipped.has(element.tagName)) continue;
         if (element.closest && element.closest('[contenteditable="true"], [contenteditable=""]')) continue;
         const rect = element.getBoundingClientRect();
         if (rect.width < 4 || rect.height < 4) continue;
         const style = getComputedStyle(element);
         if (style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) === 0) continue;
-        let id = null;
-        for (const existing in store.nodes) if (store.nodes[existing] === node) { id = existing; break; }
-        if (id == null) { id = String(store.next++); store.nodes[id] = node; }
+        let id = store.nodeIds.get(node);
+        if (id == null) {
+          id = String(store.next++);
+          store.nodes[id] = node;
+          store.nodeIds.set(node, id);
+        }
         const entry = store.entries[id];
         if (entry && entry.translation === text) continue;
         if (entry && entry.source === text) {
-          node.nodeValue = original.replace(text, entry.translation);
+          pendingWrites.push([node, original.replace(text, entry.translation)]);
           continue;
         }
         store.requested[id] = text;
         results.push({ id: id, text: text, sourceLanguage: pageLang });
         if (results.length >= 200) break;
+      }
+      for (let i = 0; i < pendingWrites.length; i++) {
+        pendingWrites[i][0].nodeValue = pendingWrites[i][1];
       }
       return JSON.stringify(results);
       } catch (error) { return JSON.stringify({ error: String(error) }); }
