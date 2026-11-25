@@ -83,4 +83,35 @@ struct WhisperCppLocatorTests {
         #expect(candidates.models.contains { $0.lastPathComponent == "ggml-base.en.bin" })
         #expect(candidates.models.contains { $0.lastPathComponent == "ggml-tiny.en.bin" })
     }
+
+    @Test
+    func locatorFindsTrustedWhisperServerAndRejectsUntrusted() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gt-whisper-srv-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let cli = dir.appendingPathComponent("whisper-cli")
+        let srv = dir.appendingPathComponent("whisper-server")
+        let model = dir.appendingPathComponent("ggml-base.en.bin")
+        for exec in [cli, srv] {
+            try Data("#!/bin/sh\n".utf8).write(to: exec)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: exec.path)
+        }
+        try Data("model".utf8).write(to: model)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: model.path)
+
+        let located = WhisperCppLocator.locate(environment: [
+            WhisperCppLocator.binaryEnvironmentKey: cli.path,
+            WhisperCppLocator.modelEnvironmentKey: model.path
+        ])
+        #expect(located.serverBinaryURL?.path == srv.standardizedFileURL.path)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: srv.path)
+        let untrusted = WhisperCppLocator.locate(environment: [
+            WhisperCppLocator.binaryEnvironmentKey: cli.path,
+            WhisperCppLocator.modelEnvironmentKey: model.path
+        ])
+        #expect(untrusted.serverBinaryURL?.path != srv.standardizedFileURL.path)
+    }
 }

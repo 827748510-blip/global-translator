@@ -178,11 +178,13 @@ public enum DeepSeekPricing {
     /// Chinese public holidays from peak pricing; this estimate has no holiday
     /// calendar, so holiday peak hours are billed here at the peak rate.
     public static func isPeak(at date: Date) -> Bool {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let components = calendar.dateComponents([.weekday, .hour], from: date)
-        guard let weekday = components.weekday, (2...6).contains(weekday),
-              let hour = components.hour else {
+        let unixSeconds = Int64(floor(date.timeIntervalSince1970))
+        let days = unixSeconds >= 0 ? unixSeconds / 86_400 : (unixSeconds - 86_399) / 86_400
+        let secondsOfDay = Int(unixSeconds - days * 86_400)
+        let hour = secondsOfDay / 3_600
+        // 1970-01-01 was Thursday (offset 3 when Monday == 0).
+        let weekdayZeroMon = ((days + 3) % 7 + 7) % 7
+        guard (0...4).contains(weekdayZeroMon) else {
             return false
         }
         return (1..<4).contains(hour) || (6..<10).contains(hour)

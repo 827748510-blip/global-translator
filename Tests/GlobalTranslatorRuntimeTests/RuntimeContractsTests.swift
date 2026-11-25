@@ -474,6 +474,26 @@ struct RuntimeContractsTests {
         #expect(unknown == "错误：运行失败")
         #expect(!unknown.contains("secret-token"))
     }
+
+    @Test
+    func loggerRotationAndBackwardLogReaderHandleLargeFiles() throws {
+        let root = URL(fileURLWithPath: "/private/tmp/gt-log-\(UUID().uuidString)")
+        let paths = try RuntimePaths(validatingRoot: root)
+        try paths.prepareDirectories()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let logger = try RuntimeLogger(url: paths.logURL, maximumBytes: 65_536, backupCount: 1)
+        for index in 0..<250 {
+            try logger.write(
+                level: "info",
+                event: "perf_event",
+                fields: ["idx": String(index), "payload": String(repeating: "a", count: 220)]
+            )
+        }
+        let lines = try RuntimeLogReader(url: paths.logURL).lastLines(limit: 5)
+        #expect(lines.count == 5)
+        #expect(lines.last?.contains("\"idx\":\"249\"") == true)
+    }
 }
 
 private final class LockedCounter: @unchecked Sendable {

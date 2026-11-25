@@ -9,10 +9,17 @@ func validateTranslationResult(
         throw TranslationError.invalidResponse("translation revision does not match request")
     }
     let expectedIDs = Set(expectedRequest.items.map(\.id))
-    let actualIDs = result.translations.map(\.segmentId)
-    guard actualIDs.count == expectedIDs.count,
-          Set(actualIDs).count == actualIDs.count,
-          Set(actualIDs) == expectedIDs else {
+    guard result.translations.count == expectedIDs.count else {
+        throw TranslationError.invalidResponse("translation IDs do not match request")
+    }
+    var actualSet = Set<UUID>()
+    actualSet.reserveCapacity(result.translations.count)
+    for translation in result.translations {
+        guard actualSet.insert(translation.segmentId).inserted else {
+            throw TranslationError.invalidResponse("translation IDs do not match request")
+        }
+    }
+    guard actualSet == expectedIDs else {
         throw TranslationError.invalidResponse("translation IDs do not match request")
     }
     guard result.translations.allSatisfy({

@@ -688,14 +688,13 @@ public enum SelectionTranslateSupport {
                 start = text.index(after: start)
             }
             guard start < text.endIndex else { break }
-            let remaining = text[start...]
-            if remaining.count <= target {
-                let piece = String(remaining).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let targetIndex = text.index(start, offsetBy: target, limitedBy: text.endIndex),
+                  targetIndex < text.endIndex else {
+                let piece = String(text[start...]).trimmingCharacters(in: .whitespacesAndNewlines)
                 if !piece.isEmpty { chunks.append(piece) }
                 break
             }
-            let targetIndex = text.index(start, offsetBy: target)
-            let breakIndex = preferredBreakIndex(in: text, start: start, target: targetIndex)
+            let breakIndex = preferredBreakIndex(in: text, start: start, target: targetIndex, windowCount: target)
             let end = breakIndex > start ? breakIndex : targetIndex
             let piece = String(text[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
             if !piece.isEmpty {
@@ -726,10 +725,11 @@ public enum SelectionTranslateSupport {
     private static func preferredBreakIndex(
         in text: String,
         start: String.Index,
-        target: String.Index
+        target: String.Index,
+        windowCount: Int
     ) -> String.Index {
         let window = text[start..<target]
-        let minOffset = max(1, window.count / 2)
+        let minOffset = max(1, windowCount / 2)
         if let paragraph = lastMatch("\n\n", in: window, minOffset: minOffset) {
             return paragraph
         }
@@ -753,44 +753,43 @@ public enum SelectionTranslateSupport {
     }
 
     private static func lastSentenceBreak(in window: Substring, minOffset: Int) -> String.Index? {
-        var match: String.Index?
-        var offset = 0
-        var index = window.startIndex
-        while index < window.endIndex {
-            let character = window[index]
-            let next = window.index(after: index)
+        guard let minIndex = window.index(window.startIndex, offsetBy: minOffset, limitedBy: window.endIndex) else {
+            return nil
+        }
+        var index = window.endIndex
+        while index > minIndex {
+            let previous = window.index(before: index)
+            let character = window[previous]
             if Self.sentenceTerminators.contains(character) {
                 let boundaryOK: Bool
-                if next == window.endIndex {
+                if index == window.endIndex {
                     boundaryOK = true
                 } else {
-                    let following = window[next]
+                    let following = window[index]
                     boundaryOK = following.isWhitespace || following.isNewline
                 }
-                if boundaryOK, offset >= minOffset {
-                    match = next
+                if boundaryOK {
+                    return index
                 }
             }
-            index = next
-            offset += 1
+            index = previous
         }
-        return match
+        return nil
     }
 
     private static func lastWhitespaceBreak(in window: Substring, minOffset: Int) -> String.Index? {
-        var match: String.Index?
-        var offset = 0
-        var index = window.startIndex
-        while index < window.endIndex {
-            let character = window[index]
-            let next = window.index(after: index)
-            if character.isWhitespace, offset >= minOffset {
-                match = next
-            }
-            index = next
-            offset += 1
+        guard let minIndex = window.index(window.startIndex, offsetBy: minOffset, limitedBy: window.endIndex) else {
+            return nil
         }
-        return match
+        var index = window.endIndex
+        while index > minIndex {
+            let previous = window.index(before: index)
+            if window[previous].isWhitespace {
+                return index
+            }
+            index = previous
+        }
+        return nil
     }
 
     private static let sentenceTerminators: Set<Character> = [".", "!", "?", "。", "！", "？"]

@@ -36,6 +36,14 @@ struct HTTPResponseAccumulator {
         self.maximumBytes = max(0, maximumBytes)
     }
 
+    mutating func reserveCapacity(_ expectedBytes: Int64) {
+        guard expectedBytes > 0 else { return }
+        let bounded = Int(min(expectedBytes, Int64(maximumBytes)))
+        if bounded > 0 {
+            data.reserveCapacity(bounded)
+        }
+    }
+
     mutating func append(_ chunk: Data) throws {
         guard chunk.count <= maximumBytes - data.count else {
             throw HTTPTransportError.responseTooLarge
@@ -67,7 +75,46 @@ private final class RequestCancellation: @unchecked Sendable {
     }
 }
 
-public final class URLSessionHTTPTransport: NSObject, HTTPTransport, URLSessionDataDelegate, @unchecked Sendable {
+private final class SessionDelegateProxy: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    weak var owner: URLSessionHTTPTransport?
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @Sendable @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        guard let owner else {
+            completionHandler(.cancel)
+            return
+        }
+        owner.handle(dataTask: dataTask, didReceive: response, completionHandler: completionHandler)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        owner?.handle(dataTask: dataTask, didReceive: data)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @Sendable @escaping (URLRequest?) -> Void
+    ) {
+        guard let owner else {
+            completionHandler(nil)
+            return
+        }
+        owner.handle(task: task, willPerformHTTPRedirection: response, newRequest: request, completionHandler: completionHandler)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        owner?.handle(task: task, didCompleteWithError: error)
+    }
+}
+
+public final class URLSessionHTTPTransport: HTTPTransport, @unchecked Sendable {
     private final class PendingTask {
         var response: HTTPURLResponse?
         var body: HTTPResponseAccumulator
@@ -83,9 +130,9 @@ public final class URLSessionHTTPTransport: NSObject, HTTPTransport, URLSessionD
 
     private let lock = NSLock()
     private var pending: [Int: PendingTask] = [:]
-    private let configuration: URLSessionConfiguration
     public let maximumResponseBytes: Int
-    private lazy var session: URLSession = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+    private let delegateProxy: SessionDelegateProxy
+    private let session: URLSession
 
     public init(
         configuration: URLSessionConfiguration = .ephemeral,
@@ -101,9 +148,15 @@ public final class URLSessionHTTPTransport: NSObject, HTTPTransport, URLSessionD
         // `stream` is false; pass higher values for that TTFB.
         configured.timeoutIntervalForRequest = min(max(requestTimeout, 1), 180)
         configured.timeoutIntervalForResource = min(max(resourceTimeout, 1), 300)
-        self.configuration = configured
         self.maximumResponseBytes = max(0, maximumResponseBytes)
-        super.init()
+        let proxy = SessionDelegateProxy()
+        self.delegateProxy = proxy
+        self.session = URLSession(configuration: configured, delegate: proxy, delegateQueue: nil)
+        proxy.owner = self
+    }
+
+    deinit {
+        session.finishTasksAndInvalidate()
     }
 
     public func send(_ request: URLRequest) async throws -> HTTPResponse {
@@ -125,20 +178,21 @@ public final class URLSessionHTTPTransport: NSObject, HTTPTransport, URLSessionD
         }
     }
 
-    public func urlSession(
-        _ session: URLSession,
+    fileprivate func handle(
         dataTask: URLSessionDataTask,
         didReceive response: URLResponse,
         completionHandler: @Sendable @escaping (URLSession.ResponseDisposition) -> Void
     ) {
         lock.lock()
-        pending[dataTask.taskIdentifier]?.response = response as? HTTPURLResponse
+        if let state = pending[dataTask.taskIdentifier] {
+            state.response = response as? HTTPURLResponse
+            state.body.reserveCapacity(response.expectedContentLength)
+        }
         lock.unlock()
         completionHandler(.allow)
     }
 
-    public func urlSession(
-        _ session: URLSession,
+    fileprivate func handle(
         dataTask: URLSessionDataTask,
         didReceive data: Data
     ) {
@@ -158,8 +212,7 @@ public final class URLSessionHTTPTransport: NSObject, HTTPTransport, URLSessionD
         }
     }
 
-    public func urlSession(
-        _ session: URLSession,
+    fileprivate func handle(
         task: URLSessionTask,
         willPerformHTTPRedirection response: HTTPURLResponse,
         newRequest request: URLRequest,
@@ -171,8 +224,7 @@ public final class URLSessionHTTPTransport: NSObject, HTTPTransport, URLSessionD
         completionHandler(nil)
     }
 
-    public func urlSession(
-        _ session: URLSession,
+    fileprivate func handle(
         task: URLSessionTask,
         didCompleteWithError error: Error?
     ) {

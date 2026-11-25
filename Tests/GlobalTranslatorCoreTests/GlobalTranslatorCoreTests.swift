@@ -158,6 +158,25 @@ struct GlobalTranslatorCoreTests {
     }
 
     @Test
+    func translationCacheEnforcesByteBudgetAndSupportsBatchOps() async {
+        let cache = TranslationCache(capacity: 100, maxTotalBytes: 24)
+        let key1 = TranslationCacheKey(source: "123456", backend: .local, model: "m", targetLanguage: "zh-Hans")
+        let key2 = TranslationCacheKey(source: "abcdef", backend: .local, model: "m", targetLanguage: "zh-Hans")
+        let key3 = TranslationCacheKey(source: "xyz123", backend: .local, model: "m", targetLanguage: "zh-Hans")
+        await cache.insertBatch([
+            (key: key1, value: "aaaaaa"),
+            (key: key2, value: "bbbbbb")
+        ])
+        #expect(await cache.count == 2)
+        #expect(await cache.currentTotalBytes == 24)
+        await cache.insert("cccccc", for: key3)
+        let batchResult = await cache.values(for: [key1, key2, key3])
+        #expect(batchResult[key1] == nil)
+        #expect(batchResult[key2] == "bbbbbb")
+        #expect(batchResult[key3] == "cccccc")
+    }
+
+    @Test
     func endpointValidatorAcceptsOnlyLoopbackHttp() {
         expectNoThrow {
             _ = try EndpointValidator.validateLocalBaseURL(URL(string: "http://127.0.0.1:11434/v1")!)
@@ -724,6 +743,33 @@ struct SerializingTranslationBackendTests {
         _ = await overlayTask.result
         #expect(bridgeResult.translations.first?.simplifiedChineseText == "译:bridge batch")
         #expect(await base.finished.contains("bridge batch"))
+    }
+
+    @Test
+    func queuedWaiterCancelsImmediatelyWithoutWaitingForActiveFlight() async throws {
+        let base = SlowRecordingBackend()
+        let serial = SerializingTranslationBackend(base: base)
+        let active = TranslationRequest(
+            windowRevision: 1,
+            items: [TranslationItem(id: UUID(), sourceText: "active request")]
+        )
+        let queued = TranslationRequest(
+            windowRevision: 2,
+            items: [TranslationItem(id: UUID(), sourceText: "queued request")]
+        )
+        let activeTask = Task { try await serial.translate(active) }
+        for _ in 0..<200 where await base.started.isEmpty { await Task.yield() }
+        let queuedTask = Task { try await serial.translate(queued) }
+        await Task.yield()
+        queuedTask.cancel()
+        do {
+            _ = try await queuedTask.value
+            Issue.record("expected CancellationError for cancelled queued task")
+        } catch is CancellationError {
+            // expected
+        }
+        _ = try await activeTask.value
+        #expect(!(await base.started.contains("queued request")))
     }
 }
 

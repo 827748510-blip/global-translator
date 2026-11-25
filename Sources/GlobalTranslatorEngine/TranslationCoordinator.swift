@@ -170,20 +170,24 @@ public actor TranslationCoordinator {
         let effectiveCacheScope = [snapshot.cacheScope, copiedPolicyTag].compactMap { $0 }.joined(separator: "|")
         let plan = batcher.plan(regions: snapshot.regions, requireTranslatable: !includeIneligibleText, sourceLanguage: sourceLanguage)
         var textByRegionID: [UUID: String] = [:]
+        textByRegionID.reserveCapacity(plan.orderedRegions.count)
         var pendingEntries: [TranslationBatchEntry] = []
+        pendingEntries.reserveCapacity(plan.entries.count)
         var cacheHitCount = 0
-        for entry in plan.entries {
-            try ensureCurrent(revision: revision, generation: generation)
-            let key = TranslationCacheKey(
-                source: entry.sourceText,
+        let entryKeys = plan.entries.map {
+            TranslationCacheKey(
+                source: $0.sourceText,
                 backend: kind,
                 model: model,
                 targetLanguage: effectiveTargetLanguage,
                 sourceLanguage: sourceLanguage,
                 cacheScope: effectiveCacheScope
             )
-            if let cached = await cache.value(for: key) {
-                try ensureCurrent(revision: revision, generation: generation)
+        }
+        let cachedValues = await cache.values(for: entryKeys)
+        try ensureCurrent(revision: revision, generation: generation)
+        for (entry, key) in zip(plan.entries, entryKeys) {
+            if let cached = cachedValues[key] {
                 for region in entry.regions {
                     textByRegionID[region.id] = cached
                 }
@@ -214,7 +218,7 @@ public actor TranslationCoordinator {
             targetLanguage: targetLanguage,
             sourceLanguage: sourceLanguage
         )
-        let vision = makeVisionImages(
+        let vision = await makeVisionImages(
             snapshot: snapshot,
             backendKind: kind,
             backend: backend,
@@ -223,78 +227,45 @@ public actor TranslationCoordinator {
         )
         let textOnlyVision = vision.requested && (!vision.available || vision.imagesByID.isEmpty)
 
-        for batch in batches {
-            try ensureCurrent(revision: revision, generation: generation)
-            if snapshot.source != .pageText {
-                do {
-                    try await circuitBreaker.check()
-                    try ensureCurrent(revision: revision, generation: generation)
-                } catch let error as TranslationCoordinatorError {
-                    if case .circuitOpen = error {
-                        setState(.circuitOpen)
-                        emit(.failed(status: .circuitOpen))
-                    }
-                    throw error
-                }
-            }
-
-            let batchImages = batch.request.items.compactMap { vision.imagesByID[$0.id] }
-            let result: TranslationResult
-            do {
-                try validateCapturePermission(snapshot)
-                result = try await send(
-                    batch.request,
-                    to: backend,
-                    images: batchImages,
-                    allowVision: vision.available && !batchImages.isEmpty
+        if kind == .deepSeekCloud && batches.count > 1 {
+            try await translateBatchesConcurrently(
+                batches,
+                snapshot: snapshot,
+                backend: backend,
+                kind: kind,
+                model: model,
+                effectiveTargetLanguage: effectiveTargetLanguage,
+                sourceLanguage: sourceLanguage,
+                effectiveCacheScope: effectiveCacheScope,
+                vision: vision,
+                revision: revision,
+                generation: generation,
+                maxConcurrency: 3,
+                textByRegionID: &textByRegionID
+            )
+        } else {
+            for batch in batches {
+                let result = try await executeBatch(
+                    batch,
+                    snapshot: snapshot,
+                    backend: backend,
+                    vision: vision,
+                    revision: revision,
+                    generation: generation
                 )
-                try ensureCurrent(revision: revision, generation: generation)
-                try validateCapturePermission(snapshot)
-                try validateTranslationResult(result, expectedRequest: batch.request)
-            } catch let error as CaptureError {
-                throw error
-            } catch let error as TranslationCoordinatorError {
-                throw error
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                try ensureCurrent(revision: revision, generation: generation)
-                let translationError = error as? TranslationError ?? .networkFailure
-                // Page text from the extension is paced by the content script.
-                // Recording those timeouts as circuit failures stalled every
-                // tab for 30s after three dense-page batches.
-                if snapshot.source != .pageText {
-                    await circuitBreaker.recordFailure(translationError)
-                }
-                try ensureCurrent(revision: revision, generation: generation)
-                setState(.backendError)
-                emit(.failed(status: engineFailureStatus(for: translationError)))
-                throw error
-            }
-
-            await circuitBreaker.recordSuccess()
-            try ensureCurrent(revision: revision, generation: generation)
-            let resultByID = Dictionary(uniqueKeysWithValues: result.translations.map { ($0.segmentId, $0.simplifiedChineseText) })
-            for entry in batch.entries {
-                guard let translated = resultByID[entry.item.id] else {
-                    throw TranslationError.invalidResponse("translation ID is missing")
-                }
-                let key = TranslationCacheKey(
-                    source: entry.sourceText,
-                    backend: kind,
+                try await applyBatchResult(
+                    result,
+                    for: batch,
+                    kind: kind,
                     model: model,
-                    targetLanguage: effectiveTargetLanguage,
+                    effectiveTargetLanguage: effectiveTargetLanguage,
                     sourceLanguage: sourceLanguage,
-                    cacheScope: effectiveCacheScope
+                    effectiveCacheScope: effectiveCacheScope,
+                    revision: revision,
+                    generation: generation,
+                    textByRegionID: &textByRegionID
                 )
-                try ensureCurrent(revision: revision, generation: generation)
-                await cache.insert(translated, for: key)
-                try ensureCurrent(revision: revision, generation: generation)
-                for region in entry.regions {
-                    textByRegionID[region.id] = translated
-                }
             }
-            emit(.batchCompleted(itemCount: batch.request.items.count))
         }
 
         try ensureCurrent(revision: revision, generation: generation)
@@ -336,10 +307,211 @@ public actor TranslationCoordinator {
         return .keep
     }
 
+    private static let pngMagic: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+
+    private func executeBatch(
+        _ batch: TranslationBatch,
+        snapshot: CaptureSnapshot,
+        backend: any TranslationBackend,
+        vision: (requested: Bool, available: Bool, imagesByID: [UUID: VisionTranslationImage]),
+        revision: UInt64,
+        generation: UInt64
+    ) async throws -> TranslationResult {
+        try ensureCurrent(revision: revision, generation: generation)
+        if snapshot.source != .pageText {
+            do {
+                try await circuitBreaker.check()
+                try ensureCurrent(revision: revision, generation: generation)
+            } catch let error as TranslationCoordinatorError {
+                if case .circuitOpen = error {
+                    setState(.circuitOpen)
+                    emit(.failed(status: .circuitOpen))
+                }
+                throw error
+            }
+        }
+
+        let batchImages = batch.request.items.compactMap { vision.imagesByID[$0.id] }
+        do {
+            try validateCapturePermission(snapshot)
+            let result = try await Self.send(
+                batch.request,
+                to: backend,
+                images: batchImages,
+                allowVision: vision.available && !batchImages.isEmpty
+            )
+            try ensureCurrent(revision: revision, generation: generation)
+            try validateCapturePermission(snapshot)
+            try validateTranslationResult(result, expectedRequest: batch.request)
+            return result
+        } catch let error as CaptureError {
+            throw error
+        } catch let error as TranslationCoordinatorError {
+            throw error
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try ensureCurrent(revision: revision, generation: generation)
+            let translationError = error as? TranslationError ?? .networkFailure
+            // Page text from the extension is paced by the content script.
+            // Recording those timeouts as circuit failures stalled every
+            // tab for 30s after three dense-page batches.
+            if snapshot.source != .pageText {
+                await circuitBreaker.recordFailure(translationError)
+            }
+            try ensureCurrent(revision: revision, generation: generation)
+            setState(.backendError)
+            emit(.failed(status: engineFailureStatus(for: translationError)))
+            throw error
+        }
+    }
+
+    private func translateBatchesConcurrently(
+        _ batches: [TranslationBatch],
+        snapshot: CaptureSnapshot,
+        backend: any TranslationBackend,
+        kind: BackendKind,
+        model: String,
+        effectiveTargetLanguage: String,
+        sourceLanguage: TranslationSourceLanguage?,
+        effectiveCacheScope: String,
+        vision: (requested: Bool, available: Bool, imagesByID: [UUID: VisionTranslationImage]),
+        revision: UInt64,
+        generation: UInt64,
+        maxConcurrency: Int,
+        textByRegionID: inout [UUID: String]
+    ) async throws {
+        try ensureCurrent(revision: revision, generation: generation)
+        if snapshot.source != .pageText {
+            do {
+                try await circuitBreaker.check()
+                try ensureCurrent(revision: revision, generation: generation)
+            } catch let error as TranslationCoordinatorError {
+                if case .circuitOpen = error {
+                    setState(.circuitOpen)
+                    emit(.failed(status: .circuitOpen))
+                }
+                throw error
+            }
+        }
+        try validateCapturePermission(snapshot)
+
+        var nextIndex = 0
+        let initialCount = min(maxConcurrency, batches.count)
+        let allowVision = vision.available
+        let imagesByID = vision.imagesByID
+
+        do {
+            try await withThrowingTaskGroup(of: (TranslationBatch, TranslationResult).self) { group in
+                while nextIndex < initialCount {
+                    let batch = batches[nextIndex]
+                    nextIndex += 1
+                    let batchImages = batch.request.items.compactMap { imagesByID[$0.id] }
+                    group.addTask {
+                        let result = try await Self.send(
+                            batch.request,
+                            to: backend,
+                            images: batchImages,
+                            allowVision: allowVision && !batchImages.isEmpty
+                        )
+                        return (batch, result)
+                    }
+                }
+
+                while let (batch, result) = try await group.next() {
+                    try ensureCurrent(revision: revision, generation: generation)
+                    try validateCapturePermission(snapshot)
+                    try validateTranslationResult(result, expectedRequest: batch.request)
+                    try await applyBatchResult(
+                        result,
+                        for: batch,
+                        kind: kind,
+                        model: model,
+                        effectiveTargetLanguage: effectiveTargetLanguage,
+                        sourceLanguage: sourceLanguage,
+                        effectiveCacheScope: effectiveCacheScope,
+                        revision: revision,
+                        generation: generation,
+                        textByRegionID: &textByRegionID
+                    )
+                    if nextIndex < batches.count {
+                        let nextBatch = batches[nextIndex]
+                        nextIndex += 1
+                        let batchImages = nextBatch.request.items.compactMap { imagesByID[$0.id] }
+                        group.addTask {
+                            let nextResult = try await Self.send(
+                                nextBatch.request,
+                                to: backend,
+                                images: batchImages,
+                                allowVision: allowVision && !batchImages.isEmpty
+                            )
+                            return (nextBatch, nextResult)
+                        }
+                    }
+                }
+            }
+        } catch let error as CaptureError {
+            throw error
+        } catch let error as TranslationCoordinatorError {
+            throw error
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try ensureCurrent(revision: revision, generation: generation)
+            let translationError = error as? TranslationError ?? .networkFailure
+            if snapshot.source != .pageText {
+                await circuitBreaker.recordFailure(translationError)
+            }
+            try ensureCurrent(revision: revision, generation: generation)
+            setState(.backendError)
+            emit(.failed(status: engineFailureStatus(for: translationError)))
+            throw error
+        }
+    }
+
+    private func applyBatchResult(
+        _ result: TranslationResult,
+        for batch: TranslationBatch,
+        kind: BackendKind,
+        model: String,
+        effectiveTargetLanguage: String,
+        sourceLanguage: TranslationSourceLanguage?,
+        effectiveCacheScope: String,
+        revision: UInt64,
+        generation: UInt64,
+        textByRegionID: inout [UUID: String]
+    ) async throws {
+        await circuitBreaker.recordSuccess()
+        try ensureCurrent(revision: revision, generation: generation)
+        let resultByID = Dictionary(uniqueKeysWithValues: result.translations.map { ($0.segmentId, $0.simplifiedChineseText) })
+        var cacheBatch: [(key: TranslationCacheKey, value: String)] = []
+        cacheBatch.reserveCapacity(batch.entries.count)
+        for entry in batch.entries {
+            guard let translated = resultByID[entry.item.id] else {
+                throw TranslationError.invalidResponse("translation ID is missing")
+            }
+            let key = TranslationCacheKey(
+                source: entry.sourceText,
+                backend: kind,
+                model: model,
+                targetLanguage: effectiveTargetLanguage,
+                sourceLanguage: sourceLanguage,
+                cacheScope: effectiveCacheScope
+            )
+            cacheBatch.append((key: key, value: translated))
+            for region in entry.regions {
+                textByRegionID[region.id] = translated
+            }
+        }
+        await cache.insertBatch(cacheBatch)
+        try ensureCurrent(revision: revision, generation: generation)
+        emit(.batchCompleted(itemCount: batch.request.items.count))
+    }
+
     private func validateCapturePermission(_ snapshot: CaptureSnapshot) throws {
         do {
+            let currentPermissions = permissions.snapshot
             if snapshot.descriptor.bundleIdentifier == "selection.translate" {
-                let currentPermissions = permissions.snapshot
                 if currentPermissions.secureInputEnabled {
                     throw CaptureError.protected(.secureInput)
                 }
@@ -347,7 +519,7 @@ public actor TranslationCoordinator {
                     throw CaptureError.protected(.sessionLocked)
                 }
             }
-            try permissions.snapshot.validateCapture(source: snapshot.source)
+            try currentPermissions.validateCapture(source: snapshot.source)
         } catch let error as CaptureError {
             if case .protected = error {
                 setState(.listening)
@@ -370,7 +542,7 @@ public actor TranslationCoordinator {
         await circuitBreaker.reset()
     }
 
-    private func send(
+    private nonisolated static func send(
         _ request: TranslationRequest,
         to backend: any TranslationBackend,
         images: [VisionTranslationImage],
@@ -388,43 +560,50 @@ public actor TranslationCoordinator {
         backend: any TranslationBackend,
         enabled: Bool,
         entries: [TranslationBatchEntry]
-    ) -> (requested: Bool, available: Bool, imagesByID: [UUID: VisionTranslationImage]) {
+    ) async -> (requested: Bool, available: Bool, imagesByID: [UUID: VisionTranslationImage]) {
         guard enabled,
               backendKind == .deepSeekCloud,
               snapshot.source == .visionOCR,
               let image = snapshot.capturedImage else {
             return (false, false, [:])
         }
-        let lowConfidence = cropPreparer.prepare(
-            image: image,
-            regions: entries.flatMap(\.regions),
-            windowFrame: snapshot.descriptor.frame
-        )
-        guard !lowConfidence.isEmpty else {
-            return (false, backend is any VisionTranslationBackend, [:])
-        }
         let available = backend is any VisionTranslationBackend
-        var imagesByID: [UUID: VisionTranslationImage] = [:]
+        let cropPreparer = self.cropPreparer
+        let regions = entries.flatMap(\.regions)
+        let windowFrame = snapshot.descriptor.frame
         var representativeIDByRegionID: [UUID: UUID] = [:]
+        representativeIDByRegionID.reserveCapacity(regions.count)
         for entry in entries {
             for region in entry.regions {
                 representativeIDByRegionID[region.id] = entry.item.id
             }
         }
-        for crop in lowConfidence.prefix(DeepSeekBackend.maximumVisionImages) {
-            guard let data = Self.encodePNG(crop.image),
-                  data.count >= 8,
-                  Array(data.prefix(8)) == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] else {
-                continue
+        let repMap = representativeIDByRegionID
+        return await Task.detached(priority: .userInitiated) {
+            let lowConfidence = cropPreparer.prepare(
+                image: image,
+                regions: regions,
+                windowFrame: windowFrame
+            )
+            guard !lowConfidence.isEmpty else {
+                return (false, available, [:])
             }
-            let segmentID = representativeIDByRegionID[crop.regionID] ?? crop.regionID
-            guard imagesByID[segmentID] == nil else { continue }
-            imagesByID[segmentID] = VisionTranslationImage(segmentId: segmentID, pngData: data)
-        }
-        return (true, available, imagesByID)
+            var imagesByID: [UUID: VisionTranslationImage] = [:]
+            for crop in lowConfidence.prefix(DeepSeekBackend.maximumVisionImages) {
+                guard let data = Self.encodePNG(crop.image),
+                      data.count >= 8,
+                      data.starts(with: Self.pngMagic) else {
+                    continue
+                }
+                let segmentID = repMap[crop.regionID] ?? crop.regionID
+                guard imagesByID[segmentID] == nil else { continue }
+                imagesByID[segmentID] = VisionTranslationImage(segmentId: segmentID, pngData: data)
+            }
+            return (true, available, imagesByID)
+        }.value
     }
 
-    private static func encodePNG(_ image: CGImage) -> Data? {
+    private nonisolated static func encodePNG(_ image: CGImage) -> Data? {
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil) else {
             return nil
