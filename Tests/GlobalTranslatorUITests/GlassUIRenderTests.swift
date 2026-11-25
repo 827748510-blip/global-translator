@@ -67,11 +67,11 @@ struct GlassUIRenderTests {
     func settingsGlassPageRendersDarkAppearance() throws {
         let view = SettingsPopoverView(
             viewModel: SettingsViewModel(actions: RenderActions()),
-            maxHeight: 640
+            maxHeight: 720
         )
         .modifier(GTSettingsPanelChrome(cornerRadius: GTRadius.card))
         .colorScheme(.dark)
-        let image = try Self.renderHostingView(view)
+        let image = try Self.renderHostingView(view, appearance: .darkAqua)
         #expect(image.size.width > 0)
         #expect(image.size.height > 0)
         try Self.writeIfRequested(image, named: "gt-glass-settings-dark.png")
@@ -396,13 +396,161 @@ struct GlassUIRenderTests {
         let viewModel = SettingsViewModel(actions: RenderActions())
         viewModel.selectedTab = tab
         for scheme in [ColorScheme.light, .dark] {
-            let view = SettingsPopoverView(viewModel: viewModel, maxHeight: 640)
+            let view = SettingsPopoverView(viewModel: viewModel, maxHeight: 720)
                 .modifier(GTSettingsPanelChrome(cornerRadius: GTRadius.card))
                 .colorScheme(scheme)
-            let image = try Self.renderHostingView(view)
+            let image = try Self.renderHostingView(
+                view,
+                appearance: scheme == .dark ? .darkAqua : .aqua
+            )
             #expect(image.size.width == GTPopoverMetrics.width)
             #expect(image.size.height > 0)
         }
+    }
+
+    @Test
+    func settingsTopTabBarStaysCompactInsideTallPopover() throws {
+        let viewModel = SettingsViewModel(actions: RenderActions())
+        viewModel.permissionSnapshot = .allGranted
+        viewModel.backendReady = true
+        viewModel.isAutomaticTranslationEnabled = true
+        viewModel.translatedApplications = [
+            TranslatedApplication(bundleIdentifier: "com.google.Chrome", displayName: "Google Chrome")
+        ]
+        let view = SettingsPopoverView(viewModel: viewModel, maxHeight: 720)
+            .modifier(GTSettingsPanelChrome(cornerRadius: GTRadius.card))
+        let hosting = NSHostingView(rootView: view)
+        let size = hosting.fittingSize
+        hosting.frame = CGRect(origin: .zero, size: size)
+        hosting.layoutSubtreeIfNeeded()
+
+        let frames = Self.collectSurfaceFrames(in: hosting, prefix: SegmentPickerSurface.identifierPrefix)
+        let tabFrames = try #require(frames["设置分区"])
+        #expect(tabFrames.count == 1)
+        let tabHeight = tabFrames[0].height
+        #expect(tabHeight >= 28 && tabHeight <= 42, "Unexpected tab picker height: \(tabHeight)")
+    }
+
+    @Test
+    func translatedApplicationsSectionDoesNotClipSingleApp() {
+        let viewModel = SettingsViewModel(actions: RenderActions())
+        viewModel.translatedApplications = [
+            TranslatedApplication(bundleIdentifier: "com.google.Chrome", displayName: "Google Chrome")
+        ]
+        let view = TranslatedApplicationsSection(viewModel: viewModel)
+            .padding(GTControlMetrics.cardHorizontalPadding)
+            .frame(width: GTPopoverMetrics.width)
+        let hosting = NSHostingView(rootView: view)
+        let size = hosting.fittingSize
+        hosting.frame = CGRect(origin: .zero, size: size)
+        hosting.layoutSubtreeIfNeeded()
+
+        #expect(!Self.containsScrollView(hosting), "Single app list must not wrap in nested ScrollView")
+        #expect(size.height >= 120)
+    }
+
+    @Test
+    func allScreensRenderLightAndDarkForVisualVerification() throws {
+        let transVM = SettingsViewModel(actions: RenderActions())
+        transVM.selectedTab = .translation
+        transVM.selectedBackend = .local
+        transVM.localBaseURL = "http://127.0.0.1:11434/v1"
+        transVM.localModel = "qwen3.5:9b"
+        transVM.status = .listening
+        transVM.isAutomaticTranslationEnabled = true
+        transVM.backendReady = true
+        transVM.healthMessage = "本地后端已就绪"
+        transVM.permissionSnapshot = .allGranted
+        transVM.translatedApplications = [
+            TranslatedApplication(bundleIdentifier: "com.google.Chrome", displayName: "Google Chrome")
+        ]
+
+        let cloudVM = SettingsViewModel(actions: RenderActions())
+        cloudVM.selectedTab = .backend
+        cloudVM.selectedBackend = .deepSeekCloud
+        cloudVM.keyConfigured = true
+        cloudVM.availableModels = [AppConfiguration.defaultDeepSeekModel, "deepseek-reasoner"]
+        cloudVM.deepSeekModel = AppConfiguration.defaultDeepSeekModel
+        cloudVM.backendReady = true
+        cloudVM.connectionTest = .healthy("DeepSeek 后端已就绪")
+        cloudVM.permissionSnapshot = .allGranted
+
+        let localVM = SettingsViewModel(actions: RenderActions())
+        localVM.selectedTab = .backend
+        localVM.selectedBackend = .local
+        localVM.localBaseURL = "http://127.0.0.1:11434/v1"
+        localVM.availableModels = ["qwen3.5:9b"]
+        localVM.localModel = "qwen3.5:9b"
+        localVM.backendReady = true
+        localVM.connectionTest = .healthy("本地模型已就绪")
+        localVM.permissionSnapshot = .allGranted
+
+        let advVM = SettingsViewModel(actions: RenderActions())
+        advVM.selectedTab = .advanced
+        advVM.backendReady = true
+        advVM.permissionSnapshot = PermissionSnapshot(
+            accessibilityTrusted: true,
+            screenCaptureAuthorized: false,
+            secureInputEnabled: false,
+            sessionLocked: false
+        )
+
+        let tabCases: [(String, SettingsViewModel)] = [
+            ("gt-tab-translation", transVM),
+            ("gt-tab-backend-cloud", cloudVM),
+            ("gt-tab-backend-local", localVM),
+            ("gt-tab-advanced", advVM)
+        ]
+
+        for (prefix, vm) in tabCases {
+            for (suffix, scheme, appearance) in [
+                ("light", ColorScheme.light, NSAppearance.Name.aqua),
+                ("dark", ColorScheme.dark, NSAppearance.Name.darkAqua)
+            ] {
+                let panel = SettingsPopoverView(viewModel: vm, maxHeight: 780)
+                    .modifier(GTSettingsPanelChrome(cornerRadius: GTRadius.card))
+                let canvas = Self.wallpaperPreviewCanvas(scheme: scheme) { panel }
+                    .colorScheme(scheme)
+                let image = try Self.renderHostingView(canvas, appearance: appearance)
+                #expect(image.size.width > 0 && image.size.height > 0)
+                try Self.writeVerifyIfRequested(image, named: "\(prefix)-\(suffix).png")
+            }
+        }
+
+        let selSuccess = SelectionTranslatePopoverView(
+            content: .translated(
+                original: "Ask anything, or run actions",
+                translation: "询问任何问题，或执行操作",
+                screenFrame: .zero
+            ),
+            chrome: SelectionPopoverChrome()
+        )
+        let selFailed = SelectionTranslatePopoverView(
+            content: .failed(
+                original: "Ask anything",
+                message: "请先开启“辅助功能”权限或配置翻译后端",
+                screenFrame: .zero,
+                showsOpenSettingsAction: true
+            ),
+            chrome: SelectionPopoverChrome()
+        )
+        for (suffix, scheme, appearance) in [
+            ("light", ColorScheme.light, NSAppearance.Name.aqua),
+            ("dark", ColorScheme.dark, NSAppearance.Name.darkAqua)
+        ] {
+            let img = try Self.renderHostingView(
+                Self.wallpaperPreviewCanvas(scheme: scheme) { selSuccess }.colorScheme(scheme),
+                appearance: appearance
+            )
+            #expect(img.size.width > 0 && img.size.height > 0)
+            try Self.writeVerifyIfRequested(img, named: "gt-selection-\(suffix).png")
+        }
+        let failImg = try Self.renderHostingView(
+            Self.wallpaperPreviewCanvas(scheme: .light) { selFailed }.colorScheme(.light),
+            appearance: .aqua
+        )
+        #expect(failImg.size.width > 0 && failImg.size.height > 0)
+        try Self.writeVerifyIfRequested(failImg, named: "gt-selection-failed-light.png")
     }
 
     @Test
@@ -431,13 +579,77 @@ struct GlassUIRenderTests {
         controller.dismiss()
     }
 
-    private static func renderHostingView<V: View>(_ view: V) throws -> NSImage {
+    private static func collectSurfaceFrames(in root: NSView, prefix: String) -> [String: [CGRect]] {
+        var frames: [String: [CGRect]] = [:]
+        func walk(_ view: NSView, depth: Int) {
+            let identifier = view.identifier?.rawValue ?? ""
+            if identifier.hasPrefix(prefix) {
+                let name = String(identifier.dropFirst(prefix.count))
+                frames[name, default: []].append(root.convert(view.bounds, from: view))
+            }
+            for child in view.subviews where depth < 24 {
+                walk(child, depth: depth + 1)
+            }
+        }
+        walk(root, depth: 0)
+        return frames
+    }
+
+    private static func containsScrollView(_ view: NSView, depth: Int = 0) -> Bool {
+        if view is NSScrollView { return true }
+        guard depth < 24 else { return false }
+        return view.subviews.contains { containsScrollView($0, depth: depth + 1) }
+    }
+
+    @ViewBuilder
+    private static func wallpaperPreviewCanvas<Content: View>(
+        scheme: ColorScheme,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        let colors: [Color] = scheme == .dark
+            ? [Color(red: 0.10, green: 0.13, blue: 0.22), Color(red: 0.16, green: 0.12, blue: 0.24)]
+            : [Color(red: 0.78, green: 0.86, blue: 0.96), Color(red: 0.88, green: 0.83, blue: 0.94)]
+        ZStack {
+            LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+            content()
+                .padding(16)
+        }
+        .fixedSize()
+    }
+
+    private static func renderHostingView<V: View>(
+        _ view: V,
+        appearance: NSAppearance.Name = .aqua
+    ) throws -> NSImage {
         let hosting = NSHostingView(rootView: view)
+        let nsAppearance = NSAppearance(named: appearance)
+        hosting.appearance = nsAppearance
         let size = hosting.fittingSize
+        let window = NSWindow(
+            contentRect: CGRect(origin: .zero, size: size),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        window.appearance = nsAppearance
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.contentView = hosting
         hosting.frame = CGRect(origin: .zero, size: size)
-        hosting.layoutSubtreeIfNeeded()
-        let representation = try #require(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
-        hosting.cacheDisplay(in: hosting.bounds, to: representation)
+        var capturedRep: NSBitmapImageRep?
+        let renderBlock = {
+            hosting.layoutSubtreeIfNeeded()
+            if let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) {
+                hosting.cacheDisplay(in: hosting.bounds, to: rep)
+                capturedRep = rep
+            }
+        }
+        if let nsAppearance {
+            nsAppearance.performAsCurrentDrawingAppearance(renderBlock)
+        } else {
+            renderBlock()
+        }
+        let representation = try #require(capturedRep)
         let image = NSImage(size: size)
         image.addRepresentation(representation)
         return image
@@ -448,5 +660,14 @@ struct GlassUIRenderTests {
         let cgImage = try #require(image.cgImage(forProposedRect: nil, context: nil, hints: nil))
         let data = try #require(NSBitmapImageRep(cgImage: cgImage).representation(using: .png, properties: [:]))
         try data.write(to: URL(fileURLWithPath: "/tmp/\(name)"))
+    }
+
+    private static func writeVerifyIfRequested(_ image: NSImage, named name: String) throws {
+        guard ProcessInfo.processInfo.environment["GT_RENDER_UI"] == "1" else { return }
+        let dir = URL(fileURLWithPath: "/tmp/gt-verify", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let cgImage = try #require(image.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        let data = try #require(NSBitmapImageRep(cgImage: cgImage).representation(using: .png, properties: [:]))
+        try data.write(to: dir.appendingPathComponent(name))
     }
 }

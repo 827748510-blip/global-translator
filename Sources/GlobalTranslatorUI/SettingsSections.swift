@@ -84,8 +84,7 @@ struct SettingsSetupBanner: View {
                 Button(actionTitle) {
                     viewModel.selectedTab = needsBackendSetup ? .backend : .advanced
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                .buttonStyle(GTPrimaryPillButtonStyle())
             }
             .padding(.horizontal, GTSpacing.small)
             .padding(.vertical, GTSpacing.xSmall)
@@ -139,8 +138,7 @@ struct TranslationCoreSection: View {
                     Button("去授权") {
                         viewModel.selectedTab = .advanced
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
+                    .buttonStyle(GTSecondaryPillButtonStyle(compact: true))
                 }
             }
 
@@ -211,8 +209,7 @@ struct ScreenshotTranslateSection: View {
                             viewModel.beginRecordingScreenshotHotkey()
                         }
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(GTSecondaryPillButtonStyle())
                     .accessibilityHint("录制新的截图翻译快捷键，按下带修饰键的组合即可保存")
                 }
             }
@@ -275,8 +272,7 @@ struct ScreenshotTranslateSection: View {
                         Button("选择…") {
                             viewModel.chooseScreenshotSaveDirectory()
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                        .buttonStyle(GTSecondaryPillButtonStyle())
                         .accessibilityHint("选择截图保存文件夹")
                     }
                 }
@@ -354,17 +350,14 @@ struct CloudBackendSection: View {
                     Button("替换") {
                         viewModel.beginReplaceKey()
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(GTSecondaryPillButtonStyle())
                     .disabled(viewModel.isKeyOperationInProgress)
                     .accessibilityHint("仅在替换时显示输入框，已保存的密钥不会回填")
 
                     Button("删除", role: .destructive) {
                         viewModel.requestDeleteKey()
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .foregroundStyle(GTColor.destructive)
+                    .buttonStyle(GTDestructivePillButtonStyle())
                     .disabled(viewModel.isKeyOperationInProgress)
                     .accessibilityHint("删除保存在钥匙串中的 API Key")
                 }
@@ -389,8 +382,7 @@ struct CloudBackendSection: View {
                             Text("保存")
                         }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                    .buttonStyle(GTPrimaryPillButtonStyle())
                     .disabled(!viewModel.canSaveKey)
                     .accessibilityLabel(viewModel.isKeyOperationInProgress ? "正在保存 API Key" : "保存 API Key")
                     .accessibilityHint("保存后输入框将清空，密钥只写入系统钥匙串")
@@ -399,8 +391,7 @@ struct CloudBackendSection: View {
                         Button("取消") {
                             viewModel.cancelReplaceKey()
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                        .buttonStyle(GTSecondaryPillButtonStyle())
                         .disabled(viewModel.isKeyOperationInProgress)
                     }
                 }
@@ -424,17 +415,11 @@ struct CloudBackendSection: View {
                             ? "尚未获取模型列表"
                             : "可测试连接或保存 API Key")
                 } else {
-                    Picker("模型", selection: $bindable.deepSeekModel) {
-                        ForEach(viewModel.availableModels, id: \.self) { model in
-                            Text(model).tag(model)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .onChange(of: viewModel.deepSeekModel) { _, _ in
-                        viewModel.commitDeepSeekModel()
-                    }
+                    GTModelMenuPicker(
+                        options: viewModel.availableModels,
+                        selection: $bindable.deepSeekModel,
+                        onChange: { viewModel.commitDeepSeekModel() }
+                    )
                     .accessibilityLabel("模型")
                     .accessibilityValue(viewModel.deepSeekModel)
                     .accessibilityHint("选择云端翻译使用的模型")
@@ -469,17 +454,12 @@ struct LocalBackendSection: View {
                         .accessibilityLabel("模型")
                         .accessibilityValue("尚未获取模型列表")
                 } else {
-                    Picker("模型", selection: $bindable.localModel) {
-                        ForEach(viewModel.availableModels, id: \.self) { model in
-                            Text(model).tag(model)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .onChange(of: viewModel.localModel) { _, _ in
-                        viewModel.commitLocalConfiguration()
-                    }
+                    GTModelMenuPicker(
+                        options: viewModel.availableModels,
+                        selection: $bindable.localModel,
+                        placeholder: "请选择本地模型",
+                        onChange: { viewModel.commitLocalConfiguration() }
+                    )
                     .accessibilityLabel("模型")
                     .accessibilityValue(viewModel.localModel.isEmpty ? "请选择本地模型" : viewModel.localModel)
                     .accessibilityHint("选择本地翻译使用的模型")
@@ -489,11 +469,13 @@ struct LocalBackendSection: View {
             GTActionRow {
                 testConnectionButton
             } secondary: {
-                Button("应用设置") {
+                Button {
                     viewModel.commitLocalConfiguration()
+                } label: {
+                    Text("应用设置")
+                        .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .buttonStyle(GTSecondaryPillButtonStyle())
                 .disabled(viewModel.localBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
@@ -509,22 +491,24 @@ struct LocalBackendSection: View {
     @ViewBuilder
     private var testConnectionButton: some View {
         let button = Button(action: { Task { await viewModel.testConnection() } }) {
-            if viewModel.connectionTest == .testing {
-                ProgressView()
-                    .controlSize(.small)
-            } else {
-                Text("测试连接")
+            Group {
+                if viewModel.connectionTest == .testing {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Text("测试连接")
+                }
             }
+            .frame(maxWidth: .infinity)
         }
-        .controlSize(.small)
         .disabled(!viewModel.canTestConnection)
         .accessibilityLabel(viewModel.connectionTest == .testing ? "正在测试连接" : "测试连接")
         .accessibilityHint(ConnectionTestRow.testHint(for: viewModel))
 
         if viewModel.backendReady {
-            button.buttonStyle(.bordered)
+            button.buttonStyle(GTSecondaryPillButtonStyle())
         } else {
-            button.buttonStyle(.borderedProminent)
+            button.buttonStyle(GTPrimaryPillButtonStyle())
         }
     }
 }
@@ -553,16 +537,14 @@ struct ConnectionTestRow: View {
                 Text("测试连接")
             }
         }
-        .controlSize(.small)
         .disabled(!viewModel.canTestConnection)
         .accessibilityLabel(viewModel.connectionTest == .testing ? "正在测试连接" : "测试连接")
         .accessibilityHint(Self.testHint(for: viewModel))
-        .frame(minHeight: GTControlMetrics.settingRowHeight)
 
         if viewModel.backendReady {
-            button.buttonStyle(.bordered)
+            button.buttonStyle(GTSecondaryPillButtonStyle())
         } else {
-            button.buttonStyle(.borderedProminent)
+            button.buttonStyle(GTPrimaryPillButtonStyle())
         }
     }
 
@@ -609,8 +591,7 @@ struct PermissionsSection: View {
         VStack(alignment: .leading, spacing: GTControlMetrics.sectionSpacing) {
             GTSettingsSectionHeader(title: "系统权限") {
                 Button("重新检查", action: viewModel.refreshPermissions)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(GTSecondaryPillButtonStyle())
                     .accessibilityLabel("重新检查系统权限")
             }
             PermissionRow(
@@ -658,15 +639,13 @@ private struct PermissionRow: View {
                     Button("授权") {
                         viewModel.requestPermission(kind)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(GTSecondaryPillButtonStyle())
                     .accessibilityLabel("授权\(title)")
 
                     Button("打开系统设置") {
                         viewModel.openSystemSettings(kind)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(GTSecondaryPillButtonStyle())
                     .accessibilityLabel("打开\(title)系统设置")
                 }
             }
@@ -692,15 +671,13 @@ struct TranslatedApplicationsSection: View {
                     Button("添加当前") {
                         viewModel.addCurrentAppTranslation()
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(GTSecondaryPillButtonStyle())
                     .accessibilityHint("把当前正在使用的应用加入自动翻译列表")
 
                     Button("选择应用…") {
                         viewModel.chooseTranslatedApplications()
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(GTSecondaryPillButtonStyle())
                     .accessibilityHint("选择一个或多个要翻译的应用，可按住 Command 多选")
                 }
             }
@@ -719,42 +696,19 @@ struct TranslatedApplicationsSection: View {
                         RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous)
                             .strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
                     )
+            } else if viewModel.translatedApplications.count <= 3 {
+                applicationRows
+                    .background(GTColor.fieldFill)
+                    .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous)
+                            .strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
+                    )
             } else {
                 ScrollView(.vertical) {
-                    VStack(spacing: 0) {
-                        ForEach(Array(viewModel.translatedApplications.enumerated()), id: \.element.id) { index, app in
-                            if index > 0 {
-                                Divider()
-                            }
-                            HStack(spacing: GTSpacing.xSmall) {
-                                VStack(alignment: .leading, spacing: GTSpacing.xxSmall / 2) {
-                                    Text(app.displayName)
-                                        .font(GTType.body)
-                                        .lineLimit(1)
-                                    Text(app.bundleIdentifier)
-                                        .font(GTType.caption)
-                                        .foregroundStyle(GTColor.secondaryText)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                }
-                                Spacer()
-                                Button(action: {
-                                    viewModel.removeTranslationApplication(bundleIdentifier: app.bundleIdentifier)
-                                }) {
-                                    Image(systemName: "minus.circle")
-                                        .padding(GTSpacing.xxSmall + 2)
-                                        .contentShape(Rectangle())
-                                        .accessibilityHidden(true)
-                                }
-                                .buttonStyle(.borderless)
-                                .accessibilityLabel("移除 \(app.displayName)")
-                            }
-                            .padding(.horizontal, GTSpacing.xSmall)
-                            .padding(.vertical, GTSpacing.xxSmall)
-                        }
-                    }
+                    applicationRows
                 }
-                .frame(maxHeight: 140)
+                .frame(height: 144)
                 .background(GTColor.fieldFill)
                 .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
                 .overlay(
@@ -767,6 +721,41 @@ struct TranslatedApplicationsSection: View {
                 .font(GTType.caption)
                 .foregroundStyle(GTColor.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var applicationRows: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(viewModel.translatedApplications.enumerated()), id: \.element.id) { index, app in
+                if index > 0 {
+                    Divider()
+                }
+                HStack(spacing: GTSpacing.xSmall) {
+                    VStack(alignment: .leading, spacing: GTSpacing.xxSmall / 2) {
+                        Text(app.displayName)
+                            .font(GTType.body)
+                            .lineLimit(1)
+                        Text(app.bundleIdentifier)
+                            .font(GTType.caption)
+                            .foregroundStyle(GTColor.secondaryText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer()
+                    Button(action: {
+                        viewModel.removeTranslationApplication(bundleIdentifier: app.bundleIdentifier)
+                    }) {
+                        Image(systemName: "minus.circle")
+                            .padding(GTSpacing.xxSmall + 2)
+                            .contentShape(Rectangle())
+                            .accessibilityHidden(true)
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("移除 \(app.displayName)")
+                }
+                .padding(.horizontal, GTSpacing.xSmall)
+                .padding(.vertical, GTSpacing.xxSmall)
+            }
         }
     }
 }
@@ -783,18 +772,22 @@ struct MaintenanceSection: View {
                 .foregroundStyle(GTColor.secondaryText)
 
             GTActionRow {
-                Button("清除缓存") {
+                Button {
                     viewModel.requestClearCache()
+                } label: {
+                    Text("清除缓存")
+                        .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .buttonStyle(GTSecondaryPillButtonStyle())
                 .accessibilityHint("删除本地翻译缓存，需确认")
             } secondary: {
-                Button("打开日志") {
+                Button {
                     viewModel.openLogs()
+                } label: {
+                    Text("打开日志")
+                        .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .buttonStyle(GTSecondaryPillButtonStyle())
                 .accessibilityLabel("打开诊断日志文件夹")
             }
 
@@ -835,9 +828,7 @@ struct SettingsFooterSection: View {
             Button("退出应用", role: .destructive) {
                 viewModel.quit()
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .foregroundStyle(GTColor.destructive)
+            .buttonStyle(GTDestructivePillButtonStyle())
             .keyboardShortcut("q", modifiers: .command)
             .accessibilityLabel("退出 Global Translator")
             .accessibilityHint("停止翻译并退出程序")

@@ -136,6 +136,7 @@ public struct SelectionTranslatePopoverView: View {
         .padding(.horizontal, GTSelectionMetrics.horizontalPadding)
         .padding(.vertical, GTSelectionMetrics.verticalPadding)
         .frame(width: GTSelectionMetrics.width, alignment: .leading)
+        .foregroundStyle(GTColor.primaryText)
     }
 
     private func textBlock(for content: SelectionPopoverContent) -> some View {
@@ -190,7 +191,8 @@ public struct SelectionTranslatePopoverView: View {
             if content.showsOptimizeAction {
                 GTOptimizeModePicker(
                     selection: modeBinding,
-                    isEnabled: content.status != .optimizing
+                    isEnabled: content.status != .optimizing,
+                    usesCardSurfaceTrack: true
                 )
             }
             if content.showsActionButtons {
