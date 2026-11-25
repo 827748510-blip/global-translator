@@ -43,6 +43,10 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
     public typealias TranslateHandler = @MainActor @Sendable ([String]) async throws -> ExtensionBridgeTranslation
     public typealias ContextualTranslateHandler = @MainActor @Sendable ([String], TranslationSourceLanguage?) async throws -> ExtensionBridgeTranslation
     public typealias VideoTranslateEnabledHandler = @MainActor @Sendable () -> Bool
+    public typealias SetVideoTranslateEnabledHandler = @MainActor @Sendable (Bool) -> Bool
+    public typealias AutoTranslateEnabledHandler = @MainActor @Sendable () -> Bool
+    public typealias BackendReadyHandler = @MainActor @Sendable () -> Bool
+    public typealias BlockedReasonHandler = @MainActor @Sendable () -> String?
     public typealias VideoASRSnapshotHandler = @MainActor @Sendable () -> VideoASRSnapshot
     public typealias VideoASRNeededHandler = @MainActor @Sendable (Bool) -> Void
 
@@ -65,6 +69,10 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
     private let requestedPort: UInt16
     private let logger: (any AppRuntimeLogger)?
     private let videoTranslateEnabled: VideoTranslateEnabledHandler
+    private let setVideoTranslateEnabled: SetVideoTranslateEnabledHandler
+    private let autoTranslateEnabled: AutoTranslateEnabledHandler
+    private let backendReady: BackendReadyHandler
+    private let blockedReason: BlockedReasonHandler
     private let videoASRSnapshot: VideoASRSnapshotHandler
     private let videoASRSetNeeded: VideoASRNeededHandler
     private let handler: ContextualTranslateHandler
@@ -83,6 +91,10 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         port: UInt16 = ExtensionBridgeServer.defaultPort,
         logger: (any AppRuntimeLogger)? = nil,
         videoTranslateEnabled: @escaping VideoTranslateEnabledHandler = { false },
+        setVideoTranslateEnabled: @escaping SetVideoTranslateEnabledHandler = { $0 },
+        autoTranslateEnabled: @escaping AutoTranslateEnabledHandler = { true },
+        backendReady: @escaping BackendReadyHandler = { true },
+        blockedReason: @escaping BlockedReasonHandler = { nil },
         videoASRSnapshot: @escaping VideoASRSnapshotHandler = { .idle },
         videoASRSetNeeded: @escaping VideoASRNeededHandler = { _ in },
         handler: @escaping ContextualTranslateHandler
@@ -90,6 +102,10 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         self.requestedPort = port
         self.logger = logger
         self.videoTranslateEnabled = videoTranslateEnabled
+        self.setVideoTranslateEnabled = setVideoTranslateEnabled
+        self.autoTranslateEnabled = autoTranslateEnabled
+        self.backendReady = backendReady
+        self.blockedReason = blockedReason
         self.videoASRSnapshot = videoASRSnapshot
         self.videoASRSetNeeded = videoASRSetNeeded
         self.handler = handler
@@ -232,22 +248,55 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         case ("GET", "/health"), ("POST", "/health"):
             Task { [weak self] in
                 guard let self else { return }
-                let enabled = await MainActor.run { self.videoTranslateEnabled() }
-                let asr = await MainActor.run { self.videoASRSnapshot() }
+                let (videoOn, autoOn, ready, reason, asr) = await MainActor.run {
+                    (
+                        self.videoTranslateEnabled(),
+                        self.autoTranslateEnabled(),
+                        self.backendReady(),
+                        self.blockedReason(),
+                        self.videoASRSnapshot()
+                    )
+                }
                 self.queue.async {
-                    self.send(.json(status: 200, object: [
+                    var object: [String: Any] = [
                         "ok": true,
-                        "videoTranslateEnabled": enabled,
+                        "videoTranslateEnabled": videoOn,
+                        "autoTranslateEnabled": autoOn,
+                        "backendReady": ready,
                         "videoAsrStatus": asr.status.rawValue
-                    ]), on: connection, origin: request.origin)
+                    ]
+                    if let reason, !reason.isEmpty {
+                        object["blockedReason"] = reason
+                    }
+                    self.send(.json(status: 200, object: object), on: connection, origin: request.origin)
                 }
             }
+        case ("POST", "/video-translate"):
+            handleSetVideoTranslate(request.body, origin: request.origin, on: connection)
         case ("POST", "/translate"):
             handleTranslate(request.body, origin: request.origin, on: connection)
         case ("POST", "/video-asr"):
             handleVideoASR(request.body, origin: request.origin, on: connection)
         default:
             send(.json(status: 404, object: ["error": "not found"]), on: connection, origin: request.origin)
+        }
+    }
+
+    private func handleSetVideoTranslate(_ body: Data, origin: String?, on connection: NWConnection) {
+        guard let payload = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let enabled = payload["enabled"] as? Bool else {
+            send(.json(status: 400, object: ["error": "bad request"]), on: connection, origin: origin)
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            let resolved = await MainActor.run { self.setVideoTranslateEnabled(enabled) }
+            self.queue.async {
+                self.send(.json(status: 200, object: [
+                    "ok": true,
+                    "videoTranslateEnabled": resolved
+                ]), on: connection, origin: origin)
+            }
         }
     }
 

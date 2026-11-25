@@ -42,6 +42,8 @@ public final class ScreenshotTranslateController {
     private var clipboardImageKept = false
 
     public var lastHotkeyError: String?
+    public var onOpenSettings: (() -> Void)?
+    public var isPopoverVisible: Bool { popover.isVisible }
 
     public init(
         selector: any RegionSelectionPresenting,
@@ -90,6 +92,9 @@ public final class ScreenshotTranslateController {
         }
         popover.onTranslate = { [weak self] in
             self?.retryCurrent()
+        }
+        popover.onOpenSettings = { [weak self] in
+            self?.onOpenSettings?()
         }
     }
 
@@ -190,7 +195,11 @@ public final class ScreenshotTranslateController {
             requestScreenCapture()
             guard permissions.snapshot.screenCaptureAuthorized else {
                 logger.event("screenshot_permission_missing", fields: ["reason": "screenCapture"])
-                presentFailure(original: "", message: ScreenshotTranslateSupport.missingScreenCaptureCopy)
+                presentFailure(
+                    original: "",
+                    message: ScreenshotTranslateSupport.missingScreenCaptureCopy,
+                    showsOpenSettingsAction: true
+                )
                 return
             }
         }
@@ -221,6 +230,13 @@ public final class ScreenshotTranslateController {
             )
             return
         }
+        popover.show(
+            SelectionPopoverContent.loading(
+                original: "",
+                screenFrame: rect,
+                message: "正在识别文字…"
+            ).asScreenshotResult()
+        )
         let image: CGImage
         do {
             image = try await capturer.capture(rect: rect)
@@ -308,14 +324,16 @@ public final class ScreenshotTranslateController {
             presentFailure(
                 original: original,
                 message: ScreenshotTranslateSupport.missingDeepSeekKeyCopy,
-                screenFrame: screenFrame
+                screenFrame: screenFrame,
+                showsOpenSettingsAction: true
             )
             return
         case .localNotReady:
             presentFailure(
                 original: original,
                 message: ScreenshotTranslateSupport.localBackendNotReadyCopy,
-                screenFrame: screenFrame
+                screenFrame: screenFrame,
+                showsOpenSettingsAction: true
             )
             return
         case .ready:
@@ -329,7 +347,8 @@ public final class ScreenshotTranslateController {
             presentFailure(
                 original: original,
                 message: ScreenshotTranslateSupport.translatorUnavailableCopy,
-                screenFrame: screenFrame
+                screenFrame: screenFrame,
+                showsOpenSettingsAction: true
             )
             return
         }
@@ -375,13 +394,19 @@ public final class ScreenshotTranslateController {
         }
     }
 
-    private func presentFailure(original: String, message: String, screenFrame: CGRect? = nil) {
+    private func presentFailure(
+        original: String,
+        message: String,
+        screenFrame: CGRect? = nil,
+        showsOpenSettingsAction: Bool = false
+    ) {
         let frame = screenFrame ?? SelectionTranslateSupport.fallbackFrame(at: mouseLocation())
         popover.show(withArtifactHints(
             SelectionPopoverContent.failed(
                 original: original,
                 message: message,
-                screenFrame: frame
+                screenFrame: frame,
+                showsOpenSettingsAction: showsOpenSettingsAction
             ).asScreenshotResult()
         ))
     }

@@ -121,8 +121,10 @@ public final class SelectionTranslateController {
     private var degrade = SelectionReadingDegradeState()
     private let now: () -> TimeInterval
     public var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
+    public var onOpenSettings: (() -> Void)?
 
     public var isEnabled: Bool { enabled }
+    public var isPopoverVisible: Bool { popover.isVisible }
 
     public init(
         reader: any SelectedTextReading,
@@ -168,6 +170,9 @@ public final class SelectionTranslateController {
         }
         wired.onOptimizeModeChange = { [weak self] mode in
             self?.handleOptimizeModeChange(mode)
+        }
+        wired.onOpenSettings = { [weak self] in
+            self?.onOpenSettings?()
         }
         wired.optimizeMode = optimizeMode
     }
@@ -407,7 +412,8 @@ public final class SelectionTranslateController {
         popover.show(.failed(
             original: original,
             message: SelectionTranslateSupport.missingDeepSeekKeyCopy,
-            screenFrame: screenFrame
+            screenFrame: screenFrame,
+            showsOpenSettingsAction: true
         ))
     }
 
@@ -464,7 +470,12 @@ public final class SelectionTranslateController {
         }
         popover.show(.loading(original: snapshot.text, screenFrame: snapshot.screenFrame))
         guard let translator = translator() else {
-            popover.show(.failed(original: snapshot.text, message: "翻译服务未就绪", screenFrame: snapshot.screenFrame))
+            popover.show(.failed(
+                original: snapshot.text,
+                message: "翻译服务未就绪",
+                screenFrame: snapshot.screenFrame,
+                showsOpenSettingsAction: true
+            ))
             return
         }
         translateTask = Task { @MainActor [weak self] in
@@ -516,7 +527,8 @@ public final class SelectionTranslateController {
             popover.show(.failed(
                 original: original,
                 message: "翻译服务未就绪",
-                screenFrame: screenFrame
+                screenFrame: screenFrame,
+                showsOpenSettingsAction: true
             ))
             return
         }
@@ -540,13 +552,30 @@ public final class SelectionTranslateController {
             } catch {
                 guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
                 self.logger.event("selection_optimize_failed", fields: ["status": "error"])
+                let showsSettings = Self.needsSettingsRecovery(error)
                 self.popover.show(.failed(
                     original: original,
-                    message: SelectionTranslateSupport.optimizeFailedCopy,
-                    screenFrame: screenFrame
+                    message: Self.describe(error),
+                    screenFrame: screenFrame,
+                    showsOpenSettingsAction: showsSettings
                 ))
             }
         }
+    }
+
+    private static func needsSettingsRecovery(_ error: Error) -> Bool {
+        if let translation = error as? TranslationError {
+            switch translation {
+            case .missingCredential, .unauthorized, .forbidden, .invalidConfiguration:
+                return true
+            default:
+                return false
+            }
+        }
+        if let selection = error as? SelectionTranslateError, selection == .translatorUnavailable {
+            return true
+        }
+        return false
     }
 
     private func isOwnFrontmostApplication() -> Bool {

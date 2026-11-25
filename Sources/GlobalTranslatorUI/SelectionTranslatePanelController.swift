@@ -3,11 +3,14 @@ import SwiftUI
 import GlobalTranslatorCore
 
 /// Borderless floating panel for 滑词翻译. Unlike overlay bubbles this
-/// panel accepts clicks (Copy) and dismisses on Escape or an outside click.
+/// panel accepts clicks (Copy / Translate / Optimize) and dismisses on Escape
+/// or an outside click.
 public final class SelectionTranslatePanel: NSPanel {
     public var onOutsideClick: (() -> Void)?
     public var onEscape: (() -> Void)?
-    private var eventMonitors: [Any] = []
+    public var onCopyShortcut: (() -> Void)?
+    public var onSelectOptimizeModeIndex: ((Int) -> Void)?
+    nonisolated(unsafe) private var eventMonitors: [Any] = []
 
     public override init(
         contentRect: NSRect,
@@ -32,8 +35,16 @@ public final class SelectionTranslatePanel: NSPanel {
         animationBehavior = .none
     }
 
+    deinit {
+        for monitor in eventMonitors { NSEvent.removeMonitor(monitor) }
+    }
+
     public override var canBecomeKey: Bool { true }
     public override var canBecomeMain: Bool { false }
+
+    public override func cancelOperation(_ sender: Any?) {
+        onEscape?()
+    }
 
     func startDismissalMonitors() {
         guard eventMonitors.isEmpty else { return }
@@ -91,21 +102,46 @@ public final class SelectionTranslatePanel: NSPanel {
         }) {
             monitors.append(escapeGlobal)
         }
-        if let escapeLocal = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
-            let isEscape = event.keyCode == 53
-            guard isEscape else { return event }
+        if let localKey = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
             guard let self else { return event }
             assert(Thread.isMainThread)
-            let panel = self
-            let consume = MainActor.assumeIsolated {
-                guard panel.isVisible else { return false }
-                if panel.hasOwnedMenuOpen() { return false }
-                panel.onEscape?()
-                return true
+            let keyCode = event.keyCode
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let chars = event.charactersIgnoringModifiers?.lowercased() ?? ""
+            let consume = MainActor.assumeIsolated { () -> Bool in
+                guard self.isVisible else { return false }
+                if keyCode == 53 {
+                    if self.hasOwnedMenuOpen() { return false }
+                    self.onEscape?()
+                    return true
+                }
+                if self.isKeyWindow, modifiers == .command {
+                    if chars == "c" {
+                        // Only intercept ⌘C when no subrange of NSTextView is selected.
+                        if let textView = self.firstResponder as? NSTextView, textView.selectedRange().length > 0 {
+                            return false
+                        }
+                        self.onCopyShortcut?()
+                        return true
+                    }
+                    if chars == "1" {
+                        self.onSelectOptimizeModeIndex?(0)
+                        return true
+                    }
+                    if chars == "2" {
+                        self.onSelectOptimizeModeIndex?(1)
+                        return true
+                    }
+                    if chars == "3" {
+                        self.onSelectOptimizeModeIndex?(2)
+                        return true
+                    }
+                }
+                return false
             }
             return consume ? nil : event
         }) {
-            monitors.append(escapeLocal)
+            monitors.append(localKey)
         }
         eventMonitors = monitors
     }
@@ -162,9 +198,11 @@ public enum SelectionPopoverHitTesting {
 public protocol SelectionPopoverControlling: AnyObject {
     var currentContent: SelectionPopoverContent? { get }
     var panelFrame: CGRect? { get }
+    var isVisible: Bool { get }
     var onUserDismiss: (() -> Void)? { get set }
     var onTranslate: (() -> Void)? { get set }
     var onOptimize: (() -> Void)? { get set }
+    var onOpenSettings: (() -> Void)? { get set }
     var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)? { get set }
     var optimizeMode: PromptOptimizeMode { get set }
     var copyFeedback: SelectionCopyFeedback { get }
@@ -175,6 +213,11 @@ public protocol SelectionPopoverControlling: AnyObject {
 
 @MainActor
 public extension SelectionPopoverControlling {
+    var isVisible: Bool { panelFrame != nil }
+    var onOpenSettings: (() -> Void)? {
+        get { nil }
+        set {}
+    }
     func containsInteraction(at location: CGPoint) -> Bool {
         panelFrame?.contains(location) == true
     }
@@ -187,6 +230,7 @@ public final class NullSelectionPopover: SelectionPopoverControlling {
     public var onUserDismiss: (() -> Void)?
     public var onTranslate: (() -> Void)?
     public var onOptimize: (() -> Void)?
+    public var onOpenSettings: (() -> Void)?
     public var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
     public var optimizeMode: PromptOptimizeMode = .communicationPolish
     public var copyFeedback: SelectionCopyFeedback { .idle }
@@ -211,6 +255,7 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     public var onUserDismiss: (() -> Void)?
     public var onTranslate: (() -> Void)?
     public var onOptimize: (() -> Void)?
+    public var onOpenSettings: (() -> Void)?
     public var onOptimizeModeChange: ((PromptOptimizeMode) -> Void)?
     public var optimizeMode: PromptOptimizeMode {
         get { chrome.optimizeMode }
@@ -220,6 +265,7 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
 
     private let chrome = SelectionPopoverChrome()
     private var panel: SelectionTranslatePanel?
+    private var hostingView: NSHostingView<SelectionTranslatePopoverView>?
     private let visibleFramesProvider: () -> [CGRect]
     private let pasteboardWriter: (String) throws -> Void
     private let copyFeedbackDelay: Duration
@@ -227,6 +273,12 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     private var copyFeedbackGeneration: UInt64 = 0
 
     public var panelFrame: CGRect? { panel?.isVisible == true ? panel?.frame : nil }
+    public var isVisible: Bool { panel?.isVisible == true }
+
+    /// Test seam: exposes hosting view identity to verify single-host reuse.
+    var hostingViewObjectIdentifier: ObjectIdentifier? {
+        hostingView.map(ObjectIdentifier.init)
+    }
 
     public func containsInteraction(at location: CGPoint) -> Bool {
         guard let panel, panel.isVisible else { return false }
@@ -272,8 +324,9 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     private func presentCurrent(resize: Bool) {
         guard let content = currentContent else { return }
         let visibleFrames = visibleFramesProvider()
-        let origin = content.screenFrame.origin
-        guard let visibleFrame = OverlayLayout.owningVisibleFrame(for: origin, in: visibleFrames) else {
+        let center = CGPoint(x: content.screenFrame.midX, y: content.screenFrame.midY)
+        guard let visibleFrame = OverlayLayout.owningVisibleFrame(for: center, in: visibleFrames)
+            ?? OverlayLayout.owningVisibleFrame(for: content.screenFrame.origin, in: visibleFrames) else {
             dismiss()
             return
         }
@@ -282,26 +335,41 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
             visibleFrame.height - GTPopoverMetrics.screenMargin * 2
         )
         let sizing = Self.sizing(for: content, maxHeight: maxPanelHeight)
-        let frame = OverlayLayout.placementFrame(
-            originalFrame: content.screenFrame,
+        let frame = SelectionPopoverLayout.placementFrame(
+            around: content.screenFrame,
             contentSize: sizing.contentSize,
             screenVisibleFrame: visibleFrame
         )
-        let hosting = NSHostingView(rootView: SelectionTranslatePopoverView(
-            content: content,
-            chrome: chrome,
-            resultHeight: sizing.resultHeight,
-            isResultScrollable: sizing.isResultScrollable,
-            onCopy: { [weak self] in self?.copyCurrentTranslation() },
-            onTranslate: { [weak self] in self?.onTranslate?() },
-            onOptimize: { [weak self] in self?.onOptimize?() },
-            onOptimizeModeChange: { [weak self] mode in
-                self?.optimizeMode = mode
-                self?.onOptimizeModeChange?(mode)
-            }
-        ))
+        chrome.content = content
+        chrome.resultHeight = sizing.resultHeight
+        chrome.isResultScrollable = sizing.isResultScrollable
+
+        let host: NSHostingView<SelectionTranslatePopoverView>
+        if let existingHost = hostingView {
+            host = existingHost
+        } else {
+            let created = NSHostingView(rootView: SelectionTranslatePopoverView(
+                chrome: chrome,
+                onCopy: { [weak self] in self?.copyCurrentTranslation() },
+                onTranslate: { [weak self] in self?.onTranslate?() },
+                onOptimize: { [weak self] in self?.onOptimize?() },
+                onOpenSettings: { [weak self] in
+                    self?.onOpenSettings?()
+                    self?.dismiss()
+                },
+                onOptimizeModeChange: { [weak self] mode in
+                    self?.optimizeMode = mode
+                    self?.onOptimizeModeChange?(mode)
+                }
+            ))
+            hostingView = created
+            host = created
+        }
+
         if let panel {
-            panel.contentView = hosting
+            if panel.contentView !== host {
+                panel.contentView = host
+            }
             if resize {
                 panel.setFrame(frame, display: true)
             }
@@ -313,7 +381,16 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
             let panel = SelectionTranslatePanel(contentRect: frame)
             panel.onOutsideClick = { [weak self] in self?.notifyUserDismiss() }
             panel.onEscape = { [weak self] in self?.notifyUserDismiss() }
-            panel.contentView = hosting
+            panel.onCopyShortcut = { [weak self] in self?.copyCurrentTranslation() }
+            panel.onSelectOptimizeModeIndex = { [weak self] index in
+                guard let self, self.currentContent?.showsOptimizeAction == true else { return }
+                let modes = PromptOptimizeMode.allCases
+                guard index >= 0, index < modes.count else { return }
+                let mode = modes[index]
+                self.optimizeMode = mode
+                self.onOptimizeModeChange?(mode)
+            }
+            panel.contentView = host
             self.panel = panel
             panel.startDismissalMonitors()
             panel.orderFrontRegardless()
@@ -323,6 +400,7 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     public func dismiss() {
         resetCopyFeedback(.idle)
         currentContent = nil
+        chrome.content = nil
         panel?.stopDismissalMonitors()
         panel?.orderOut(nil)
     }

@@ -541,7 +541,38 @@ struct SettingsViewModelTests {
         viewModel.localModel = "qwen3:8b"
         viewModel.commitLocalConfiguration()
         #expect(actions.localConfigurations.last?.model == "qwen3:8b")
+        #expect(viewModel.backendReady == (status == .healthy))
+    }
+
+    @Test
+    func changingLocalURLOrUnvalidatedModelResetsReadiness() async {
+        let (viewModel, actions) = makeViewModel(backend: .local)
+        viewModel.localBaseURL = "http://127.0.0.1:11434/v1"
+        actions.health = BackendHealth(status: .healthy, message: "ok", availableModels: ["qwen3:8b", "llama3.2:latest"])
+        await viewModel.testConnection()
+        #expect(viewModel.backendReady)
+
+        // Switching to another model returned by the validated endpoint preserves readiness.
+        viewModel.localModel = "llama3.2:latest"
+        viewModel.commitLocalConfiguration()
+        #expect(viewModel.backendReady)
+        #expect(viewModel.actionFeedbackMessage == "已切换本地模型")
+
+        // Changing baseURL invalidates prior validation.
+        viewModel.localBaseURL = "http://127.0.0.1:11435/v1"
+        viewModel.commitLocalConfiguration()
         #expect(!viewModel.backendReady)
+    }
+
+    @Test
+    func settingsTabsAndActionFeedbackWorkAsExpected() {
+        let (viewModel, _) = makeViewModel()
+        #expect(viewModel.selectedTab == .translation)
+        #expect(SettingsTab.allCases.map(\.title) == ["翻译", "后端", "高级"])
+        viewModel.selectedTab = .backend
+        #expect(viewModel.selectedTab == .backend)
+        viewModel.showActionFeedback("已保存测试")
+        #expect(viewModel.actionFeedbackMessage == "已保存测试")
     }
 
     @Test(arguments: [BackendHealthStatus.healthy, .modelUnavailable, .invalidConfiguration])

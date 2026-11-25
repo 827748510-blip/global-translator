@@ -312,6 +312,10 @@ public struct SelectionPopoverContent: Equatable, Sendable {
     /// 「复制截图」已经把图片放进剪贴板、因此跳过了自动复制译文时的提示。
     /// 没有它，用户刚拿到的截图会被译文无声覆盖。
     public var clipboardHint: String?
+    /// Custom loading copy (e.g. OCR step before translation).
+    public var loadingMessage: String?
+    /// Whether an inline "打开设置" recovery action should appear on error.
+    public var showsOpenSettingsAction: Bool
     /// Frozen at content creation so a long code selection is not re-detected
     /// on every SwiftUI body pass.
     public let isCodeSnippet: Bool
@@ -327,6 +331,8 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         allowsRetranslate: Bool = true,
         savedImagePath: String? = nil,
         clipboardHint: String? = nil,
+        loadingMessage: String? = nil,
+        showsOpenSettingsAction: Bool = false,
         isCodeSnippet: Bool? = nil
     ) {
         self.original = original
@@ -339,12 +345,15 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         self.allowsRetranslate = allowsRetranslate
         self.savedImagePath = savedImagePath
         self.clipboardHint = clipboardHint
+        self.loadingMessage = loadingMessage
+        self.showsOpenSettingsAction = showsOpenSettingsAction
         self.isCodeSnippet = isCodeSnippet ?? CodeSnippetDetector.isCode(original)
     }
 
     public var displayTranslation: String {
         switch status {
         case .loading:
+            if let loadingMessage, !loadingMessage.isEmpty { return loadingMessage }
             return "翻译中…"
         case .optimizing:
             return SelectionTranslateSupport.optimizingCopy
@@ -395,7 +404,7 @@ public struct SelectionPopoverContent: Equatable, Sendable {
     }
 
     public var showsActionButtons: Bool {
-        showsTranslateAction || showsOptimizeAction || allowsCopy
+        showsTranslateAction || showsOptimizeAction || allowsCopy || showsOpenSettingsAction
     }
 
     public var copyText: String {
@@ -417,13 +426,18 @@ public struct SelectionPopoverContent: Equatable, Sendable {
             .filter { !$0.isEmpty }
     }
 
-    public static func loading(original: String, screenFrame: CGRect) -> SelectionPopoverContent {
+    public static func loading(
+        original: String,
+        screenFrame: CGRect,
+        message: String? = nil
+    ) -> SelectionPopoverContent {
         SelectionPopoverContent(
             original: original,
             originalPreview: SelectionTranslateSupport.truncatedOriginal(original),
             translation: "",
             status: .loading,
-            screenFrame: screenFrame
+            screenFrame: screenFrame,
+            loadingMessage: message
         )
     }
 
@@ -499,13 +513,19 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         )
     }
 
-    public static func failed(original: String, message: String, screenFrame: CGRect) -> SelectionPopoverContent {
+    public static func failed(
+        original: String,
+        message: String,
+        screenFrame: CGRect,
+        showsOpenSettingsAction: Bool = false
+    ) -> SelectionPopoverContent {
         SelectionPopoverContent(
             original: original,
             originalPreview: SelectionTranslateSupport.truncatedOriginal(original),
             translation: message,
             status: .failed,
-            screenFrame: screenFrame
+            screenFrame: screenFrame,
+            showsOpenSettingsAction: showsOpenSettingsAction
         )
     }
 }
@@ -513,7 +533,7 @@ public struct SelectionPopoverContent: Equatable, Sendable {
 public enum SelectionTranslateSupport {
     public static let settleDelayMilliseconds = 150
     public static let alreadyChineseDismissMilliseconds = 1_500
-    public static let unavailableDismissMilliseconds = 1_500
+    public static let unavailableDismissMilliseconds = 3_500
     /// Overlay / page-text per-item limit. Selection translate chunks instead of silently cutting here.
     public static let maxSourceCharacters = 4_000
     /// Paragraph/sentence-aware selection chunks. Fits local context plus scaled `max_tokens`.

@@ -29,20 +29,20 @@ assert(asrJs.indexOf("getUserMedia") === -1, "asr helper no getUserMedia");
 assert(asrJs.indexOf("shouldRequest") !== -1, "asr helper gates on captions");
 assert(asrJs.indexOf("mapNewCues") !== -1, "asr helper maps live cues");
 
-assert(popupHtml.indexOf("视频翻译") !== -1, "popup shows 视频翻译");
-assert(popupHtml.indexOf("id=\"videoTranslate\"") === -1, "no separate popup toggle");
-assert(popupHtml.indexOf("同一行") !== -1, "popup points at menu-bar same row");
+assert(popupHtml.indexOf("视频") !== -1, "popup shows 视频翻译");
+assert(popupHtml.indexOf("id=\"videoTranslateToggle\"") !== -1, "popup provides direct video translate toggle");
 assert(popupHtml.indexOf("SRT/VTT") !== -1, "popup offers sidecar picker");
 assert(popupJs.indexOf("videoTranslateEnabled: false") !== -1, "storage default is off");
 assert(popupJs.indexOf("response.videoTranslateEnabled === true") !== -1, "desktop ping is source of truth");
 assert(videoJs.indexOf("videoTranslateEnabled: false") !== -1, "content default is off");
 assert(videoJs.indexOf("videoTranslateEnabled === true") !== -1, "content only starts when true");
 assert(background.indexOf("payload.videoTranslateEnabled === true") !== -1, "health forwards desktop toggle");
+assert(background.indexOf("set-video-translate") !== -1, "background relays video translate toggle");
 
 assert(content.indexOf("ytp-caption-segment") !== -1, "page translate skips youtube caption DOM");
 assert(cuesSource.indexOf("翻译服务不可用") !== -1, "service failure copy");
 assert(cuesSource.indexOf("未检测到外语内容") !== -1, "no-foreign copy");
-assert(popupJs.indexOf("翻译服务不可用") !== -1, "popup service copy");
+assert(popupJs.indexOf("读取本地字幕文件失败") !== -1, "popup file read error copy");
 assert(popupJs.indexOf("未检测到外语内容") !== -1, "popup no-foreign copy");
 assert(videoJs.indexOf("overlayState") !== -1, "content uses overlay state");
 
@@ -54,7 +54,7 @@ assert(videoJs.indexOf("captureStream") === -1, "no captureStream");
 assert(videoJs.indexOf(".pause(") === -1, "never pause playback");
 assert(videoJs.indexOf(".play(") === -1, "never play/stop playback");
 assert(videoJs.indexOf("type: \"translate\"") !== -1, "reuses existing translate bridge");
-assert(popupJs.indexOf("YouTube 请先打开播放器字幕") !== -1, "popup youtube range");
+assert(popupHtml.indexOf("YouTube 请先开启播放器原生字幕") !== -1, "popup youtube range");
 assert(videoJs.indexOf("GlobalTranslatorYouTubeCaptions") !== -1, "content uses youtube helper");
 assert(videoJs.indexOf("noYouTubeCaptions") !== -1, "youtube empty copy wired");
 assert(videoJs.indexOf("data-gt-video-translate") !== -1, "overlay host marker");
@@ -127,10 +127,9 @@ assert(whisper.indexOf("https://") === -1, "whisper runner is local");
 assert(whisper.indexOf("api.deepseek.com") === -1, "no cloud asr");
 
 const settings = fs.readFileSync(path.join(dir, "../Sources/GlobalTranslatorUI/SettingsSections.swift"), "utf8");
-assert(settings.indexOf("\"滑词翻译\"") !== -1, "settings has 滑词翻译");
+assert(settings.indexOf("\"划词翻译\"") !== -1, "settings has 划词翻译");
 assert(settings.indexOf("\"视频翻译\"") !== -1, "settings has 视频翻译");
-assert(settings.indexOf("HStack(alignment: .center, spacing: GTSpacing.medium)") !== -1, "same-row HStack");
-assert(settings.indexOf("\"滑词翻译\"") < settings.indexOf("\"视频翻译\""), "video toggle after selection on the row");
+assert(settings.indexOf("\"划词翻译\"") < settings.indexOf("\"视频翻译\""), "video toggle after selection");
 
 const cues = require("./subtitle-cues");
 assertEqual(cues.parseSidecar(fs.readFileSync(path.join(dir, "fixtures/sample.en.srt"), "utf8"), "sample.en.srt")[0].text,

@@ -29,5 +29,37 @@ const path = require("node:path");
     assert.equal(url, "http://127.0.0.1:9233/translate");
     assert.equal(options.method, "POST");
   }
+
+  const healthContext = vm.createContext({
+    chrome: { runtime: { onMessage: { addListener(fn) { listener = fn; } } } },
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      if (url.endsWith("/health")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            videoTranslateEnabled: true,
+            autoTranslateEnabled: false,
+            backendReady: true,
+            blockedReason: "桌面端未开启“自动翻译”",
+            videoAsrStatus: "idle"
+          })
+        };
+      }
+      return { ok: true, json: async () => ({ ok: true, videoTranslateEnabled: true }) };
+    }
+  });
+  healthContext.importScripts = (file) => vm.runInContext(fs.readFileSync(path.join(__dirname, file), "utf8"), healthContext);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "background.js"), "utf8"), healthContext);
+  const sendHealth = (message) => new Promise(resolve => assert.equal(listener(message, {}, resolve), true));
+  const ping = await sendHealth({ type: "ping" });
+  assert.equal(ping.ok, true);
+  assert.equal(ping.autoTranslateEnabled, false);
+  assert.equal(ping.backendReady, true);
+  assert.equal(ping.blockedReason, "桌面端未开启“自动翻译”");
+  const toggleRes = await sendHealth({ type: "set-video-translate", enabled: true });
+  assert.equal(toggleRes.ok, true);
+  assert.equal(toggleRes.videoTranslateEnabled, true);
   console.log("extension/background.test.js ok");
 })().catch(error => { console.error(error); process.exitCode = 1; });

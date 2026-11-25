@@ -5,31 +5,42 @@ import GlobalTranslatorCore
 /// exercise the exact same material/gradient/stroke composition as the app.
 struct GTSettingsPanelChrome: ViewModifier {
     let cornerRadius: CGFloat
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     func body(content: Content) -> some View {
-        // macOS 27+ 原生 Liquid Glass；交互、折射和透光由系统负责。
-        content
-            .glassEffect(
-                .regular.interactive(),
-                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            )
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if reduceTransparency {
+            content
+                .background(GTColor.panelBackground)
+                .clipShape(shape)
+                .overlay(
+                    shape.strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
+                )
+        } else {
+            // 单层外框 Liquid Glass；静态容器不加 `.interactive()`，避免整块背景误响应悬停。
+            content
+                .glassEffect(.regular, in: shape)
+        }
     }
 }
 
-/// Grouped settings block: fill, radius, and inner padding from DesignTokens.
+/// Grouped settings block: tonal fill, radius, and inner padding from DesignTokens.
 struct GTSettingsCard<Content: View>: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @ViewBuilder var content: () -> Content
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: GTRadius.card, style: .continuous)
         VStack(alignment: .leading, spacing: GTControlMetrics.sectionSpacing) {
             content()
         }
         .padding(.horizontal, GTControlMetrics.cardHorizontalPadding)
         .padding(.vertical, GTControlMetrics.cardVerticalPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .glassEffect(
-            .regular.interactive(),
-            in: RoundedRectangle(cornerRadius: GTRadius.card, style: .continuous)
+        .background(reduceTransparency ? GTColor.sectionFill : GTColor.cardSurface)
+        .clipShape(shape)
+        .overlay(
+            shape.strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
         )
     }
 }
@@ -92,7 +103,7 @@ struct GTLabeledControl<Content: View>: View {
                 .foregroundStyle(GTColor.secondaryText)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
-                .frame(width: GTControlMetrics.settingLabelWidth, alignment: .leading)
+                .frame(minWidth: GTControlMetrics.settingLabelWidth, alignment: .leading)
             content()
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -108,7 +119,8 @@ struct GTFieldTextStyle: TextFieldStyle {
         configuration
             .font(GTType.body)
             .padding(.horizontal, GTSpacing.small)
-            .frame(height: GTControlMetrics.fieldHeight)
+            .padding(.vertical, GTSpacing.xxSmall)
+            .frame(minHeight: GTControlMetrics.fieldHeight)
             .background(GTColor.fieldFill)
             .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
             .overlay(
@@ -128,7 +140,8 @@ struct GTReadOnlyField: View {
             .foregroundStyle(GTColor.secondaryText)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, GTSpacing.small)
-            .frame(height: GTControlMetrics.fieldHeight)
+            .padding(.vertical, GTSpacing.xxSmall)
+            .frame(minHeight: GTControlMetrics.fieldHeight)
             .background(GTColor.fieldFill)
             .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
             .overlay(
@@ -172,7 +185,7 @@ extension GTActionRow where Secondary == EmptyView {
     }
 }
 
-/// Custom select: DesignToken-styled trigger and list, replacing the short grey system Picker.
+/// Custom select: DesignToken-styled trigger and list with keyboard navigation.
 struct GTSelectField: View {
     let options: [String]
     @Binding var selection: String
@@ -181,6 +194,8 @@ struct GTSelectField: View {
     var onChange: (() -> Void)?
 
     @State private var isExpanded = false
+    @State private var isTriggerHovered = false
+    @State private var hoveredOption: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: GTSpacing.xxSmall) {
@@ -193,6 +208,21 @@ struct GTSelectField: View {
             if !options.contains(selection) {
                 isExpanded = false
             }
+        }
+        .onKeyPress(.escape) {
+            guard isExpanded else { return .ignored }
+            isExpanded = false
+            return .handled
+        }
+        .onKeyPress(.downArrow) {
+            guard isEnabled, !options.isEmpty else { return .ignored }
+            stepSelection(by: 1)
+            return .handled
+        }
+        .onKeyPress(.upArrow) {
+            guard isEnabled, !options.isEmpty else { return .ignored }
+            stepSelection(by: -1)
+            return .handled
         }
     }
 
@@ -214,25 +244,32 @@ struct GTSelectField: View {
                     .accessibilityHidden(true)
             }
             .padding(.horizontal, GTSpacing.small)
-            .frame(height: GTControlMetrics.fieldHeight)
+            .padding(.vertical, GTSpacing.xxSmall)
+            .frame(minHeight: GTControlMetrics.fieldHeight)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isTriggerHovered ? GTColor.hoverFill : GTColor.fieldFill)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled || options.isEmpty)
-        .background(GTColor.fieldFill)
+        .onHover { hovered in
+            isTriggerHovered = hovered
+        }
         .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous)
                 .strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
         )
-        .accessibilityHint(options.isEmpty ? "请先测试连接以获取模型列表" : "打开模型列表")
+        .accessibilityValue(displayedValue)
+        .accessibilityHint(options.isEmpty ? "请先测试连接以获取模型列表" : "打开或使用上下方向键切换模型")
     }
 
     private var optionList: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(options, id: \.self) { option in
+                    let isSelected = option == selection
+                    let isHovered = option == hoveredOption
                     Button {
                         if selection != option {
                             selection = option
@@ -247,7 +284,7 @@ struct GTSelectField: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                             Spacer(minLength: GTSpacing.xSmall)
-                            if option == selection {
+                            if isSelected {
                                 Image(systemName: "checkmark")
                                     .font(GTType.caption.weight(.semibold))
                                     .foregroundStyle(GTColor.accent)
@@ -255,13 +292,20 @@ struct GTSelectField: View {
                             }
                         }
                         .padding(.horizontal, GTSpacing.small)
-                        .frame(height: GTControlMetrics.menuRowHeight)
+                        .frame(minHeight: GTControlMetrics.menuRowHeight)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(option == selection ? GTColor.accent.opacity(0.12) : Color.clear)
+                        .background(
+                            isSelected
+                                ? GTColor.accent.opacity(0.12)
+                                : (isHovered ? GTColor.hoverFill : Color.clear)
+                        )
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityAddTraits(option == selection ? .isSelected : AccessibilityTraits())
+                    .onHover { hovering in
+                        hoveredOption = hovering ? option : (hoveredOption == option ? nil : hoveredOption)
+                    }
+                    .accessibilityAddTraits(isSelected ? .isSelected : AccessibilityTraits())
                 }
             }
         }
@@ -273,6 +317,17 @@ struct GTSelectField: View {
                 .strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
         )
         .accessibilityLabel("模型列表")
+    }
+
+    private func stepSelection(by delta: Int) {
+        guard !options.isEmpty else { return }
+        if let currentIndex = options.firstIndex(of: selection) {
+            let nextIndex = (currentIndex + delta + options.count) % options.count
+            selection = options[nextIndex]
+        } else if let first = options.first {
+            selection = first
+        }
+        onChange?()
     }
 
     private var hasValue: Bool {
@@ -316,7 +371,8 @@ struct GTEqualWidthHStack: Layout {
     }
 }
 
-/// Equal-width segmented control; selected fill uses accent so dark mode stays readable.
+/// Equal-width segmented control; selected fill uses accent with subtle spring/ease-out slide
+/// and arrow-key navigation.
 struct GTEqualWidthSegmentedPicker<Value: Hashable>: View {
     let options: [Value]
     @Binding var selection: Value
@@ -325,29 +381,47 @@ struct GTEqualWidthSegmentedPicker<Value: Hashable>: View {
     var height: CGFloat = GTSelectionMetrics.modePickerHeight
     var accessibilityLabelText: String = ""
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hoveredOption: Value?
+    @Namespace private var segmentNamespace
+
     var body: some View {
         GTEqualWidthHStack(spacing: 1) {
             ForEach(options, id: \.self) { option in
                 let isSelected = option == selection
+                let isHovered = option == hoveredOption
                 Button {
-                    selection = option
+                    select(option)
                 } label: {
                     Text(title(option))
                         .font(GTType.secondary.weight(.medium))
                         .lineLimit(1)
-                        .minimumScaleFactor(0.7)
+                        .minimumScaleFactor(0.75)
+                        .padding(.horizontal, GTSpacing.xxSmall)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .foregroundStyle(isSelected ? GTColor.selectedSegmentText : GTColor.primaryText)
-                        .background(isSelected ? GTColor.accent : Color.clear)
+                        .background {
+                            if isSelected {
+                                RoundedRectangle(cornerRadius: GTRadius.row - 1, style: .continuous)
+                                    .fill(GTColor.accent)
+                                    .matchedGeometryEffect(id: "activeSegment", in: segmentNamespace)
+                            } else if isHovered && isEnabled {
+                                RoundedRectangle(cornerRadius: GTRadius.row - 1, style: .continuous)
+                                    .fill(GTColor.hoverFill)
+                            }
+                        }
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!isEnabled)
+                .onHover { hovering in
+                    hoveredOption = hovering ? option : (hoveredOption == option ? nil : hoveredOption)
+                }
                 .accessibilityAddTraits(isSelected ? .isSelected : AccessibilityTraits())
-                .accessibilityValue(title(option))
             }
         }
-        .frame(height: height)
+        .padding(1)
+        .frame(minHeight: height)
         .frame(maxWidth: .infinity)
         .background(GTColor.segmentTrack)
         .clipShape(RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous))
@@ -355,8 +429,35 @@ struct GTEqualWidthSegmentedPicker<Value: Hashable>: View {
             RoundedRectangle(cornerRadius: GTRadius.row, style: .continuous)
                 .strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
         )
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: selection)
+        .onKeyPress(.leftArrow) {
+            stepSelection(by: -1)
+        }
+        .onKeyPress(.rightArrow) {
+            stepSelection(by: 1)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityLabelText)
+    }
+
+    private func select(_ option: Value) {
+        guard isEnabled, selection != option else { return }
+        if reduceMotion {
+            selection = option
+        } else {
+            withAnimation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.18)) {
+                selection = option
+            }
+        }
+    }
+
+    private func stepSelection(by delta: Int) -> KeyPress.Result {
+        guard isEnabled, let index = options.firstIndex(of: selection), !options.isEmpty else {
+            return .ignored
+        }
+        let nextIndex = (index + delta + options.count) % options.count
+        select(options[nextIndex])
+        return .handled
     }
 }
 

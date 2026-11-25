@@ -1,12 +1,10 @@
 // Global Translator Bridge — content script.
 // Extracts visible text nodes in any language, asks the desktop app (via the
 // background worker) for translations and replaces the DOM text in place.
-// Mirrors the extraction/apply rules of the CDP in-page pipeline.
+// Restores original source text immediately when toggled off.
 (() => {
   const SKIPPED_TAGS = ["SCRIPT", "STYLE", "NOSCRIPT", "CODE", "PRE", "TEXTAREA"];
   // Keep this aligned with TranslationCoordinator.localPageTextBatchSize.
-  // Local Ollama now takes 3 short strings per json_object call; a 30-item
-  // POST used to stall past TTFB and open the circuit for ~30s (PR #2).
   const CHUNK_SIZE = 3;
   const MAX_PER_ROUND = 200;
   const MAX_ROUNDS = 5;
@@ -14,19 +12,16 @@
   const RETRY_INITIAL_MS = 1500;
   const RETRY_MAX_MS = 15000;
 
-  // id -> { node, source, translation } — source is the text we translated;
-  // if the page re-renders a node with the same source text, the cached
-  // translation is re-applied instantly without another server round-trip.
+  // id -> { node, source, translation }
   const store = { entries: new Map(), next: 0 };
+  const nodeIds = typeof WeakMap !== "undefined" ? new WeakMap() : null;
   let enabled = true;
   let running = false;
+  let mutatingOwnDom = false;
   let observer = null;
   let debounceTimer = null;
   let retryTimer = null;
   let retryDelay = RETRY_INITIAL_MS;
-  // Arm a retry after this pass finishes. Calling scheduleRetry() while
-  // `running` is true lets the timer fire into a no-op run() that clears
-  // retryTimer, so unmarked strings on a quiet page never get asked again.
   let retryPending = false;
 
   function textOf(node) {
@@ -51,7 +46,23 @@
     return true;
   }
 
+  function pruneDisconnectedEntries() {
+    for (const [id, entry] of store.entries) {
+      if (!entry.node || !entry.node.isConnected) {
+        store.entries.delete(id);
+      }
+    }
+  }
+
   function nodeId(node) {
+    if (nodeIds) {
+      const existing = nodeIds.get(node);
+      if (existing && store.entries.has(existing)) return existing;
+      const id = String(store.next++);
+      nodeIds.set(node, id);
+      store.entries.set(id, { node, source: null, translation: null });
+      return id;
+    }
     for (const [id, entry] of store.entries) {
       if (entry.node === node) return id;
     }
@@ -60,11 +71,12 @@
     return id;
   }
 
-  // Collect nodes still awaiting translation. Nodes the page reverted to a
-  // previously translated source text are re-applied from cache immediately;
-  // anything else goes to the desktop app.
+  // Two-phase extract: read DOM & collect cached re-applications first, then
+  // write all cached translations in one batch so reads and writes never interleave.
   function extract(sourceLanguage) {
+    pruneDisconnectedEntries();
     const results = [];
+    const cacheReapply = [];
     const walker = document.createTreeWalker(
       document.body || document.documentElement,
       NodeFilter.SHOW_TEXT
@@ -72,8 +84,6 @@
     let node;
     while ((node = walker.nextNode())) {
       const text = textOf(node);
-      // X and other sites can put a whole post in one text node. Sending the
-      // lines independently keeps a short result from replacing the whole post.
       const parts = text.split(/(\r\n|[\n\r\u2028\u2029])/);
       const segments = [];
       for (let index = 0; index < parts.length; index += 2) {
@@ -85,17 +95,25 @@
       if (segments.length === 0 || !isEligible(node)) continue;
       const id = nodeId(node);
       const entry = store.entries.get(id);
-      // Page language is a source hint, even after we replace the DOM. Never
-      // submit our own output again on ja/ko/Traditional Chinese pages.
       if (entry.translation === text) continue;
       if (entry.source === text && entry.translation) {
-        node.nodeValue = node.nodeValue.replace(text, () => entry.translation);
+        cacheReapply.push({ node, text, translation: entry.translation });
         continue;
       }
       if (entry.source === text) continue;
       const item = { id, text, parts, remaining: segments.length, retry: false };
       for (const segment of segments) results.push({ item, ...segment });
       if (results.length >= MAX_PER_ROUND) break;
+    }
+    if (cacheReapply.length > 0) {
+      mutatingOwnDom = true;
+      try {
+        for (const item of cacheReapply) {
+          item.node.nodeValue = item.node.nodeValue.replace(item.text, () => item.translation);
+        }
+      } finally {
+        mutatingOwnDom = false;
+      }
     }
     return results;
   }
@@ -117,6 +135,7 @@
 
   function apply(segments, translations, retryIndexes) {
     const retry = new Set(retryIndexes || []);
+    const writes = [];
     for (let i = 0; i < segments.length; i++) {
       const { item, index, source } = segments[i];
       const rawTranslation = translations[i];
@@ -127,8 +146,6 @@
         item.parts[index] = item.parts[index].replace(source, () => translation);
       }
 
-      // Leave the original intact until the whole node can be assembled.
-      // A transient failure leaves it eligible for another attempt.
       item.remaining--;
       if (item.remaining !== 0 || item.retry) continue;
       const entry = store.entries.get(item.id);
@@ -138,8 +155,36 @@
       entry.source = item.text;
       entry.translation = translated === item.text ? null : translated;
       if (entry.translation) {
-        node.nodeValue = node.nodeValue.replace(item.text, () => translated);
+        writes.push({ node, original: item.text, translated });
       }
+    }
+    if (writes.length > 0) {
+      mutatingOwnDom = true;
+      try {
+        for (const w of writes) {
+          w.node.nodeValue = w.node.nodeValue.replace(w.original, () => w.translated);
+        }
+      } finally {
+        mutatingOwnDom = false;
+      }
+    }
+  }
+
+  function restoreAll() {
+    mutatingOwnDom = true;
+    try {
+      for (const [id, entry] of store.entries) {
+        const node = entry && entry.node;
+        if (!node || !node.isConnected) {
+          store.entries.delete(id);
+          continue;
+        }
+        if (entry.source && entry.translation && textOf(node) === entry.translation) {
+          node.nodeValue = node.nodeValue.replace(entry.translation, () => entry.source);
+        }
+      }
+    } finally {
+      mutatingOwnDom = false;
     }
   }
 
@@ -178,6 +223,7 @@
   }
 
   function scheduleRun() {
+    if (mutatingOwnDom || !enabled) return;
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(run, OBSERVER_DEBOUNCE_MS);
   }
@@ -233,6 +279,7 @@
       run();
     } else {
       stopObserver();
+      restoreAll();
     }
   });
 

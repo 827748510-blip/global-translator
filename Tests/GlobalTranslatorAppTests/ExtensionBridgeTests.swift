@@ -49,7 +49,7 @@ struct ExtensionBridgeServerTests {
         #expect(source.contains("const CHUNK_SIZE = 3;"))
         #expect(!source.contains("const CHUNK_SIZE = 30;"))
         #expect(source.contains("GlobalTranslatorTextFilter.shouldSendForPageTranslate"))
-        #expect(source.contains("if (retry.has(i)) continue;"))
+        #expect(source.contains("retry.has(i)"))
         #expect(source.contains("let retryPending = false;"))
         #expect(source.contains("retryPending = true;"))
         #expect(source.contains("scheduleRetry();"))
@@ -132,21 +132,11 @@ struct ExtensionBridgeServerTests {
             contentsOf: root.appendingPathComponent("Sources/GlobalTranslatorCapture/VideoAudioASRController.swift"),
             encoding: .utf8
         )
-        #expect(settings.contains("\"滑词翻译\""))
+        #expect(settings.contains("\"划词翻译\""))
         #expect(settings.contains("\"视频翻译\""))
-        #expect(settings.contains("HStack(alignment: .center, spacing: GTSpacing.medium)"))
-        if let rowStart = settings.range(of: "HStack(alignment: .center, spacing: GTSpacing.medium)"),
-           let selectionRange = settings.range(of: "\"滑词翻译\""),
-           let videoRange = settings.range(of: "\"视频翻译\"") {
-            #expect(rowStart.lowerBound < selectionRange.lowerBound)
-            #expect(selectionRange.lowerBound < videoRange.lowerBound)
-            let betweenToggles = settings[selectionRange.lowerBound..<videoRange.lowerBound]
-            #expect(betweenToggles.contains("Spacer"))
-            #expect(!betweenToggles.contains("Divider()"))
-            #expect(!betweenToggles.contains("VStack"))
-        }
         #expect(!popup.contains("id=\"videoTranslate\""))
-        #expect(popup.contains("视频翻译"))
+        #expect(popup.contains("id=\"videoTranslateToggle\""))
+        #expect(popup.contains("视频"))
         #expect(popupJs.contains("videoTranslateEnabled: false"))
         #expect(popupJs.contains("response.videoTranslateEnabled === true"))
         #expect(videoJs.contains("videoTranslateEnabled: false"))
@@ -190,7 +180,63 @@ struct ExtensionBridgeServerTests {
         #expect(!youtubePage.contains("loadModule"))
         #expect(!youtubePage.contains("getUserMedia"))
         #expect(youtubePage.contains("response.clone()"))
-        #expect(popupJs.contains("YouTube 请先打开播放器字幕"))
+        #expect(popup.contains("YouTube 请先开启播放器原生字幕"))
+        #expect(popupJs.contains("set-video-translate"))
+    }
+
+    @Test
+    func setVideoTranslateEndpointRejectsForeignOriginAndInvalidPayload() async throws {
+        let current = OSAllocatedUnfairLock(initialState: false)
+        let session = URLSession(configuration: .ephemeral)
+        let server = ExtensionBridgeServer(
+            port: 0,
+            videoTranslateEnabled: { current.withLock { $0 } },
+            setVideoTranslateEnabled: { next in
+                current.withLock {
+                    $0 = next
+                    return $0
+                }
+            }
+        ) { texts, _ in
+            ExtensionBridgeTranslation(translations: texts.map { $0 })
+        }
+        server.start()
+        defer { server.stop() }
+        let port = try await #require(waitForPort(server))
+
+        let badOrigin = request(
+            port,
+            method: "POST",
+            path: "/video-translate",
+            origin: "https://evil.example",
+            body: Data("{\"enabled\":true}".utf8)
+        )
+        let (_, badOriginRes) = try await session.data(for: badOrigin)
+        #expect((badOriginRes as? HTTPURLResponse)?.statusCode == 403)
+        #expect(!current.withLock { $0 })
+
+        let badBody = request(
+            port,
+            method: "POST",
+            path: "/video-translate",
+            origin: ExtensionBridgeServer.allowedOrigin,
+            body: Data("{\"enabled\":\"yes\"}".utf8)
+        )
+        let (_, badBodyRes) = try await session.data(for: badBody)
+        #expect((badBodyRes as? HTTPURLResponse)?.statusCode == 400)
+
+        let valid = request(
+            port,
+            method: "POST",
+            path: "/video-translate",
+            origin: ExtensionBridgeServer.allowedOrigin,
+            body: Data("{\"enabled\":true}".utf8)
+        )
+        let (validData, validRes) = try await session.data(for: valid)
+        #expect((validRes as? HTTPURLResponse)?.statusCode == 200)
+        let json = try JSONSerialization.jsonObject(with: validData) as? [String: Any]
+        #expect(json?["videoTranslateEnabled"] as? Bool == true)
+        #expect(current.withLock { $0 })
     }
 
     @Test

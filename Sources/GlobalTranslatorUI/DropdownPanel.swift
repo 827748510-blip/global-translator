@@ -128,7 +128,10 @@ public struct LaunchFocusExemption: Equatable, Sendable {
 public final class DropdownPanel: NSPanel {
     public var onResignKey: (() -> Void)?
     public var onOutsideClick: (() -> Void)?
-    private var eventMonitors: [Any] = []
+    public var onEscape: (() -> Void)?
+    public var shouldHandleEscape: (() -> Bool)?
+    nonisolated(unsafe) private var eventMonitors: [Any] = []
+    private var presentationGeneration: UInt64 = 0
 
     public init(content: NSViewController) {
         super.init(
@@ -154,6 +157,10 @@ public final class DropdownPanel: NSPanel {
         isMovable = false
     }
 
+    deinit {
+        for monitor in eventMonitors { NSEvent.removeMonitor(monitor) }
+    }
+
     public override var canBecomeKey: Bool { true }
     public override var canBecomeMain: Bool { false }
 
@@ -162,53 +169,71 @@ public final class DropdownPanel: NSPanel {
         onResignKey?()
     }
 
-    /// Presents the panel with a quick fade; keeps the top edge pinned so the
-    /// dropdown visually grows out from under the menu bar icon.
+    public override func cancelOperation(_ sender: Any?) {
+        guard shouldHandleEscape?() ?? true else { return }
+        onEscape?()
+    }
+
+    /// Presents the panel anchored under `anchorTopLeft` without animating
+    /// window height; uses a crisp ease-out opacity fade (respecting Reduce Motion).
     public func present(anchorTopLeft: CGPoint, size: CGSize) {
-        // Window frames are bottom-left based while the anchor names the top
-        // edge; without this conversion the panel asked for a frame whose
-        // bottom sat at the menu bar and only stayed on screen because AppKit
-        // silently constrained it.
+        presentationGeneration &+= 1
         let finalFrame = NSRect(
             x: anchorTopLeft.x,
             y: anchorTopLeft.y - size.height,
             width: size.width,
             height: size.height
         )
-        let startFrame = NSRect(
-            x: finalFrame.minX, y: finalFrame.minY,
-            width: finalFrame.width, height: min(finalFrame.height, 8)
-        )
-        setFrame(startFrame, display: false)
-        alphaValue = 0
+        setFrame(finalFrame, display: true)
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        alphaValue = reduceMotion ? 1 : 0
         startOutsideClickMonitoring()
         makeKeyAndOrderFront(nil)
+        guard !reduceMotion else { return }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.18
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            context.duration = 0.16
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.23, 1, 0.32, 1)
             context.allowsImplicitAnimation = true
-            animator().setFrame(finalFrame, display: true)
             animator().alphaValue = 1
         }
     }
 
-    /// Dismisses with a quick fade, then orders the panel out.
+    /// Updates panel height dynamically while keeping the top edge anchored.
+    public func updateHeight(_ height: CGFloat) {
+        guard isVisible, abs(frame.height - height) > 1 else { return }
+        let topY = frame.maxY
+        let updated = NSRect(
+            x: frame.minX,
+            y: topY - height,
+            width: frame.width,
+            height: height
+        )
+        setFrame(updated, display: true)
+    }
+
+    /// Dismisses with an interruptible ease-out fade, then orders the panel out
+    /// only if no newer `present` superseded this dismissal.
     public func dismiss(animated: Bool) {
         guard isVisible else { return }
+        presentationGeneration &+= 1
+        let token = presentationGeneration
         stopOutsideClickMonitoring()
-        if !animated {
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if !animated || reduceMotion {
             orderOut(nil)
+            alphaValue = 1
             return
         }
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.15
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            context.duration = 0.12
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.23, 1, 0.32, 1)
             context.allowsImplicitAnimation = true
             animator().alphaValue = 0
         }, completionHandler: { [weak self] in
             Task { @MainActor in
-                self?.orderOut(nil)
-                self?.alphaValue = 1
+                guard let self, self.presentationGeneration == token else { return }
+                self.orderOut(nil)
+                self.alphaValue = 1
             }
         })
     }
@@ -218,27 +243,52 @@ public final class DropdownPanel: NSPanel {
     /// inside our own app such as the menu bar icon itself.
     private func startOutsideClickMonitoring() {
         guard eventMonitors.isEmpty else { return }
-        let outside: (NSEvent) -> Void = { [weak self] _ in
-            guard let self, self.isVisible, let onOutsideClick = self.onOutsideClick else { return }
-            if !self.frame.contains(NSEvent.mouseLocation) {
-                onOutsideClick()
-            }
-        }
         var monitors: [Any] = []
         if let global = NSEvent.addGlobalMonitorForEvents(
-            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown], handler: outside
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown],
+            handler: { [weak self] _ in
+                let location = NSEvent.mouseLocation
+                guard let self else { return }
+                assert(Thread.isMainThread)
+                MainActor.assumeIsolated {
+                    guard self.isVisible, !self.containsOwnedUI(at: location) else { return }
+                    self.onOutsideClick?()
+                }
+            }
         ) {
             monitors.append(global)
         }
         if let local = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown],
             handler: { [weak self] event in
-                guard let self, self.isVisible, !self.frame.contains(NSEvent.mouseLocation) else { return event }
-                self.onOutsideClick?()
+                let location = NSEvent.mouseLocation
+                guard let self else { return event }
+                assert(Thread.isMainThread)
+                MainActor.assumeIsolated {
+                    guard self.isVisible, !self.containsOwnedUI(at: location) else { return }
+                    self.onOutsideClick?()
+                }
                 return event
             }
         ) {
             monitors.append(local)
+        }
+        if let localKey = NSEvent.addLocalMonitorForEvents(
+            matching: .keyDown,
+            handler: { [weak self] event in
+                guard event.keyCode == 53 else { return event }
+                guard let self else { return event }
+                assert(Thread.isMainThread)
+                let handled = MainActor.assumeIsolated { () -> Bool in
+                    guard self.isVisible, !self.hasOwnedMenuOpen() else { return false }
+                    guard self.shouldHandleEscape?() ?? true else { return false }
+                    self.onEscape?()
+                    return true
+                }
+                return handled ? nil : event
+            }
+        ) {
+            monitors.append(localKey)
         }
         eventMonitors = monitors
     }
@@ -246,6 +296,23 @@ public final class DropdownPanel: NSPanel {
     private func stopOutsideClickMonitoring() {
         for monitor in eventMonitors { NSEvent.removeMonitor(monitor) }
         eventMonitors = []
+    }
+
+    @MainActor
+    func containsOwnedUI(at location: CGPoint, windows: [NSWindow]? = nil) -> Bool {
+        if frame.contains(location) { return true }
+        let list = windows ?? NSApp.windows
+        return list.contains { window in
+            guard window.isVisible, window !== self else { return false }
+            let owned = window.level == .popUpMenu || window.parent === self
+            return owned && window.frame.contains(location)
+        }
+    }
+
+    @MainActor
+    func hasOwnedMenuOpen(windows: [NSWindow]? = nil) -> Bool {
+        let list = windows ?? NSApp.windows
+        return list.contains { $0.isVisible && $0 !== self && ($0.level == .popUpMenu || $0.parent === self) }
     }
 
     var outsideClickMonitorCount: Int { eventMonitors.count }

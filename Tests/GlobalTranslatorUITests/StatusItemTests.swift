@@ -363,4 +363,38 @@ struct StatusItemTests {
         #expect(MenuBarStatus(engineState: .backendError) == .error)
         #expect(MenuBarStatus(engineState: .circuitOpen) == .error)
     }
+
+    @Test @MainActor
+    func dropdownPanelHandlesEscapeUpdateHeightAndModalPickerProtection() {
+        let panel = DropdownPanel(content: NSViewController())
+        var escaped = 0
+        panel.onEscape = { escaped += 1 }
+        panel.present(anchorTopLeft: CGPoint(x: 100, y: 800), size: CGSize(width: 360, height: 300))
+        #expect(panel.frame.maxY == 800)
+
+        panel.updateHeight(420)
+        #expect(panel.frame.maxY == 800)
+        #expect(panel.frame.height == 420)
+
+        panel.shouldHandleEscape = { false }
+        panel.cancelOperation(nil)
+        #expect(escaped == 0)
+
+        panel.shouldHandleEscape = { true }
+        panel.cancelOperation(nil)
+        #expect(escaped == 1)
+
+        panel.dismiss(animated: false)
+        panel.orderOut(nil)
+    }
+
+    @Test @MainActor
+    func statusItemDismissCancelsActiveHotkeyRecording() {
+        let viewModel = SettingsViewModel(actions: StatusItemTestActions())
+        let controller = StatusItemController(viewModel: viewModel)
+        viewModel.beginRecordingScreenshotHotkey()
+        #expect(viewModel.isRecordingScreenshotHotkey)
+        controller.stop()
+        #expect(!viewModel.isRecordingScreenshotHotkey)
+    }
 }

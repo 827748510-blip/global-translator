@@ -1,55 +1,101 @@
 import SwiftUI
 
-/// Root view of the menu-bar settings popover. 360px wide, compact vertical
-/// rhythm with a hidden scrollbar; scrolls within the usable screen height.
+/// Root view of the menu-bar settings popover. 360px wide, 3-tab structure
+/// (翻译 / 后端 / 高级) with pinned status header, setup guidance banner,
+/// scrollable tab content, and pinned footer.
 public struct SettingsPopoverView: View {
-    @ObservedObject private var viewModel: SettingsViewModel
+    private var viewModel: SettingsViewModel
 
     /// Height ceiling, recomputed from the screen's visible frame at show time.
     private let maxHeight: CGFloat
+    private let onPreferredHeightChange: ((CGFloat) -> Void)?
 
     public init(
         viewModel: SettingsViewModel,
-        maxHeight: CGFloat = GTPopoverMetrics.defaultMaxHeight
+        maxHeight: CGFloat = GTPopoverMetrics.defaultMaxHeight,
+        onPreferredHeightChange: ((CGFloat) -> Void)? = nil
     ) {
         self.viewModel = viewModel
         self.maxHeight = maxHeight
+        self.onPreferredHeightChange = onPreferredHeightChange
     }
 
     public var body: some View {
-        ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: GTPopoverMetrics.cardSpacing) {
+        @Bindable var bindable = viewModel
+
+        VStack(alignment: .leading, spacing: GTSpacing.xSmall) {
+            VStack(alignment: .leading, spacing: GTSpacing.xSmall) {
                 GTSettingsCard {
                     SettingsHeaderSection(viewModel: viewModel)
                 }
-                GTSettingsCard {
-                    ScreenshotTranslateSection(viewModel: viewModel)
-                }
-                GTSettingsCard {
-                    TranslatedApplicationsSection(viewModel: viewModel)
-                }
-                GTSettingsCard {
-                    BackendPickerSection(viewModel: viewModel)
-                    Divider()
-                    Group {
-                        switch viewModel.selectedBackend {
-                        case .deepSeekCloud:
-                            CloudBackendSection(viewModel: viewModel)
-                        case .local:
-                            LocalBackendSection(viewModel: viewModel)
+
+                SettingsSetupBanner(viewModel: viewModel)
+
+                GTEqualWidthSegmentedPicker(
+                    options: SettingsTab.allCases,
+                    selection: $bindable.selectedTab,
+                    title: { $0.title },
+                    height: GTControlMetrics.segmentHeight,
+                    accessibilityLabelText: "设置分区"
+                )
+            }
+            .padding(.horizontal, GTPopoverMetrics.contentPadding)
+            .padding(.top, GTPopoverMetrics.contentPadding)
+
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: GTPopoverMetrics.cardSpacing) {
+                    switch viewModel.selectedTab {
+                    case .translation:
+                        GTSettingsCard {
+                            TranslationCoreSection(viewModel: viewModel)
+                        }
+                        GTSettingsCard {
+                            TranslatedApplicationsSection(viewModel: viewModel)
+                        }
+                        GTSettingsCard {
+                            ScreenshotTranslateSection(viewModel: viewModel)
+                        }
+                    case .backend:
+                        GTSettingsCard {
+                            BackendPickerSection(viewModel: viewModel)
+                            Divider()
+                            switch viewModel.selectedBackend {
+                            case .deepSeekCloud:
+                                CloudBackendSection(viewModel: viewModel)
+                            case .local:
+                                LocalBackendSection(viewModel: viewModel)
+                            }
+                        }
+                        if viewModel.selectedBackend == .deepSeekCloud {
+                            GTSettingsCard {
+                                DeepSeekStatsSection()
+                            }
+                        }
+                    case .advanced:
+                        GTSettingsCard {
+                            PermissionsSection(viewModel: viewModel)
+                        }
+                        GTSettingsCard {
+                            MaintenanceSection(viewModel: viewModel)
                         }
                     }
                 }
-                GTSettingsCard {
-                    PermissionsSection(viewModel: viewModel)
-                }
-                SettingsFooterSection(viewModel: viewModel)
+                .padding(.horizontal, GTPopoverMetrics.contentPadding)
+                .padding(.vertical, GTSpacing.xxSmall)
             }
-            .padding(GTPopoverMetrics.contentPadding)
+            .scrollIndicators(.automatic)
+
+            SettingsFooterSection(viewModel: viewModel)
+                .padding(.horizontal, GTPopoverMetrics.contentPadding)
+                .padding(.bottom, GTPopoverMetrics.contentPadding)
         }
-        .scrollIndicators(.hidden)
         .frame(width: GTPopoverMetrics.width)
         .frame(maxHeight: maxHeight)
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.height
+        } action: { _, newHeight in
+            onPreferredHeightChange?(newHeight)
+        }
         // The rounded glass surface is owned by StatusItemController's root.
         .background(Color.clear)
         .confirmationDialog(

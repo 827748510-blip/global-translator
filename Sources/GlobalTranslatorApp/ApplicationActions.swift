@@ -173,6 +173,7 @@ extension ApplicationController {
         screenshotDirectoryPicker = panel
         let completion: (NSApplication.ModalResponse) -> Void = { [weak self, panel] response in
             guard let self else { return }
+            self.statusItem?.endModalPicker(restoreFocus: true)
             if self.screenshotDirectoryPicker === panel {
                 self.screenshotDirectoryPicker = nil
             }
@@ -182,6 +183,7 @@ extension ApplicationController {
         // The settings surface is a nonactivating panel. Attaching a sheet to
         // it can fail and leave the picker state stuck; present a standalone
         // open panel instead.
+        statusItem?.beginModalPicker()
         NSApplication.shared.activate()
         panel.begin(completionHandler: completion)
     }
@@ -537,6 +539,7 @@ extension ApplicationController {
         applicationPicker = panel
         let completion: (NSApplication.ModalResponse) -> Void = { [weak self, panel] response in
             guard let self else { return }
+            self.statusItem?.endModalPicker(restoreFocus: true)
             if self.applicationPicker === panel {
                 self.applicationPicker = nil
             }
@@ -552,6 +555,7 @@ extension ApplicationController {
         // See chooseScreenshotSaveDirectory: a standalone panel works with the
         // nonactivating settings surface, and a sheet attachment can silently
         // leave the button unresponsive on later clicks.
+        statusItem?.beginModalPicker()
         NSApplication.shared.activate()
         panel.begin(completionHandler: completion)
     }

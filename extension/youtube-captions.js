@@ -223,19 +223,22 @@
 
   function collectSelectorText(root, selector) {
     const parts = [];
-    function walk(node) {
-      if (!node || !node.querySelectorAll) return;
-      const nodes = node.querySelectorAll(selector);
-      for (let i = 0; i < nodes.length; i++) {
-        const text = Cues ? Cues.normalizeCueText(nodes[i].textContent) : String(nodes[i].textContent || "").trim();
-        if (text) parts.push(text);
-      }
-      const all = node.querySelectorAll("*");
-      for (let i = 0; i < all.length; i++) {
-        if (all[i] && all[i].shadowRoot) walk(all[i].shadowRoot);
-      }
+    if (!root || !root.querySelectorAll) return parts;
+    const direct = root.querySelectorAll(selector);
+    for (let i = 0; i < direct.length; i++) {
+      const text = Cues ? Cues.normalizeCueText(direct[i].textContent) : String(direct[i].textContent || "").trim();
+      if (text) parts.push(text);
     }
-    walk(root);
+    if (parts.length > 0) return parts;
+
+    const hosts = root.querySelectorAll("ytd-player, .html5-video-player, .ytp-caption-window-container");
+    const scopes = hosts.length > 0 ? hosts : root.querySelectorAll("*");
+    for (let i = 0; i < scopes.length; i++) {
+      const el = scopes[i];
+      if (!el || !el.shadowRoot || !el.shadowRoot.querySelectorAll) continue;
+      const nested = collectSelectorText(el.shadowRoot, selector);
+      for (let j = 0; j < nested.length; j++) parts.push(nested[j]);
+    }
     return parts;
   }
 

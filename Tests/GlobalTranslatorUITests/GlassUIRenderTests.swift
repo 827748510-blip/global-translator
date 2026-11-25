@@ -391,6 +391,46 @@ struct GlassUIRenderTests {
         #expect(abs(twoHintFitting - twoHintHeight) <= 12)
     }
 
+    @Test(arguments: SettingsTab.allCases)
+    func allThreeSettingsTabsRenderInLightAndDarkAppearances(tab: SettingsTab) throws {
+        let viewModel = SettingsViewModel(actions: RenderActions())
+        viewModel.selectedTab = tab
+        for scheme in [ColorScheme.light, .dark] {
+            let view = SettingsPopoverView(viewModel: viewModel, maxHeight: 640)
+                .modifier(GTSettingsPanelChrome(cornerRadius: GTRadius.card))
+                .colorScheme(scheme)
+            let image = try Self.renderHostingView(view)
+            #expect(image.size.width == GTPopoverMetrics.width)
+            #expect(image.size.height > 0)
+        }
+    }
+
+    @Test
+    func selectionPopoverControllerReusesSingleHostingViewAcrossUpdates() {
+        let controller = SelectionTranslatePanelController(
+            visibleFramesProvider: { [CGRect(x: 0, y: 0, width: 1440, height: 900)] }
+        )
+        controller.show(.loading(original: "Hello", screenFrame: CGRect(x: 100, y: 400, width: 80, height: 20)))
+        let firstID = controller.hostingViewObjectIdentifier
+        #expect(firstID != nil)
+
+        controller.show(.translated(
+            original: "Hello",
+            translation: "你好",
+            screenFrame: CGRect(x: 100, y: 400, width: 80, height: 20)
+        ))
+        #expect(controller.hostingViewObjectIdentifier == firstID)
+
+        controller.show(.failed(
+            original: "Hello",
+            message: "请先配置 API Key",
+            screenFrame: CGRect(x: 100, y: 400, width: 80, height: 20),
+            showsOpenSettingsAction: true
+        ))
+        #expect(controller.hostingViewObjectIdentifier == firstID)
+        controller.dismiss()
+    }
+
     private static func renderHostingView<V: View>(_ view: V) throws -> NSImage {
         let hosting = NSHostingView(rootView: view)
         let size = hosting.fittingSize

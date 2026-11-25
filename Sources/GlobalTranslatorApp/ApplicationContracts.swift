@@ -185,15 +185,21 @@ extension CapturePipeline: CapturePipelining {}
 
 @MainActor
 public protocol StatusItemControlling: AnyObject {
+    var isDropdownVisible: Bool { get }
     func applyStatus(_ status: MenuBarStatus)
     func showSettings()
     func showSettings(fromLaunch: Bool)
+    func beginModalPicker()
+    func endModalPicker(restoreFocus: Bool)
     func stop()
 }
 
 public extension StatusItemControlling {
+    var isDropdownVisible: Bool { false }
     /// Fakes and older call sites do not need to know about launch semantics.
     func showSettings(fromLaunch: Bool) { showSettings() }
+    func beginModalPicker() {}
+    func endModalPicker(restoreFocus: Bool) {}
 }
 
 extension StatusItemController: StatusItemControlling {}
