@@ -63,7 +63,7 @@ public final class ScreenCaptureKitRegionCapturer: RegionScreenCapturing, @unche
         let displayID = Self.displayID(of: screen)
         let content: SCShareableContent
         do {
-            content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
         } catch {
             throw CaptureError.captureFailed
         }
@@ -83,8 +83,12 @@ public final class ScreenCaptureKitRegionCapturer: RegionScreenCapturing, @unche
         let filter = SCContentFilter(display: display, excludingWindows: [])
         let configuration = SCStreamConfiguration()
         configuration.sourceRect = sourceRect
-        configuration.width = min(outputWidth, maximumDimension)
-        configuration.height = min(outputHeight, maximumDimension)
+        let targetSize = ScreenCaptureKitWindowCapturer.outputSize(
+            for: CGSize(width: outputWidth, height: outputHeight),
+            maximumDimension: maximumDimension
+        )
+        configuration.width = Int(targetSize.width)
+        configuration.height = Int(targetSize.height)
         configuration.showsCursor = false
         configuration.capturesAudio = false
         try permissions.snapshot.validateCapture(source: .visionOCR)

@@ -6,10 +6,43 @@ struct VisualSampleHistory {
             self.previous = samples
             return false
         }
-        let changed = previous.count != samples.count ||
-            zip(previous, samples).lazy.filter { $0 != $1 }.prefix(3).count >= 3
-        if changed { self.previous = samples }
-        return changed
+        guard previous.count == samples.count else {
+            self.previous = samples
+            return true
+        }
+        var diffCount = 0
+        for index in 0..<samples.count where previous[index] != samples[index] {
+            diffCount += 1
+            if diffCount >= 3 {
+                self.previous = samples
+                return true
+            }
+        }
+        return false
+    }
+
+    mutating func observeSwapping(_ samples: inout [UInt16]) -> Bool {
+        guard var prev = self.previous else {
+            self.previous = samples
+            return false
+        }
+        self.previous = nil
+        if prev.count != samples.count {
+            swap(&prev, &samples)
+            self.previous = prev
+            return true
+        }
+        var diffCount = 0
+        for index in 0..<samples.count where prev[index] != samples[index] {
+            diffCount += 1
+            if diffCount >= 3 {
+                swap(&prev, &samples)
+                self.previous = prev
+                return true
+            }
+        }
+        self.previous = prev
+        return false
     }
 
     mutating func reset() {

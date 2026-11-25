@@ -67,6 +67,7 @@ public final class AccessibilityTextCollector: AccessibilityCollecting, @uncheck
             throw CaptureError.excludedApplication(descriptor.bundleIdentifier)
         }
         guard let root = try reader.readRoot(for: descriptor) else { return [] }
+        let resolvedPrimaryDisplayFrame = primaryDisplayFrame ?? NSScreen.screens.first?.frame
         let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(timeout * 1_000_000_000)
         var pending: [(node: AccessibilityNode, inWebArea: Bool)] = [(root, false)]
         var regions: [TextRegion] = []
@@ -76,7 +77,7 @@ public final class AccessibilityTextCollector: AccessibilityCollecting, @uncheck
         var untranslatedRegions: [TextRegion] = []
         var largeImageFrames: [CGRect] = []
         var readableTextFrames: [CGRect] = []
-        var seen = Set<String>()
+        var seen = Set<RegionDedupeKey>()
         var visited = 0
         while !pending.isEmpty, visited < maxNodes {
             if DispatchTime.now().uptimeNanoseconds >= deadline { break }
@@ -86,24 +87,31 @@ public final class AccessibilityTextCollector: AccessibilityCollecting, @uncheck
             guard !node.isSecure, !node.isOffscreen,
                   node.bundleIdentifier.map({ translatedBundleIdentifiers.contains($0) }) ?? true else { continue }
             let inWebArea = entry.inWebArea || node.role == .webArea
-            if node.role == .webArea, let frame = nodeFrame(node), descriptor.frame.intersects(frame) {
+            let cachedFrame = nodeFrame(node, primaryDisplayFrame: resolvedPrimaryDisplayFrame)
+            if node.role == .webArea, let frame = cachedFrame, descriptor.frame.intersects(frame) {
                 hasWebArea = true
             }
             pending.append(contentsOf: node.children.reversed().map { ($0, inWebArea) })
-            if node.role == .image || node.role == .page || (node.role == .group && node.children.isEmpty), let frame = nodeFrame(node) {
+            if node.role == .image || node.role == .page || (node.role == .group && node.children.isEmpty), let frame = cachedFrame {
                 let visibleImage = frame.intersection(descriptor.frame)
                 if !visibleImage.isNull, visibleImage.width * visibleImage.height >= descriptor.frame.width * descriptor.frame.height * 0.25 {
-                    if hasInvalidImageTextCoordinates(node, imageFrame: frame, deadline: deadline) {
+                    if !node.children.isEmpty,
+                       hasInvalidImageTextCoordinates(
+                           node,
+                           imageFrame: frame,
+                           deadline: deadline,
+                           primaryDisplayFrame: resolvedPrimaryDisplayFrame
+                       ) {
                         throw CaptureError.accessibilityUnavailable
                     }
                     largeImageFrames.append(visibleImage)
                 }
             }
-            guard let frame = nodeFrame(node), shouldInclude(node, frame: frame, descriptor: descriptor) else { continue }
+            guard let frame = cachedFrame, shouldInclude(node, frame: frame, descriptor: descriptor) else { continue }
             let text = normalizedText(for: node)
             guard !text.isEmpty else { continue }
             if node.role == .staticText || node.role == .textField { readableTextFrames.append(frame) }
-            let key = dedupeKey(text: text, frame: frame)
+            let key = RegionDedupeKey(text: text, frame: frame)
             guard seen.insert(key).inserted else { continue }
             let region = TextRegion(
                 id: UUID(),
@@ -144,7 +152,12 @@ public final class AccessibilityTextCollector: AccessibilityCollecting, @uncheck
         return selectedRegions
     }
 
-    private func hasInvalidImageTextCoordinates(_ image: AccessibilityNode, imageFrame: CGRect, deadline: UInt64) -> Bool {
+    private func hasInvalidImageTextCoordinates(
+        _ image: AccessibilityNode,
+        imageFrame: CGRect,
+        deadline: UInt64,
+        primaryDisplayFrame: CGRect?
+    ) -> Bool {
         var pending = image.children
         var visited = 0
         while let node = pending.popLast() {
@@ -153,7 +166,8 @@ public final class AccessibilityTextCollector: AccessibilityCollecting, @uncheck
             guard !node.isSecure, !node.isOffscreen else { continue }
             pending.append(contentsOf: node.children)
             guard node.role == .staticText || node.role == .textField, !normalizedText(for: node).isEmpty else { continue }
-            guard let frame = nodeFrame(node), frame.width > 0, frame.height > 0,
+            guard let frame = nodeFrame(node, primaryDisplayFrame: primaryDisplayFrame),
+                  frame.width > 0, frame.height > 0,
                   imageFrame.contains(CGPoint(x: frame.midX, y: frame.midY)) else { return true }
         }
         return false
@@ -172,13 +186,13 @@ public final class AccessibilityTextCollector: AccessibilityCollecting, @uncheck
             (node.role == .other && node.description != nil)
     }
 
-    private func nodeFrame(_ node: AccessibilityNode) -> CGRect? {
+    private func nodeFrame(_ node: AccessibilityNode, primaryDisplayFrame: CGRect?) -> CGRect? {
         guard let frame = node.frame else { return nil }
         switch node.coordinateSpace {
         case .appKitGlobal:
             return frame
         case .quartzTopLeft:
-            guard let primaryDisplayFrame = primaryDisplayFrame ?? NSScreen.screens.first?.frame else { return nil }
+            guard let primaryDisplayFrame else { return nil }
             return CoordinateConverter.quartzTopLeftFrameToAppKitGlobal(
                 frame,
                 primaryDisplayFrame: primaryDisplayFrame
@@ -201,8 +215,19 @@ public final class AccessibilityTextCollector: AccessibilityCollecting, @uncheck
         return candidate?.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ") ?? ""
     }
 
-    private func dedupeKey(text: String, frame: CGRect) -> String {
-        let values = [frame.minX, frame.minY, frame.width, frame.height].map { String(format: "%.2f", Double($0)) }
-        return text + "|" + values.joined(separator: ",")
+    private struct RegionDedupeKey: Hashable {
+        let text: String
+        let minX: Int
+        let minY: Int
+        let width: Int
+        let height: Int
+
+        init(text: String, frame: CGRect) {
+            self.text = text
+            self.minX = Int((Double(frame.minX) * 100).rounded())
+            self.minY = Int((Double(frame.minY) * 100).rounded())
+            self.width = Int((Double(frame.width) * 100).rounded())
+            self.height = Int((Double(frame.height) * 100).rounded())
+        }
     }
 }

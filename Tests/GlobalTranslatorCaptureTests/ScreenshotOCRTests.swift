@@ -66,4 +66,25 @@ struct ScreenshotOCRTests {
         #expect(text == "Hello 世界")
         #expect(await recognizer.levels() == [.fast])
     }
+
+    @Test
+    func readingOrderIsStrictWeakOrderAcrossDenseLines() {
+        let items = (0..<30).map { idx in
+            let row = idx / 5
+            let col = idx % 5
+            return VisionTextObservation(
+                text: "r\(row)c\(col)",
+                boundingBox: CGRect(
+                    x: 0.1 + Double(4 - col) * 0.15,
+                    y: 0.8 - Double(row) * 0.1 - Double(col % 2) * 0.005,
+                    width: 0.1,
+                    height: 0.03
+                ),
+                confidence: 0.95
+            )
+        }
+        let ordered = ScreenshotOCRAssembler.readingOrder(items)
+        #expect(ordered.count == 30)
+        #expect(ordered.prefix(5).map(\.text) == ["r0c4", "r0c3", "r0c2", "r0c1", "r0c0"])
+    }
 }

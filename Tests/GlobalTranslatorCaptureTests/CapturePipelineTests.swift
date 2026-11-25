@@ -409,6 +409,53 @@ struct CapturePipelineTests {
     }
 
     @Test
+    func cachedSnapshotReleasesPreviousImageAndBacksOffRepeatedAXUnavailable() async throws {
+        weak var weakFirstImage: CGImage?
+        let descriptor = testWindow(revision: 1)
+        let axCollector = CountingUnavailableAXCollector()
+        let secondImage = try #require(makeImage(width: 64, height: 32))
+        let screenshot = SequencedImageScreenshotProvider(images: [
+            try #require(makeImage(width: 64, height: 32)),
+            secondImage
+        ])
+        weakFirstImage = screenshot.peekFirstImage()
+        let pipeline = CapturePipeline(
+            translatedBundleIdentifiers: ["com.example.foreign"],
+            permissions: FakePermissionController(snapshot: .allGranted),
+            accessibility: axCollector,
+            screenshot: screenshot,
+            ocr: FakeOCRService(regions: [
+                VisionTextObservation(text: "cached", boundingBox: CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.2), confidence: 0.9)
+            ])
+        )
+        _ = try await pipeline.capture(descriptor)
+        screenshot.dropFirstReference()
+        let second = try await pipeline.capture(testWindow(revision: 2))
+        #expect(second.ocrSkipped)
+        #expect(axCollector.calls == 1)
+        #expect(weakFirstImage == nil || second.capturedImage === secondImage)
+    }
+
+    @Test
+    func visualSampleHistoryObserveSwappingTriggersOnThreeDifferences() {
+        var history = VisualSampleHistory()
+        var first = [UInt16](repeating: 1, count: 16)
+        var second = [UInt16](repeating: 1, count: 16)
+        second[0] = 2
+        second[1] = 2
+        let firstChanged = history.observeSwapping(&first)
+        let secondChanged = history.observeSwapping(&second)
+        #expect(!firstChanged)
+        #expect(!secondChanged)
+        var third = [UInt16](repeating: 1, count: 16)
+        third[0] = 3
+        third[1] = 3
+        third[2] = 3
+        let thirdChanged = history.observeSwapping(&third)
+        #expect(thirdChanged)
+    }
+
+    @Test
     func cancellationAfterAccessibilityAwaitPreventsOCRWork() async {
         let screenshot = BlockingScreenshotProvider()
         let ocr = FakeOCRService(regions: [])
@@ -527,5 +574,34 @@ private final class BlockingScreenshotProvider: ScreenCaptureProviding, @uncheck
         callCount += 1
         try await Task.sleep(nanoseconds: .max)
         throw CaptureError.captureFailed
+    }
+}
+
+private final class CountingUnavailableAXCollector: AccessibilityCollecting, @unchecked Sendable {
+    private(set) var calls = 0
+    func collectResult(from descriptor: ActiveWindowDescriptor) async -> AccessibilityCollectionResult {
+        calls += 1
+        return .unavailable(.accessibilityUnavailable)
+    }
+}
+
+private final class SequencedImageScreenshotProvider: ScreenCaptureProviding, @unchecked Sendable {
+    private var images: [CGImage?]
+    private var index = 0
+
+    init(images: [CGImage]) {
+        self.images = images.map { Optional($0) }
+    }
+
+    func peekFirstImage() -> CGImage? { images.first ?? nil }
+    func dropFirstReference() {
+        if !images.isEmpty { images[0] = nil }
+    }
+
+    func capture(window: ActiveWindowDescriptor) async throws -> CGImage {
+        let current = images[min(index, images.count - 1)]
+        index += 1
+        guard let current else { throw CaptureError.captureFailed }
+        return current
     }
 }

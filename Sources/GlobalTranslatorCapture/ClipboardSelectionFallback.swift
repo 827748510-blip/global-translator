@@ -125,7 +125,7 @@ public struct RestoringClipboardSelectionFallback: ClipboardSelectionFallingBack
     /// the pasteboard later; if the wait aborts early, the restore runs first
     /// and the late copy overwrites it, leaving the user's clipboard holding
     /// the selected text. Cancellation only decides the return value.
-    private let wait: @Sendable () async -> Void
+    private let wait: (@Sendable () async -> Void)?
 
     public init(
         pasteboard: any PasteboardSnapshotting = SystemPasteboardAccess(),
@@ -135,15 +135,7 @@ public struct RestoringClipboardSelectionFallback: ClipboardSelectionFallingBack
         frontmostPIDProvider: @escaping @MainActor @Sendable () -> Int32? = {
             NSWorkspace.shared.frontmostApplication?.processIdentifier
         },
-        wait: @escaping @Sendable () async -> Void = {
-            await withCheckedContinuation { continuation in
-                DispatchQueue.main.asyncAfter(
-                    deadline: .now() + .milliseconds(Self.waitIntervalMilliseconds)
-                ) {
-                    continuation.resume()
-                }
-            }
-        }
+        wait: (@Sendable () async -> Void)? = nil
     ) {
         self.pasteboard = pasteboard
         self.keystroke = keystroke
@@ -171,15 +163,25 @@ public struct RestoringClipboardSelectionFallback: ClipboardSelectionFallingBack
     }
 
     private func borrowAndRestore() async -> String? {
-        guard !pasteboard.hasSensitiveContent else { return nil }
         let backup = pasteboard.capture()
         guard backup != .incomplete else { return nil }
         let before = pasteboard.changeCount
         keystroke.issueCopyKeystroke()
         var changed = pasteboard.changeCount != before
         if !changed {
-            for _ in 0..<Self.maximumWaitAttempts {
-                await wait()
+            let maxAttempts = wait != nil ? Self.maximumWaitAttempts : 14
+            for attempt in 0..<maxAttempts {
+                if let wait {
+                    await wait()
+                } else {
+                    let delayMs: Int
+                    switch attempt {
+                    case 0..<4: delayMs = 5
+                    case 4..<8: delayMs = 10
+                    default: delayMs = 20
+                    }
+                    await Self.sleepMilliseconds(delayMs)
+                }
                 if pasteboard.changeCount != before {
                     changed = true
                     break
@@ -205,9 +207,19 @@ public struct RestoringClipboardSelectionFallback: ClipboardSelectionFallingBack
         guard changed, stillAllowed, let copied, !copied.isEmpty else { return nil }
         return copied
     }
+
+    private nonisolated static func sleepMilliseconds(_ milliseconds: Int) async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(milliseconds)) {
+                continuation.resume()
+            }
+        }
+    }
 }
 
 public struct SystemPasteboardAccess: PasteboardSnapshotting, @unchecked Sendable {
+    public static let defaultMaximumBackupBytes = 16 * 1024 * 1024
+
     public static let sensitivePasteboardTypes: Set<String> = [
         "org.nspasteboard.ConcealedType",
         "org.nspasteboard.TransientType",
@@ -215,7 +227,11 @@ public struct SystemPasteboardAccess: PasteboardSnapshotting, @unchecked Sendabl
         "com.agilebits.onepassword"
     ]
 
-    public init() {}
+    public let maximumBackupBytes: Int
+
+    public init(maximumBackupBytes: Int = defaultMaximumBackupBytes) {
+        self.maximumBackupBytes = max(0, maximumBackupBytes)
+    }
 
     public var changeCount: Int { NSPasteboard.general.changeCount }
 
@@ -236,15 +252,23 @@ public struct SystemPasteboardAccess: PasteboardSnapshotting, @unchecked Sendabl
     }
 
     public func capture() -> PasteboardCapture {
-        guard !hasSensitiveContent else { return .incomplete }
         guard let items = NSPasteboard.general.pasteboardItems else { return .empty }
         if items.isEmpty { return .empty }
         var snapshots: [PasteboardItemSnapshot] = []
         snapshots.reserveCapacity(items.count)
+        var totalBytes = 0
         for item in items {
+            for type in item.types where Self.sensitivePasteboardTypes.contains(type.rawValue) {
+                return .incomplete
+            }
             var dataByType: [String: Data] = [:]
+            dataByType.reserveCapacity(item.types.count)
             for type in item.types {
                 guard let data = item.data(forType: type) else {
+                    return .incomplete
+                }
+                totalBytes += data.count
+                guard totalBytes <= maximumBackupBytes else {
                     return .incomplete
                 }
                 dataByType[type.rawValue] = data

@@ -53,11 +53,20 @@ public final class ScreenCaptureKitWindowCapturer: ScreenCaptureProviding, @unch
         }
         let content: SCShareableContent
         do {
-            content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
         } catch {
             throw CaptureError.captureFailed
         }
-        guard let candidate = content.windows.first(where: { matches($0, descriptor: window) }) else {
+        guard let primaryDisplayFrame = await MainActor.run(body: { NSScreen.screens.first?.frame }),
+              let candidate = content.windows.first(where: {
+                  Self.matches(
+                      candidateProcessID: Int32($0.owningApplication?.processID ?? -1),
+                      candidateWindowID: $0.windowID,
+                      candidateFrame: $0.frame,
+                      descriptor: window,
+                      primaryDisplayFrame: primaryDisplayFrame
+                  )
+              }) else {
             throw CaptureError.unsupported
         }
         let filter = SCContentFilter(desktopIndependentWindow: candidate)
@@ -71,17 +80,6 @@ public final class ScreenCaptureKitWindowCapturer: ScreenCaptureProviding, @unch
         configuration.showsCursor = false
         let image = try await captureImage(filter: filter, configuration: configuration)
         return CGImageUtilities.downsample(image, maximumDimension: maximumDimension) ?? image
-    }
-
-    private func matches(_ candidate: SCWindow, descriptor: ActiveWindowDescriptor) -> Bool {
-        guard let primaryDisplayFrame = NSScreen.screens.first?.frame else { return false }
-        return Self.matches(
-            candidateProcessID: Int32(candidate.owningApplication?.processID ?? -1),
-            candidateWindowID: candidate.windowID,
-            candidateFrame: candidate.frame,
-            descriptor: descriptor,
-            primaryDisplayFrame: primaryDisplayFrame
-        )
     }
 
     private func captureImage(

@@ -1,3 +1,4 @@
+import Accelerate
 import Darwin
 import Foundation
 
@@ -9,6 +10,15 @@ public enum AudioPCM {
     public static func int16Array(from data: Data) -> [Int16] {
         guard data.count >= 2 else { return [] }
         let count = data.count / 2
+        #if _endian(little)
+        return data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return [] }
+            return [Int16](unsafeUninitializedCapacity: count) { dest, initializedCount in
+                memcpy(dest.baseAddress!, base, count * MemoryLayout<Int16>.size)
+                initializedCount = count
+            }
+        }
+        #else
         return data.withUnsafeBytes { raw in
             var samples = [Int16](repeating: 0, count: count)
             for index in 0..<count {
@@ -18,49 +28,92 @@ public enum AudioPCM {
             }
             return samples
         }
+        #endif
     }
 
     public static func data(from samples: [Int16]) -> Data {
+        guard !samples.isEmpty else { return Data() }
+        #if _endian(little)
+        return samples.withUnsafeBytes { Data($0) }
+        #else
         var data = Data(capacity: samples.count * 2)
         for sample in samples {
             var le = UInt16(bitPattern: sample).littleEndian
             withUnsafeBytes(of: &le) { data.append(contentsOf: $0) }
         }
         return data
+        #endif
     }
 
     public static func mixToMonoInt16(floatSamples: [Float], channels: Int) -> [Int16] {
         let channelCount = max(channels, 1)
         guard !floatSamples.isEmpty else { return [] }
         if channelCount == 1 {
-            return floatSamples.map { clampToInt16($0) }
+            return floatSamples.withUnsafeBufferPointer { floatBufferToInt16($0) }
         }
         let frames = floatSamples.count / channelCount
-        var mono = [Int16]()
-        mono.reserveCapacity(frames)
-        for frame in 0..<frames {
-            var sum: Float = 0
-            for channel in 0..<channelCount {
-                sum += floatSamples[frame * channelCount + channel]
+        guard frames > 0 else { return [] }
+        var monoFloats = [Float](repeating: 0, count: frames)
+        let scale = 1.0 / Float(channelCount)
+        floatSamples.withUnsafeBufferPointer { src in
+            guard let base = src.baseAddress else { return }
+            monoFloats.withUnsafeMutableBufferPointer { dst in
+                guard let dstBase = dst.baseAddress else { return }
+                if channelCount == 2 {
+                    vDSP_vadd(base, 2, base.advanced(by: 1), 2, dstBase, 1, vDSP_Length(frames))
+                } else {
+                    for ch in 0..<channelCount {
+                        vDSP_vadd(base.advanced(by: ch), vDSP_Stride(channelCount), dstBase, 1, dstBase, 1, vDSP_Length(frames))
+                    }
+                }
+                var factor = scale
+                vDSP_vsmul(dstBase, 1, &factor, dstBase, 1, vDSP_Length(frames))
             }
-            mono.append(clampToInt16(sum / Float(channelCount)))
         }
-        return mono
+        return monoFloats.withUnsafeBufferPointer { floatBufferToInt16($0) }
     }
 
     public static func mixPlanarToMonoInt16(channels: [[Float]]) -> [Int16] {
         guard let first = channels.first, !first.isEmpty else { return [] }
         let frames = first.count
-        var mono = [Int16]()
-        mono.reserveCapacity(frames)
-        for frame in 0..<frames {
-            var sum: Float = 0
-            for channel in channels {
-                if frame < channel.count { sum += channel[frame] }
-            }
-            mono.append(clampToInt16(sum / Float(max(channels.count, 1))))
+        if channels.count == 1 {
+            return first.withUnsafeBufferPointer { floatBufferToInt16($0) }
         }
-        return mono
+        var monoFloats = [Float](repeating: 0, count: frames)
+        monoFloats.withUnsafeMutableBufferPointer { dst in
+            guard let dstBase = dst.baseAddress else { return }
+            for channel in channels {
+                let count = min(frames, channel.count)
+                guard count > 0 else { continue }
+                channel.withUnsafeBufferPointer { src in
+                    guard let base = src.baseAddress else { return }
+                    vDSP_vadd(base, 1, dstBase, 1, dstBase, 1, vDSP_Length(count))
+                }
+            }
+            var factor = 1.0 / Float(max(channels.count, 1))
+            vDSP_vsmul(dstBase, 1, &factor, dstBase, 1, vDSP_Length(frames))
+        }
+        return monoFloats.withUnsafeBufferPointer { floatBufferToInt16($0) }
+    }
+
+    private static func floatBufferToInt16(_ buffer: UnsafeBufferPointer<Float>) -> [Int16] {
+        guard let base = buffer.baseAddress, !buffer.isEmpty else { return [] }
+        let count = buffer.count
+        var clipped = [Float](repeating: 0, count: count)
+        var low: Float = -1
+        var high: Float = 1
+        var scale: Float = 32767
+        clipped.withUnsafeMutableBufferPointer { dst in
+            guard let dstBase = dst.baseAddress else { return }
+            vDSP_vclip(base, 1, &low, &high, dstBase, 1, vDSP_Length(count))
+            vDSP_vsmul(dstBase, 1, &scale, dstBase, 1, vDSP_Length(count))
+        }
+        return [Int16](unsafeUninitializedCapacity: count) { dest, initializedCount in
+            for i in 0..<count {
+                dest[i] = Int16(clipped[i].rounded())
+            }
+            initializedCount = count
+        }
     }
 
     public static func resampleLinear(samples: [Int16], fromRate: Int, toRate: Int) -> [Int16] {
@@ -83,12 +136,13 @@ public enum AudioPCM {
 
     public static func rms(_ samples: [Int16]) -> Double {
         guard !samples.isEmpty else { return 0 }
-        var sum = 0.0
-        for sample in samples {
-            let value = Double(sample) / 32768.0
-            sum += value * value
+        var floats = [Float](repeating: 0, count: samples.count)
+        samples.withUnsafeBufferPointer { src in
+            vDSP_vflt16(src.baseAddress!, 1, &floats, 1, vDSP_Length(samples.count))
         }
-        return sqrt(sum / Double(samples.count))
+        var sumSq: Float = 0
+        vDSP_svesq(floats, 1, &sumSq, vDSP_Length(samples.count))
+        return sqrt(Double(sumSq) / Double(samples.count)) / 32768.0
     }
 
     public static func isSilent(_ samples: [Int16], threshold: Double = 0.01) -> Bool {
@@ -96,11 +150,16 @@ public enum AudioPCM {
     }
 
     public static func wavData(pcm16Mono: [Int16], sampleRate: Int = whisperSampleRate) -> Data {
-        let clampedRate = max(1, min(sampleRate, 384_000))
         let maxSamples = (Int(UInt32.max) - 36) / 2
         let slice = pcm16Mono.count > maxSamples ? Array(pcm16Mono.prefix(maxSamples)) : pcm16Mono
-        let dataSize = slice.count * 2
-        var data = Data(capacity: 44 + dataSize)
+        return wavData(pcm16MonoData: data(from: slice), sampleRate: sampleRate)
+    }
+
+    public static func wavData(pcm16MonoData: Data, sampleRate: Int = whisperSampleRate) -> Data {
+        let clampedRate = max(1, min(sampleRate, 384_000))
+        let maxDataBytes = Int(UInt32.max) - 36
+        let usableBytes = min((pcm16MonoData.count / 2) * 2, maxDataBytes)
+        var data = Data(capacity: 44 + usableBytes)
         func ascii(_ value: String) { data.append(contentsOf: value.utf8) }
         func u16(_ value: UInt16) {
             var le = value.littleEndian
@@ -111,7 +170,7 @@ public enum AudioPCM {
             withUnsafeBytes(of: &le) { data.append(contentsOf: $0) }
         }
         ascii("RIFF")
-        u32(UInt32(36 + dataSize))
+        u32(UInt32(36 + usableBytes))
         ascii("WAVE")
         ascii("fmt ")
         u32(16)
@@ -122,8 +181,12 @@ public enum AudioPCM {
         u16(2)
         u16(16)
         ascii("data")
-        u32(UInt32(dataSize))
-        data.append(self.data(from: slice))
+        u32(UInt32(usableBytes))
+        if usableBytes == pcm16MonoData.count {
+            data.append(pcm16MonoData)
+        } else if usableBytes > 0 {
+            data.append(pcm16MonoData.prefix(usableBytes))
+        }
         return data
     }
 

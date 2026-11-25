@@ -5,10 +5,31 @@ import Foundation
 @MainActor
 extension ActiveWindowMonitor {
     func screenCaptureDescriptor(for pid: Int32, bundleIdentifier: String, invalidatesOverlay: Bool) -> ActiveWindowDescriptor? {
+        screenCaptureDescriptor(
+            for: pid,
+            bundleIdentifier: bundleIdentifier,
+            invalidatesOverlay: invalidatesOverlay,
+            primaryDisplayFrame: NSScreen.screens.first?.frame
+        )
+    }
+
+    nonisolated func screenCaptureDescriptor(
+        for pid: Int32,
+        bundleIdentifier: String,
+        invalidatesOverlay: Bool,
+        primaryDisplayFrame: CGRect?
+    ) -> ActiveWindowDescriptor? {
         do { try permissions.snapshot.validateCapture(source: .visionOCR) } catch { return nil }
-        guard let primaryFrame = NSScreen.screens.first?.frame,
+        guard let primaryDisplayFrame,
               let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
-        return windowListDescriptor(windows, pid: pid, bundleIdentifier: bundleIdentifier, invalidatesOverlay: invalidatesOverlay, primaryDisplayFrame: primaryFrame)
+        return Self.windowListDescriptor(
+            windows,
+            pid: pid,
+            bundleIdentifier: bundleIdentifier,
+            invalidatesOverlay: invalidatesOverlay,
+            primaryDisplayFrame: primaryDisplayFrame,
+            permissions: permissions
+        )
     }
 
     func windowListDescriptor(
@@ -17,6 +38,24 @@ extension ActiveWindowMonitor {
         bundleIdentifier: String,
         invalidatesOverlay: Bool,
         primaryDisplayFrame: CGRect
+    ) -> ActiveWindowDescriptor? {
+        Self.windowListDescriptor(
+            windows,
+            pid: pid,
+            bundleIdentifier: bundleIdentifier,
+            invalidatesOverlay: invalidatesOverlay,
+            primaryDisplayFrame: primaryDisplayFrame,
+            permissions: permissions
+        )
+    }
+
+    private nonisolated static func windowListDescriptor(
+        _ windows: [[String: Any]],
+        pid: Int32,
+        bundleIdentifier: String,
+        invalidatesOverlay: Bool,
+        primaryDisplayFrame: CGRect,
+        permissions: any PermissionControlling
     ) -> ActiveWindowDescriptor? {
         do { try permissions.snapshot.validateCapture(source: .visionOCR) } catch { return nil }
         for info in windows {

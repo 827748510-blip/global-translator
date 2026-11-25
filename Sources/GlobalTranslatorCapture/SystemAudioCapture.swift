@@ -122,8 +122,8 @@ public final class ScreenCaptureKitSystemAudioCapturer: NSObject, SystemAudioCap
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
         configuration.showsCursor = false
         configuration.queueDepth = 8
-        configuration.sampleRate = 48_000
-        configuration.channelCount = 2
+        configuration.sampleRate = AudioPCM.whisperSampleRate
+        configuration.channelCount = 1
         if #available(macOS 15.0, *) {
             configuration.captureMicrophone = false
         }
