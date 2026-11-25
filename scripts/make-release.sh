@@ -30,8 +30,19 @@ codesign --verify --strict "$app"
 # codesign, which `set -o pipefail` would surface as exit 141.
 codesign_output=$(codesign -dv --verbose=4 "$app" 2>&1 || true)
 authority=$(printf '%s\n' "$codesign_output" | awk -F= '/^Authority=/{value=$2} END{print value}')
+allow_adhoc="${ALLOW_ADHOC:-0}"
+if ! printf '%s\n' "$codesign_output" | grep -q 'flags=.*runtime'; then
+    if [[ "$allow_adhoc" != "1" ]]; then
+        echo "错误：应用未启用硬化运行时 (--options runtime)，拒绝打包对外发行。请重新运行 scripts/package-app.sh。" >&2
+        exit 1
+    fi
+fi
 if [[ -z "$authority" ]] && printf '%s\n' "$codesign_output" | grep -q '^Signature=adhoc$'; then
-    authority="adhoc (-)"
+    if [[ "$allow_adhoc" != "1" ]]; then
+        echo "错误：检测到无身份的 ad-hoc (-) 签名。正式发行请传入有效签名证书（例如 CODESIGN_IDENTITY=\"Developer ID Application: ...\"），仅限本地测试可显式设置 ALLOW_ADHOC=1。" >&2
+        exit 1
+    fi
+    authority="adhoc (-) [仅限本地测试]"
 fi
 [[ -n "$authority" ]] || { echo "错误：产物没有签名身份" >&2; exit 1; }
 
@@ -49,7 +60,7 @@ cp "$project_dir/README.md" "$stage/README.md"
 cat > "$stage/安装说明.txt" <<'GUIDE'
 安装
 1. 把「Global Translator.app」拖入「应用程序」（或 ~/Applications）文件夹。
-2. 首次打开请右键点击 App → 打开；若未公证包被系统拦截，可在终端对应用路径执行 xattr -cr 清除隔离属性后再打开。
+2. 首次打开建议通过正式 Developer ID 签名与 Apple 公证校验后再运行；若为本地自签名开发测试包，请按住 Control 右键点击 App → 打开并在系统安全提示中确认，切勿随意对来历不明的应用清除系统隔离属性。
 3. 系统设置 → 隐私与安全性：为「全局翻译」开启辅助功能与屏幕录制权限。
 4. 打开后在菜单栏或「全局翻译」菜单里进入设置，选择翻译后端：
    - 本地模型：需要本机运行 Ollama（默认 http://127.0.0.1:11434/v1）。

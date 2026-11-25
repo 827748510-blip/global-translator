@@ -196,11 +196,18 @@ public struct CaptureSnapshot: @unchecked Sendable {
     public let window: CapturedWindow
     public let ocrSkipped: Bool
     public let sourceLanguage: TranslationSourceLanguage?
+    public let cacheScope: String?
 
-    public init(window: CapturedWindow, ocrSkipped: Bool = false, sourceLanguage: TranslationSourceLanguage? = nil) {
+    public init(
+        window: CapturedWindow,
+        ocrSkipped: Bool = false,
+        sourceLanguage: TranslationSourceLanguage? = nil,
+        cacheScope: String? = nil
+    ) {
         self.window = window
         self.ocrSkipped = ocrSkipped
         self.sourceLanguage = sourceLanguage
+        self.cacheScope = cacheScope
     }
 
     public var descriptor: ActiveWindowDescriptor { window.descriptor }

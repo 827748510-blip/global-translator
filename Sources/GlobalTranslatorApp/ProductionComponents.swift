@@ -15,10 +15,12 @@ extension ApplicationControllerComponents {
         } else {
             logger = NullAppRuntimeLogger()
         }
+        let permissions = SystemPermissionController()
+        let clipboardCoordinator = ClipboardBorrowCoordinator.shared
         return ApplicationControllerComponents(
             configurationStore: ConfigStore(url: paths.configURL),
             credentialStore: MacOSKeychainStore(),
-            permissionController: SystemPermissionController(),
+            permissionController: permissions,
             backendFactory: LiveTranslationBackendFactory(
                 localTransport: URLSessionHTTPTransport(requestTimeout: 90, resourceTimeout: 180)
             ),
@@ -31,20 +33,36 @@ extension ApplicationControllerComponents {
             },
             capturePipelineFactory: { allowed in
                 CapturePipeline(
-                    ownBundleIdentifier: Bundle.main.bundleIdentifier,
-                    translatedBundleIdentifiers: allowed
+                    translatedBundleIdentifiers: allowed,
+                    permissions: permissions,
+                    accessibility: AccessibilityTextCollector(translatedBundleIdentifiers: allowed),
+                    screenshot: ScreenCaptureKitWindowCapturer(),
+                    ocr: VisionOCRService(),
+                    ownBundleIdentifier: Bundle.main.bundleIdentifier
                 )
             },
             statusItemFactory: { viewModel in StatusItemController(viewModel: viewModel) },
             overlayFactory: { OverlayPanelController() },
-            selectedTextReaderFactory: { AXSelectedTextReader() },
-            selectionPopoverFactory: { SelectionTranslatePanelController() },
+            selectedTextReaderFactory: {
+                AXSelectedTextReader(
+                    clipboard: RestoringClipboardSelectionFallback(
+                        permissions: permissions,
+                        coordinator: clipboardCoordinator
+                    ),
+                    permissions: permissions
+                )
+            },
+            selectionPopoverFactory: {
+                SelectionTranslatePanelController(clipboardCoordinator: clipboardCoordinator)
+            },
             selectionPointerMonitorFactory: { SystemSelectionPointerMonitor() },
             regionSelectorFactory: { RegionSelectionOverlayController() },
-            regionCapturerFactory: { ScreenCaptureKitRegionCapturer() },
+            regionCapturerFactory: { ScreenCaptureKitRegionCapturer(permissions: permissions) },
             regionOCRFactory: { RegionVisionOCRService() },
             hotkeyRegistrarFactory: { CarbonHotkeyRegistrar() },
-            screenshotPopoverFactory: { SelectionTranslatePanelController() },
+            screenshotPopoverFactory: {
+                SelectionTranslatePanelController(clipboardCoordinator: clipboardCoordinator)
+            },
             coordinatorFactory: { backends, eventSink in
                 TranslationCoordinator(backends: backends, eventSink: eventSink)
             },

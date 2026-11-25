@@ -174,6 +174,18 @@ struct ScreenshotTranslateCoreTests {
     }
 
     @Test
+    func wideShortBannerFullDisplayFallbackTriggersOnHeightMismatch() {
+        let screen = CGRect(x: 0, y: 0, width: 1_000, height: 800)
+        let wideBanner = CGRect(x: 50, y: 100, width: 800, height: 80)
+        #expect(RegionCaptureGeometry.looksLikeFullDisplayBuffer(
+            imageSize: CGSize(width: 2_000, height: 1_600),
+            selection: wideBanner,
+            screenFrame: screen,
+            scale: 2
+        ))
+    }
+
+    @Test
     func imageCropRectMapsSelectionOntoRetinaFullBuffer() {
         let screen = CGRect(x: 0, y: 0, width: 1_000, height: 800)
         let selection = CGRect(x: 100, y: 200, width: 80, height: 40)

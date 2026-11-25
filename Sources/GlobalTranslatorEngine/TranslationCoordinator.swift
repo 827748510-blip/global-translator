@@ -166,6 +166,8 @@ public actor TranslationCoordinator {
         let startedAt = clock.now()
 
         let sourceLanguage = snapshot.source == .pageText ? snapshot.sourceLanguage : nil
+        let copiedPolicyTag = Self.copiedSourcePolicy(for: snapshot) == .keep ? "keep" : "reject"
+        let effectiveCacheScope = [snapshot.cacheScope, copiedPolicyTag].compactMap { $0 }.joined(separator: "|")
         let plan = batcher.plan(regions: snapshot.regions, requireTranslatable: !includeIneligibleText, sourceLanguage: sourceLanguage)
         var textByRegionID: [UUID: String] = [:]
         var pendingEntries: [TranslationBatchEntry] = []
@@ -177,7 +179,8 @@ public actor TranslationCoordinator {
                 backend: kind,
                 model: model,
                 targetLanguage: effectiveTargetLanguage,
-                sourceLanguage: sourceLanguage
+                sourceLanguage: sourceLanguage,
+                cacheScope: effectiveCacheScope
             )
             if let cached = await cache.value(for: key) {
                 try ensureCurrent(revision: revision, generation: generation)
@@ -281,7 +284,8 @@ public actor TranslationCoordinator {
                     backend: kind,
                     model: model,
                     targetLanguage: effectiveTargetLanguage,
-                    sourceLanguage: sourceLanguage
+                    sourceLanguage: sourceLanguage,
+                    cacheScope: effectiveCacheScope
                 )
                 try ensureCurrent(revision: revision, generation: generation)
                 await cache.insert(translated, for: key)
@@ -334,6 +338,15 @@ public actor TranslationCoordinator {
 
     private func validateCapturePermission(_ snapshot: CaptureSnapshot) throws {
         do {
+            if snapshot.descriptor.bundleIdentifier == "selection.translate" {
+                let currentPermissions = permissions.snapshot
+                if currentPermissions.secureInputEnabled {
+                    throw CaptureError.protected(.secureInput)
+                }
+                if currentPermissions.sessionLocked {
+                    throw CaptureError.protected(.sessionLocked)
+                }
+            }
             try permissions.snapshot.validateCapture(source: snapshot.source)
         } catch let error as CaptureError {
             if case .protected = error {

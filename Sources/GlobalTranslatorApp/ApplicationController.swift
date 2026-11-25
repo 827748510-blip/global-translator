@@ -281,7 +281,10 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             isCloudKeyConfigured: { [weak self] in
                 self?.configuration.deepSeekAPIKeyConfigured == true
             },
-            ownBundleIdentifiers: own
+            ownBundleIdentifiers: own,
+            shouldSuppressPointer: { [weak self] in
+                self?.screenshotTranslate?.isSelectingRegion == true
+            }
         )
         selectionTranslate = controller
         controller.setOptimizeMode(configuration.promptOptimizeMode)
@@ -354,7 +357,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
                     extraModelCandidates: support.models
                 )
             },
-            capturer: ScreenCaptureKitSystemAudioCapturer(),
+            capturer: ScreenCaptureKitSystemAudioCapturer(permissions: components.permissionController),
             transcriber: WhisperCppTranscriber(
                 locate: {
                     WhisperCppLocator.locate(
@@ -365,7 +368,16 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
                 scratchDirectory: scratch
             ),
             windowProvider: { [weak self] in
-                await MainActor.run { self?.session?.currentWindow }
+                await MainActor.run {
+                    guard let self,
+                          self.viewModel.isAutomaticTranslationEnabled,
+                          self.configuration.videoTranslateEnabled,
+                          let window = self.session?.currentWindow,
+                          ChromiumBrowserBundles.contains(window.bundleIdentifier) else {
+                        return nil
+                    }
+                    return window
+                }
             },
             onEvent: { [weak self] code, fields in
                 Task { @MainActor in
@@ -451,11 +463,12 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             },
             videoASRSetNeeded: { [weak self] needed in
                 self?.videoASR?.setCaptionsNeeded(needed)
+            },
+            scopedHandler: { [weak self] texts, sourceLanguage, pageOrigin in
+                guard let session = self?.session else { throw ExtensionBridgeError.translatorUnavailable }
+                return try await session.translateBridgeTexts(texts, sourceLanguage: sourceLanguage, pageOrigin: pageOrigin)
             }
-        ) { [weak self] texts, sourceLanguage in
-            guard let session = self?.session else { throw ExtensionBridgeError.translatorUnavailable }
-            return try await session.translateBridgeTexts(texts, sourceLanguage: sourceLanguage)
-        }
+        )
         server.start()
         bridgeServer = server
     }

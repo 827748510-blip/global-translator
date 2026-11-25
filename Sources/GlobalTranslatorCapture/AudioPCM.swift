@@ -10,10 +10,11 @@ public enum AudioPCM {
         guard data.count >= 2 else { return [] }
         let count = data.count / 2
         return data.withUnsafeBytes { raw in
-            let src = raw.bindMemory(to: UInt16.self)
             var samples = [Int16](repeating: 0, count: count)
             for index in 0..<count {
-                samples[index] = Int16(bitPattern: UInt16(littleEndian: src[index]))
+                let offset = index * 2
+                let little = UInt16(raw[offset]) | (UInt16(raw[offset + 1]) << 8)
+                samples[index] = Int16(bitPattern: little)
             }
             return samples
         }
@@ -95,7 +96,10 @@ public enum AudioPCM {
     }
 
     public static func wavData(pcm16Mono: [Int16], sampleRate: Int = whisperSampleRate) -> Data {
-        let dataSize = pcm16Mono.count * 2
+        let clampedRate = max(1, min(sampleRate, 384_000))
+        let maxSamples = (Int(UInt32.max) - 36) / 2
+        let slice = pcm16Mono.count > maxSamples ? Array(pcm16Mono.prefix(maxSamples)) : pcm16Mono
+        let dataSize = slice.count * 2
         var data = Data(capacity: 44 + dataSize)
         func ascii(_ value: String) { data.append(contentsOf: value.utf8) }
         func u16(_ value: UInt16) {
@@ -113,13 +117,13 @@ public enum AudioPCM {
         u32(16)
         u16(1)
         u16(1)
-        u32(UInt32(sampleRate))
-        u32(UInt32(sampleRate * 2))
+        u32(UInt32(clampedRate))
+        u32(UInt32(clampedRate * 2))
         u16(2)
         u16(16)
         ascii("data")
         u32(UInt32(dataSize))
-        data.append(self.data(from: pcm16Mono))
+        data.append(self.data(from: slice))
         return data
     }
 

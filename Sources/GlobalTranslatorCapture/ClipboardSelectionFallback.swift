@@ -24,18 +24,24 @@ public enum PasteboardCapture: Equatable, Sendable {
 public protocol PasteboardSnapshotting: Sendable {
     var changeCount: Int { get }
     var stringValue: String? { get }
+    var hasSensitiveContent: Bool { get }
     func capture() -> PasteboardCapture
     func restore(_ items: [PasteboardItemSnapshot])
+}
+
+public extension PasteboardSnapshotting {
+    var hasSensitiveContent: Bool { false }
 }
 
 public protocol CopyKeystrokeIssuing: Sendable {
     func issueCopyKeystroke()
 }
 
-/// Serializes steal-and-restore windows. Two overlapping reads (fast
-/// consecutive drags) must not let the second call snapshot the first call's
-/// temporary selection text as the "user clipboard".
-private final class ClipboardBorrowGate: @unchecked Sendable {
+/// Coordinates exclusive access to `NSPasteboard.general` across selection
+/// steal-and-restore windows, screenshot copy/auto-copy, and popover Copy.
+public final class ClipboardBorrowCoordinator: @unchecked Sendable {
+    public static let shared = ClipboardBorrowCoordinator()
+
     private struct State {
         var busy = false
         var waiters: [CheckedContinuation<Void, Never>] = []
@@ -43,13 +49,22 @@ private final class ClipboardBorrowGate: @unchecked Sendable {
 
     private let state = OSAllocatedUnfairLock(initialState: State())
 
-    func acquire() async {
-        let takenImmediately: Bool = state.withLock { current in
+    public init() {}
+
+    public var isBorrowing: Bool {
+        state.withLock { $0.busy }
+    }
+
+    public func tryAcquire() -> Bool {
+        state.withLock { current in
             if current.busy { return false }
             current.busy = true
             return true
         }
-        guard !takenImmediately else { return }
+    }
+
+    public func acquire() async {
+        guard !tryAcquire() else { return }
         await withCheckedContinuation { continuation in
             let resumedImmediately: Bool = state.withLock { current in
                 if current.busy {
@@ -63,7 +78,7 @@ private final class ClipboardBorrowGate: @unchecked Sendable {
         }
     }
 
-    func release() {
+    public func release() {
         let next: CheckedContinuation<Void, Never>? = state.withLock { current in
             guard !current.waiters.isEmpty else {
                 current.busy = false
@@ -72,6 +87,15 @@ private final class ClipboardBorrowGate: @unchecked Sendable {
             return current.waiters.removeFirst()
         }
         next?.resume()
+    }
+
+    @MainActor
+    public func withMainActorExclusiveAccess<T>(_ operation: @MainActor () async throws -> T) async rethrows -> T {
+        if !tryAcquire() {
+            await acquire()
+        }
+        defer { release() }
+        return try await operation()
     }
 }
 
@@ -94,16 +118,23 @@ public struct RestoringClipboardSelectionFallback: ClipboardSelectionFallingBack
 
     private let pasteboard: any PasteboardSnapshotting
     private let keystroke: any CopyKeystrokeIssuing
+    private let permissions: any PermissionControlling
+    private let coordinator: ClipboardBorrowCoordinator
+    private let frontmostPIDProvider: @MainActor @Sendable () -> Int32?
     /// Must **ignore cancellation**. Once ⌘C is posted, the target app writes
     /// the pasteboard later; if the wait aborts early, the restore runs first
     /// and the late copy overwrites it, leaving the user's clipboard holding
     /// the selected text. Cancellation only decides the return value.
     private let wait: @Sendable () async -> Void
-    private let gate = ClipboardBorrowGate()
 
     public init(
         pasteboard: any PasteboardSnapshotting = SystemPasteboardAccess(),
         keystroke: any CopyKeystrokeIssuing = HIDCopyKeystrokeIssuer(),
+        permissions: any PermissionControlling = SystemPermissionController(),
+        coordinator: ClipboardBorrowCoordinator = .shared,
+        frontmostPIDProvider: @escaping @MainActor @Sendable () -> Int32? = {
+            NSWorkspace.shared.frontmostApplication?.processIdentifier
+        },
         wait: @escaping @Sendable () async -> Void = {
             await withCheckedContinuation { continuation in
                 DispatchQueue.main.asyncAfter(
@@ -116,22 +147,31 @@ public struct RestoringClipboardSelectionFallback: ClipboardSelectionFallingBack
     ) {
         self.pasteboard = pasteboard
         self.keystroke = keystroke
+        self.permissions = permissions
+        self.coordinator = coordinator
+        self.frontmostPIDProvider = frontmostPIDProvider
         self.wait = wait
     }
 
     public func copySelectedTextRestoringClipboard() async -> String? {
+        await copySelectedTextRestoringClipboard(expectedPID: nil)
+    }
+
+    public func copySelectedTextRestoringClipboard(expectedPID: Int32?) async -> String? {
         guard !Task.isCancelled else { return nil }
-        await gate.acquire()
-        guard !Task.isCancelled else {
-            gate.release()
+        await coordinator.acquire()
+        defer { coordinator.release() }
+        guard !Task.isCancelled else { return nil }
+        let snap = permissions.snapshot
+        guard !snap.secureInputEnabled, !snap.sessionLocked else { return nil }
+        if let expectedPID, frontmostPIDProvider() != expectedPID {
             return nil
         }
-        let result = await borrowAndRestore()
-        gate.release()
-        return result
+        return await borrowAndRestore()
     }
 
     private func borrowAndRestore() async -> String? {
+        guard !pasteboard.hasSensitiveContent else { return nil }
         let backup = pasteboard.capture()
         guard backup != .incomplete else { return nil }
         let before = pasteboard.changeCount
@@ -146,7 +186,12 @@ public struct RestoringClipboardSelectionFallback: ClipboardSelectionFallingBack
                 }
             }
         }
-        let copied = pasteboard.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sensitive = pasteboard.hasSensitiveContent
+        let copied = sensitive ? nil : pasteboard.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stillAllowed: Bool = {
+            let currentPermissions = permissions.snapshot
+            return !currentPermissions.secureInputEnabled && !currentPermissions.sessionLocked
+        }()
         // Restore after the target app had its full window: a cancelled settle
         // must never leave the user's clipboard holding the selection text.
         switch backup {
@@ -157,12 +202,19 @@ public struct RestoringClipboardSelectionFallback: ClipboardSelectionFallingBack
         case .incomplete:
             break
         }
-        guard changed, let copied, !copied.isEmpty else { return nil }
+        guard changed, stillAllowed, let copied, !copied.isEmpty else { return nil }
         return copied
     }
 }
 
 public struct SystemPasteboardAccess: PasteboardSnapshotting, @unchecked Sendable {
+    public static let sensitivePasteboardTypes: Set<String> = [
+        "org.nspasteboard.ConcealedType",
+        "org.nspasteboard.TransientType",
+        "org.nspasteboard.AutoGeneratedType",
+        "com.agilebits.onepassword"
+    ]
+
     public init() {}
 
     public var changeCount: Int { NSPasteboard.general.changeCount }
@@ -171,7 +223,20 @@ public struct SystemPasteboardAccess: PasteboardSnapshotting, @unchecked Sendabl
         NSPasteboard.general.string(forType: .string)
     }
 
+    public var hasSensitiveContent: Bool {
+        guard let items = NSPasteboard.general.pasteboardItems else { return false }
+        for item in items {
+            for type in item.types {
+                if Self.sensitivePasteboardTypes.contains(type.rawValue) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
     public func capture() -> PasteboardCapture {
+        guard !hasSensitiveContent else { return .incomplete }
         guard let items = NSPasteboard.general.pasteboardItems else { return .empty }
         if items.isEmpty { return .empty }
         var snapshots: [PasteboardItemSnapshot] = []

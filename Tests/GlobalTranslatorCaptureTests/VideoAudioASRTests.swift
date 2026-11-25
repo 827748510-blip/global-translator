@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Testing
 @testable import GlobalTranslatorCapture
 import GlobalTranslatorCore
@@ -133,6 +134,15 @@ struct VideoAudioASRControllerTests {
             locate: { WhisperCppLocator(binaryURL: URL(fileURLWithPath: "/bin/echo"), modelURL: URL(fileURLWithPath: "/tmp/model.bin")) },
             capturer: capturer,
             transcriber: whisper,
+            windowProvider: {
+                ActiveWindowDescriptor(
+                    pid: 42,
+                    bundleIdentifier: "com.google.Chrome",
+                    windowID: 1,
+                    frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+                    revision: 1
+                )
+            },
             onEvent: { code, fields in events.append(code, fields) }
         )
         controller.setVideoTranslateEnabled(true)
@@ -200,13 +210,82 @@ struct VideoAudioASRControllerTests {
             permissions: FakePermissionController(snapshot: .allGranted),
             locate: { WhisperCppLocator(binaryURL: URL(fileURLWithPath: "/bin/echo"), modelURL: URL(fileURLWithPath: "/tmp/model.bin")) },
             capturer: capturer,
-            transcriber: MockWhisper(available: true, text: "Hello")
+            transcriber: MockWhisper(available: true, text: "Hello"),
+            windowProvider: {
+                ActiveWindowDescriptor(
+                    pid: 42,
+                    bundleIdentifier: "com.google.Chrome",
+                    windowID: 1,
+                    frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+                    revision: 1
+                )
+            }
         )
         controller.setVideoTranslateEnabled(true)
         controller.setCaptionsNeeded(true)
         try? await Task.sleep(for: .milliseconds(50))
         #expect(controller.snapshot().status == .denied)
         #expect(!controller.snapshot().running)
+    }
+
+    @Test
+    func missingTargetWindowFailsClosedWithoutCapturing() async {
+        let capturer = MockSystemAudioCapturer()
+        let controller = VideoAudioASRController(
+            permissions: FakePermissionController(snapshot: .allGranted),
+            locate: { WhisperCppLocator(binaryURL: URL(fileURLWithPath: "/bin/echo"), modelURL: URL(fileURLWithPath: "/tmp/model.bin")) },
+            capturer: capturer,
+            transcriber: MockWhisper(available: true, text: "Hello"),
+            windowProvider: { nil }
+        )
+        controller.setVideoTranslateEnabled(true)
+        controller.setCaptionsNeeded(true)
+        try? await Task.sleep(for: .milliseconds(60))
+        #expect(capturer.startCount == 0)
+        #expect(!controller.snapshot().running)
+    }
+
+    @Test
+    func sessionLockOrSecureInputStopsRunningASRAndClearsCues() async {
+        let protectedFlag = OSAllocatedUnfairLock(initialState: false)
+        let perms = SystemPermissionController(snapshotProvider: {
+            let blocked = protectedFlag.withLock { $0 }
+            return PermissionSnapshot(
+                accessibilityTrusted: true,
+                screenCaptureAuthorized: true,
+                secureInputEnabled: blocked,
+                sessionLocked: false
+            )
+        })
+        let capturer = MockSystemAudioCapturer()
+        let controller = VideoAudioASRController(
+            permissions: perms,
+            locate: { WhisperCppLocator(binaryURL: URL(fileURLWithPath: "/bin/echo"), modelURL: URL(fileURLWithPath: "/tmp/model.bin")) },
+            capturer: capturer,
+            transcriber: MockWhisper(available: true, text: "Secret speech"),
+            windowProvider: {
+                ActiveWindowDescriptor(
+                    pid: 42,
+                    bundleIdentifier: "com.google.Chrome",
+                    windowID: 1,
+                    frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+                    revision: 1
+                )
+            }
+        )
+        controller.setVideoTranslateEnabled(true)
+        controller.setCaptionsNeeded(true)
+        try? await Task.sleep(for: .milliseconds(60))
+        #expect(controller.snapshot().running)
+        capturer.emit(sineChunk(seconds: 3.2))
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(!controller.snapshot().cues.isEmpty)
+
+        protectedFlag.withLock { $0 = true }
+        let protectedSnap = controller.snapshot()
+        #expect(!protectedSnap.running)
+        #expect(protectedSnap.cues.isEmpty)
+        #expect(capturer.stopCount >= 1)
     }
 }
 

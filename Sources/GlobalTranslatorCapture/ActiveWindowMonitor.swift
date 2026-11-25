@@ -2,8 +2,60 @@ import AppKit
 import ApplicationServices
 import CoreGraphics
 import Foundation
+import os
 
 public typealias ActiveWindowCallback = @MainActor @Sendable (ActiveWindowDescriptor?) -> Void
+
+private struct WorkspaceObserverBox: @unchecked Sendable {
+    let center: NotificationCenter
+    let token: NSObjectProtocol
+}
+
+final class ActiveWindowCleanup: @unchecked Sendable {
+    private struct State: Sendable {
+        var workspace: WorkspaceObserverBox?
+        var axRegistration: AXObserverRegistration?
+    }
+
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    func setWorkspaceObserver(center: NotificationCenter, token: NSObjectProtocol) {
+        let next = WorkspaceObserverBox(center: center, token: token)
+        let old = state.withLock { current -> WorkspaceObserverBox? in
+            let prev = current.workspace
+            current.workspace = next
+            return prev
+        }
+        if let old {
+            old.center.removeObserver(old.token)
+        }
+    }
+
+    func removeWorkspaceObserver() {
+        let old = state.withLock { current -> WorkspaceObserverBox? in
+            let prev = current.workspace
+            current.workspace = nil
+            return prev
+        }
+        if let old {
+            old.center.removeObserver(old.token)
+        }
+    }
+
+    func setAXRegistration(_ registration: AXObserverRegistration?) {
+        let old = state.withLock { current -> AXObserverRegistration? in
+            let prev = current.axRegistration
+            current.axRegistration = registration
+            return prev
+        }
+        old?.invalidate()
+    }
+
+    deinit {
+        removeWorkspaceObserver()
+        setAXRegistration(nil)
+    }
+}
 
 @MainActor
 public final class ActiveWindowMonitor {
@@ -20,8 +72,12 @@ public final class ActiveWindowMonitor {
     var observedApplication: AXUIElement?
     var observedWindow: AXUIElement?
     var observedPID: pid_t?
+    var axRegistration: AXObserverRegistration? {
+        didSet { cleanup.setAXRegistration(axRegistration) }
+    }
     var imageNotificationLabels: [UInt: String] = [:]
     private var workspaceToken: NSObjectProtocol?
+    private let cleanup = ActiveWindowCleanup()
     private var throttleTask: Task<Void, Never>?
     private let intervalNanoseconds: UInt64 = 250_000_000
     private var visualUpdatesEnabled = false
@@ -75,13 +131,15 @@ public final class ActiveWindowMonitor {
     public func start() {
         guard !running else { return }
         running = true
-        workspaceToken = workspaceNotificationCenter.addObserver(
+        let token = workspaceNotificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refreshFromWorkspace() }
         }
+        workspaceToken = token
+        cleanup.setWorkspaceObserver(center: workspaceNotificationCenter, token: token)
         refreshFromWorkspace()
     }
 
@@ -96,6 +154,7 @@ public final class ActiveWindowMonitor {
             workspaceNotificationCenter.removeObserver(token)
             workspaceToken = nil
         }
+        cleanup.removeWorkspaceObserver()
         removeAXObserver()
         pending = nil
     }

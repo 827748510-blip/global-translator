@@ -57,14 +57,21 @@ public struct MacOSKeychainStore: CredentialStoring, Sendable {
         }
         do {
             try write(data, useDataProtection: true)
-        } catch {
-            // A self-signed/ad-hoc app has no data-protection keychain
-            // entitlement; that path returns errSecMissingEntitlement. The
-            // login keychain is still encrypted and app-ACL protected, so use
-            // it as the compatibility path. Make sure a readable stale DP item
-            // cannot shadow the freshly written login-keychain value.
+        } catch let error as CredentialStoreError {
+            guard case .keychainFailure(let status) = error,
+                  isDataProtectionUnavailable(status) else {
+                throw error
+            }
+            // Only fall back to the login keychain when the process lacks the
+            // data-protection entitlement (e.g. local ad-hoc builds); surface
+            // other keychain failures directly instead of silently downgrading.
             try write(data, useDataProtection: false)
-            _ = SecItemDelete(baseQuery(useDataProtection: true) as CFDictionary)
+            let deleteStatus = SecItemDelete(baseQuery(useDataProtection: true) as CFDictionary)
+            guard deleteStatus == errSecSuccess
+                || deleteStatus == errSecItemNotFound
+                || isDataProtectionUnavailable(deleteStatus) else {
+                throw CredentialStoreError.keychainFailure(status: deleteStatus)
+            }
         }
     }
 
@@ -155,6 +162,9 @@ public struct MacOSKeychainStore: CredentialStoring, Sendable {
         var addQuery = query
         addQuery[kSecValueData as String] = data
         addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        if !useDataProtection {
+            addQuery[kSecAttrSynchronizable as String] = false
+        }
         var addStatus = SecItemAdd(addQuery as CFDictionary, nil)
         if addStatus == errSecDuplicateItem, !useDataProtection {
             // The existing login-keychain item may predate the explicit
@@ -191,7 +201,7 @@ public struct MacOSKeychainStore: CredentialStoring, Sendable {
         guard let data = result as? Data, let value = String(data: data, encoding: .utf8) else {
             throw CredentialStoreError.invalidValue
         }
-        return value
+        return try DeepSeekAPIKeyValidator.normalized(value)
     }
 
     private func migrateLegacyItemToDataProtection(_ apiKey: String) {

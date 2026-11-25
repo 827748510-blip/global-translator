@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import os
 import Testing
 @testable import GlobalTranslatorApp
 import GlobalTranslatorCapture
@@ -705,6 +706,42 @@ struct ScreenshotTranslateControllerTests {
         )
         controller.startHotkey()
         #expect(controller.lastHotkeyError == KeyboardShortcutSupport.alreadyInUseCopy)
+    }
+
+    @Test
+    func secureInputAndSessionLockBlockScreenshotCapture() async {
+        let state = OSAllocatedUnfairLock(initialState: (secure: true, locked: false))
+        let perms = SystemPermissionController(snapshotProvider: {
+            let current = state.withLock { $0 }
+            return PermissionSnapshot(
+                accessibilityTrusted: true,
+                screenCaptureAuthorized: true,
+                secureInputEnabled: current.secure,
+                sessionLocked: current.locked
+            )
+        })
+        let selector = FakeRegionSelector()
+        let capturer = FakeRegionCapturer()
+        let popover = FakeSelectionPopover()
+        let controller = ScreenshotTranslateController(
+            selector: selector,
+            capturer: capturer,
+            ocr: FakeRegionOCR(),
+            popover: popover,
+            permissions: perms,
+            logger: RecordingLogger(),
+            registrar: RecordingHotkeyRegistrar(),
+            translator: { nil },
+            backendReadiness: { .ready }
+        )
+        controller.handleHotkey()
+        try? await Task.sleep(for: .milliseconds(40))
+        #expect(!selector.isSelecting)
+        #expect(!popover.isVisible)
+
+        state.withLock { $0 = (secure: false, locked: true) }
+        await controller.completeSelectionForTesting(.completed(CGRect(x: 0, y: 0, width: 100, height: 100)))
+        #expect(!popover.isVisible)
     }
 }
 

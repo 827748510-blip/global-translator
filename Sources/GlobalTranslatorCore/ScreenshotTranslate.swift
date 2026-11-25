@@ -159,13 +159,20 @@ public enum RegionCaptureGeometry {
         screenFrame: CGRect,
         scale: CGFloat
     ) -> Bool {
-        let expectedWidth = displayLocalSourceRect(selection: selection, screenFrame: screenFrame).width
+        let localRect = displayLocalSourceRect(selection: selection, screenFrame: screenFrame)
         let pixelScale = max(scale, 1)
-        guard imageSize.width > 0, expectedWidth > 0, screenFrame.width > 0 else { return false }
-        let expectedPixelWidth = expectedWidth * pixelScale
+        guard imageSize.width > 0, imageSize.height > 0,
+              localRect.width > 0, localRect.height > 0,
+              screenFrame.width > 0, screenFrame.height > 0 else { return false }
+        let expectedPixelWidth = localRect.width * pixelScale
+        let expectedPixelHeight = localRect.height * pixelScale
         let screenPixelWidth = screenFrame.width * pixelScale
-        return imageSize.width > expectedPixelWidth * 1.5
+        let screenPixelHeight = screenFrame.height * pixelScale
+        let widthFull = imageSize.width > expectedPixelWidth * 1.5
             && imageSize.width >= screenPixelWidth * 0.8
+        let heightFull = imageSize.height > expectedPixelHeight * 1.5
+            && imageSize.height >= screenPixelHeight * 0.8
+        return widthFull || heightFull
     }
 
     /// Crop in lower-left image pixels (matches `CGImageUtilities.crop`).

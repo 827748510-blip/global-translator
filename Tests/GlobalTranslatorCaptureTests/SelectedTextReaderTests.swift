@@ -266,7 +266,10 @@ struct SelectedTextReaderTests {
             frontmostApplication: { FrontmostApplicationInfo(pid: 11, bundleIdentifier: "com.google.Chrome") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
-        guard case .snapshot(let snapshot) = await reader.readSelection(mouseLocation: CGPoint(x: 5, y: 5)) else {
+        guard case .snapshot(let snapshot) = await reader.readSelection(
+            mouseLocation: CGPoint(x: 5, y: 5),
+            allowClipboardFallback: true
+        ) else {
             Issue.record("expected clipboard snapshot")
             return
         }
@@ -298,6 +301,41 @@ struct SelectedTextReaderTests {
         #expect(await reader.readSelection(mouseLocation: .zero, allowClipboardFallback: true) == .empty)
         #expect(clipboard.callCount == 0)
         #expect(ax.selectedTextCalls == 0)
+    }
+
+    @Test
+    func positiveRangeWithoutAllowClipboardFallbackNeverSynthesizesCopy() async {
+        let ax = FakeSelectionAXReader(selectedText: "", range: (2, 11), bounds: CGRect(x: 0, y: 0, width: 40, height: 12))
+        let clipboard = RecordingClipboardFallback(text: "secret")
+        let reader = AXSelectedTextReader(
+            attributeReader: ax,
+            clipboard: clipboard,
+            permissions: FakePermissionController(snapshot: .allGranted),
+            frontmostApplication: { FrontmostApplicationInfo(pid: 11, bundleIdentifier: "com.google.Chrome") },
+            primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
+        )
+        #expect(await reader.readSelection(mouseLocation: CGPoint(x: 5, y: 5), allowClipboardFallback: false) == .unavailable)
+        #expect(clipboard.callCount == 0)
+    }
+
+    @Test
+    func sessionLockAndSecureInputBlockSelectionRead() async {
+        let ax = FakeSelectionAXReader(selectedText: "Secret text", range: (0, 11), bounds: CGRect(x: 0, y: 0, width: 40, height: 12))
+        let clipboard = RecordingClipboardFallback(text: "Secret text")
+        let lockedReader = AXSelectedTextReader(
+            attributeReader: ax,
+            clipboard: clipboard,
+            permissions: FakePermissionController(snapshot: PermissionSnapshot(
+                accessibilityTrusted: true,
+                screenCaptureAuthorized: true,
+                secureInputEnabled: false,
+                sessionLocked: true
+            )),
+            frontmostApplication: { FrontmostApplicationInfo(pid: 11, bundleIdentifier: "com.google.Chrome") },
+            primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
+        )
+        #expect(await lockedReader.readSelection(mouseLocation: .zero, allowClipboardFallback: true) == .empty)
+        #expect(clipboard.callCount == 0)
     }
 }
 

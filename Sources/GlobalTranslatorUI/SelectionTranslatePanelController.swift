@@ -1,6 +1,7 @@
 import AppKit
-import SwiftUI
+import GlobalTranslatorCapture
 import GlobalTranslatorCore
+import SwiftUI
 
 /// Borderless floating panel for 滑词翻译. Unlike overlay bubbles this
 /// panel accepts clicks (Copy / Translate / Optimize) and dismisses on Escape
@@ -269,6 +270,7 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     private let visibleFramesProvider: () -> [CGRect]
     private let pasteboardWriter: (String) throws -> Void
     private let copyFeedbackDelay: Duration
+    private let clipboardCoordinator: ClipboardBorrowCoordinator
     private var copyFeedbackTask: Task<Void, Never>?
     private var copyFeedbackGeneration: UInt64 = 0
 
@@ -308,11 +310,13 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
                 throw SelectionCopyError.writeFailed
             }
         },
-        copyFeedbackDelay: Duration = .milliseconds(SelectionTranslateSupport.copyFeedbackMilliseconds)
+        copyFeedbackDelay: Duration = .milliseconds(SelectionTranslateSupport.copyFeedbackMilliseconds),
+        clipboardCoordinator: ClipboardBorrowCoordinator = .shared
     ) {
         self.visibleFramesProvider = visibleFramesProvider
         self.pasteboardWriter = pasteboardWriter
         self.copyFeedbackDelay = copyFeedbackDelay
+        self.clipboardCoordinator = clipboardCoordinator
     }
 
     public func show(_ content: SelectionPopoverContent) {
@@ -416,6 +420,20 @@ public final class SelectionTranslatePanelController: SelectionPopoverControllin
     public func copyCurrentTranslation() {
         guard let current = currentContent, current.allowsCopy else { return }
         let text = current.copyText
+        if clipboardCoordinator.isBorrowing {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.clipboardCoordinator.withMainActorExclusiveAccess {
+                    guard self.currentContent?.copyText == text, self.currentContent?.allowsCopy == true else { return }
+                    self.performCopyWrite(text)
+                }
+            }
+            return
+        }
+        performCopyWrite(text)
+    }
+
+    private func performCopyWrite(_ text: String) {
         do {
             try pasteboardWriter(text)
             onCopy?(text)

@@ -28,8 +28,20 @@ enum CGImageUtilities {
         ) else { return [] }
         context.interpolationQuality = .low
         context.draw(image, in: CGRect(x: 0, y: 0, width: dimension, height: dimension))
-        guard let data = context.data else { return [] }
-        return Array(UnsafeBufferPointer(start: data.assumingMemoryBound(to: UInt8.self), count: dimension * dimension))
+        return withExtendedLifetime(context) {
+            guard let data = context.data, context.bytesPerRow >= dimension else { return [] }
+            let rowStride = context.bytesPerRow
+            let raw = data.assumingMemoryBound(to: UInt8.self)
+            if rowStride == dimension {
+                return Array(UnsafeBufferPointer(start: raw, count: dimension * dimension))
+            }
+            var result = [UInt8]()
+            result.reserveCapacity(dimension * dimension)
+            for row in 0..<dimension {
+                result.append(contentsOf: UnsafeBufferPointer(start: raw.advanced(by: row * rowStride), count: dimension))
+            }
+            return result
+        }
     }
 
     static func fingerprint(_ image: CGImage) -> ImageFingerprint {
