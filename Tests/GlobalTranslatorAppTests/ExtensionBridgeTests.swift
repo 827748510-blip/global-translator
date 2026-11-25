@@ -49,7 +49,7 @@ struct ExtensionBridgeServerTests {
         #expect(source.contains("const CHUNK_SIZE = 3;"))
         #expect(!source.contains("const CHUNK_SIZE = 30;"))
         #expect(source.contains("GlobalTranslatorTextFilter.shouldSendForPageTranslate"))
-        #expect(source.contains("if (retry.has(i)) continue;"))
+        #expect(source.contains("retry.has(i)"))
         #expect(source.contains("let retryPending = false;"))
         #expect(source.contains("retryPending = true;"))
         #expect(source.contains("scheduleRetry();"))
@@ -96,8 +96,8 @@ struct ExtensionBridgeServerTests {
             .deletingLastPathComponent()
             .appendingPathComponent("extension/manifest.json")
         let source = try String(contentsOf: url, encoding: .utf8)
-        #expect(source.contains("\"version\": \"1.0.12\""))
-        #expect(!source.contains("\"version\": \"1.0.11\""))
+        #expect(source.contains("\"version\": \"1.1.0\""))
+        #expect(!source.contains("\"version\": \"1.0.12\""))
         #expect(source.contains("\"js\": [\"text-filter.js\", \"subtitle-cues.js\", \"youtube-captions.js\", \"video-asr.js\", \"content.js\", \"video-translate.js\"]"))
         #expect(source.contains("youtube-captions-page.js"))
         #expect(source.contains("\"world\": \"MAIN\""))
@@ -132,21 +132,11 @@ struct ExtensionBridgeServerTests {
             contentsOf: root.appendingPathComponent("Sources/GlobalTranslatorCapture/VideoAudioASRController.swift"),
             encoding: .utf8
         )
-        #expect(settings.contains("\"滑词翻译\""))
+        #expect(settings.contains("\"划词翻译\""))
         #expect(settings.contains("\"视频翻译\""))
-        #expect(settings.contains("HStack(alignment: .center, spacing: GTSpacing.medium)"))
-        if let rowStart = settings.range(of: "HStack(alignment: .center, spacing: GTSpacing.medium)"),
-           let selectionRange = settings.range(of: "\"滑词翻译\""),
-           let videoRange = settings.range(of: "\"视频翻译\"") {
-            #expect(rowStart.lowerBound < selectionRange.lowerBound)
-            #expect(selectionRange.lowerBound < videoRange.lowerBound)
-            let betweenToggles = settings[selectionRange.lowerBound..<videoRange.lowerBound]
-            #expect(betweenToggles.contains("Spacer"))
-            #expect(!betweenToggles.contains("Divider()"))
-            #expect(!betweenToggles.contains("VStack"))
-        }
         #expect(!popup.contains("id=\"videoTranslate\""))
-        #expect(popup.contains("视频翻译"))
+        #expect(popup.contains("id=\"videoTranslateToggle\""))
+        #expect(popup.contains("视频"))
         #expect(popupJs.contains("videoTranslateEnabled: false"))
         #expect(popupJs.contains("response.videoTranslateEnabled === true"))
         #expect(videoJs.contains("videoTranslateEnabled: false"))
@@ -190,7 +180,63 @@ struct ExtensionBridgeServerTests {
         #expect(!youtubePage.contains("loadModule"))
         #expect(!youtubePage.contains("getUserMedia"))
         #expect(youtubePage.contains("response.clone()"))
-        #expect(popupJs.contains("YouTube 请先打开播放器字幕"))
+        #expect(popup.contains("YouTube 请先开启播放器原生字幕"))
+        #expect(popupJs.contains("set-video-translate"))
+    }
+
+    @Test
+    func setVideoTranslateEndpointRejectsForeignOriginAndInvalidPayload() async throws {
+        let current = OSAllocatedUnfairLock(initialState: false)
+        let session = URLSession(configuration: .ephemeral)
+        let server = ExtensionBridgeServer(
+            port: 0,
+            videoTranslateEnabled: { current.withLock { $0 } },
+            setVideoTranslateEnabled: { next in
+                current.withLock {
+                    $0 = next
+                    return $0
+                }
+            }
+        ) { texts, _ in
+            ExtensionBridgeTranslation(translations: texts.map { $0 })
+        }
+        server.start()
+        defer { server.stop() }
+        let port = try await #require(waitForPort(server))
+
+        let badOrigin = request(
+            port,
+            method: "POST",
+            path: "/video-translate",
+            origin: "https://evil.example",
+            body: Data("{\"enabled\":true}".utf8)
+        )
+        let (_, badOriginRes) = try await session.data(for: badOrigin)
+        #expect((badOriginRes as? HTTPURLResponse)?.statusCode == 403)
+        #expect(!current.withLock { $0 })
+
+        let badBody = request(
+            port,
+            method: "POST",
+            path: "/video-translate",
+            origin: ExtensionBridgeServer.allowedOrigin,
+            body: Data("{\"enabled\":\"yes\"}".utf8)
+        )
+        let (_, badBodyRes) = try await session.data(for: badBody)
+        #expect((badBodyRes as? HTTPURLResponse)?.statusCode == 400)
+
+        let valid = request(
+            port,
+            method: "POST",
+            path: "/video-translate",
+            origin: ExtensionBridgeServer.allowedOrigin,
+            body: Data("{\"enabled\":true}".utf8)
+        )
+        let (validData, validRes) = try await session.data(for: valid)
+        #expect((validRes as? HTTPURLResponse)?.statusCode == 200)
+        let json = try JSONSerialization.jsonObject(with: validData) as? [String: Any]
+        #expect(json?["videoTranslateEnabled"] as? Bool == true)
+        #expect(current.withLock { $0 })
     }
 
     @Test
@@ -975,5 +1021,191 @@ struct BridgeRateLimiterTests {
         #expect(limiter.allow())
         #expect(limiter.allow())
         #expect(!limiter.allow())
+    }
+}
+
+struct ExtensionBridgeSecurityHardeningTests {
+    @Test
+    func setVideoTranslateRequiresAutoTranslateEnabled() async throws {
+        let current = OSAllocatedUnfairLock(initialState: false)
+        let session = URLSession(configuration: .ephemeral)
+        let server = ExtensionBridgeServer(
+            port: 0,
+            videoTranslateEnabled: { current.withLock { $0 } },
+            setVideoTranslateEnabled: { next in
+                current.withLock {
+                    $0 = next
+                    return $0
+                }
+            },
+            autoTranslateEnabled: { false }
+        ) { texts, _ in
+            ExtensionBridgeTranslation(translations: texts.map { $0 })
+        }
+        server.start()
+        defer { server.stop() }
+        var port: UInt16?
+        for _ in 0..<200 where port == nil {
+            port = server.boundPort
+            if port == nil { try? await Task.sleep(for: .milliseconds(10)) }
+        }
+        let resolvedPort = try #require(port)
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(resolvedPort)/video-translate")!)
+        req.httpMethod = "POST"
+        req.setValue(ExtensionBridgeServer.allowedOrigin, forHTTPHeaderField: "Origin")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data("{\"enabled\":true}".utf8)
+        let (_, response) = try await session.data(for: req)
+        #expect((response as? HTTPURLResponse)?.statusCode == 503)
+        #expect(!current.withLock { $0 })
+    }
+
+    @Test
+    func bridgeRejectsInvalidHostAndMalformedVideoAsrPayload() async throws {
+        let session = URLSession(configuration: .ephemeral)
+        let server = ExtensionBridgeServer(port: 0) { texts in
+            ExtensionBridgeTranslation(translations: texts.map { $0 })
+        }
+        server.start()
+        defer { server.stop() }
+        var port: UInt16?
+        for _ in 0..<200 where port == nil {
+            port = server.boundPort
+            if port == nil { try? await Task.sleep(for: .milliseconds(10)) }
+        }
+        let resolvedPort = try #require(port)
+
+        var badAsr = URLRequest(url: URL(string: "http://127.0.0.1:\(resolvedPort)/video-asr")!)
+        badAsr.httpMethod = "POST"
+        badAsr.setValue(ExtensionBridgeServer.allowedOrigin, forHTTPHeaderField: "Origin")
+        badAsr.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        badAsr.httpBody = Data("{\"needed\":\"yes\"}".utf8)
+        let (_, badAsrRes) = try await session.data(for: badAsr)
+        #expect((badAsrRes as? HTTPURLResponse)?.statusCode == 400)
+
+        var badHost = URLRequest(url: URL(string: "http://127.0.0.1:\(resolvedPort)/health")!)
+        badHost.httpMethod = "POST"
+        badHost.setValue(ExtensionBridgeServer.allowedOrigin, forHTTPHeaderField: "Origin")
+        badHost.setValue("evil.example:9233", forHTTPHeaderField: "Host")
+        let (_, badHostRes) = try await session.data(for: badHost)
+        #expect((badHostRes as? HTTPURLResponse)?.statusCode == 403)
+    }
+
+    @Test
+    func cdpTranslatorValidatesWebSocketLoopbackAndHandlesDuplicateNodeIDsSafely() async throws {
+        #expect(CDPInPageTranslator.validatedWebSocketURL("ws://127.0.0.1:9222/devtools/page/1", port: 9222) != nil)
+        #expect(CDPInPageTranslator.validatedWebSocketURL("wss://evil.example/ws", port: 9222) == nil)
+        #expect(CDPInPageTranslator.validatedWebSocketURL("ws://127.0.0.1:9999/devtools/page/1", port: 9222) == nil)
+        #expect(CDPInPageTranslator.validatedWebSocketURL("ws://127.0.0.1:9222/not-devtools", port: 9222) == nil)
+
+        let translator = CDPInPageTranslator(port: 9222)
+        // Unknown PID must fail closed even before probing.
+        let applicable = await translator.isApplicable(bundleIdentifier: "com.apple.Safari", windowPID: 0)
+        #expect(!applicable)
+    }
+
+    @Test
+    func bridgeSupportsHTTP11KeepAliveAndCorsMaxAge() async throws {
+        let server = ExtensionBridgeServer(port: 0) { texts, _ in
+            ExtensionBridgeTranslation(translations: texts.map { $0 })
+        }
+        server.start()
+        defer { server.stop() }
+        var port: UInt16?
+        for _ in 0..<200 where port == nil {
+            port = server.boundPort
+            if port == nil { try? await Task.sleep(for: .milliseconds(10)) }
+        }
+        let resolvedPort = try #require(port)
+
+        // Two sequential HTTP/1.1 requests over one ephemeral URLSession should reuse
+        // the keep-alive connection and expose Keep-Alive / Access-Control-Max-Age headers.
+        let session = URLSession(configuration: .ephemeral)
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(resolvedPort)/health")!)
+        req.httpMethod = "POST"
+        req.setValue(ExtensionBridgeServer.allowedOrigin, forHTTPHeaderField: "Origin")
+        let (d1, r1) = try await session.data(for: req)
+        let http1 = try #require(r1 as? HTTPURLResponse)
+        #expect(http1.statusCode == 200)
+        #expect(http1.value(forHTTPHeaderField: "Connection")?.lowercased() == "keep-alive")
+        #expect(http1.value(forHTTPHeaderField: "Access-Control-Max-Age") == "86400")
+        let json1 = try #require(try JSONSerialization.jsonObject(with: d1) as? [String: Any])
+        #expect(json1["ok"] as? Bool == true)
+
+        let (d2, r2) = try await session.data(for: req)
+        let http2 = try #require(r2 as? HTTPURLResponse)
+        #expect(http2.statusCode == 200)
+        let json2 = try #require(try JSONSerialization.jsonObject(with: d2) as? [String: Any])
+        #expect(json2["ok"] as? Bool == true)
+    }
+
+    @MainActor
+    @Test
+    func localBridgeSplitsInvalidResponseBatchIntoSingleItemsAndRescuesHealthySiblings() async throws {
+        actor PartialInvalidJSONCoordinator: TranslationCoordinating {
+            func selectBackend(kind: BackendKind, modelIdentifier: String) async {}
+            func clearCache() async {}
+            func cancelPendingRequests() async {}
+            func translate(
+                snapshot: CaptureSnapshot,
+                backend: BackendKind,
+                modelIdentifier: String,
+                visionFallbackEnabled: Bool
+            ) async throws -> EngineOutput {
+                if snapshot.regions.count > 1 || snapshot.regions.first?.sourceText == "Bad JSON item" {
+                    throw TranslationError.invalidResponse("translation JSON is invalid")
+                }
+                let translations = snapshot.regions.map { region in
+                    RenderedTranslation(region: region, text: "译：" + region.sourceText)
+                }
+                return EngineOutput(
+                    windowRevision: snapshot.descriptor.revision,
+                    translations: translations,
+                    metrics: EngineMetrics(
+                        inputRegionCount: translations.count,
+                        eligibleRegionCount: translations.count,
+                        cacheHitCount: 0,
+                        batchCount: 1,
+                        translatedRegionCount: translations.count,
+                        durationMilliseconds: 1,
+                        status: .success
+                    )
+                )
+            }
+        }
+
+        let coordinator = PartialInvalidJSONCoordinator()
+        let permissions = FakePermissionController(snapshot: PermissionSnapshot(
+            accessibilityTrusted: false, screenCaptureAuthorized: false,
+            secureInputEnabled: false, sessionLocked: false))
+        let session = TranslationSession(
+            monitor: FakeWindowMonitor(),
+            capture: FakeCapturePipeline(),
+            overlay: FakeOverlay(),
+            permissions: permissions,
+            coordinatorFactory: { _, _ in coordinator },
+            schedulerFactory: { _, _, _ in NoopTranslationScheduler() },
+            logger: NullAppRuntimeLogger(),
+            statusHandler: { _ in }
+        )
+        session.configure(
+            backends: [],
+            backend: .local,
+            model: "test",
+            visionFallbackEnabled: false
+        )
+        session.setBridgeActive(true)
+        let result = try await session.translateBridgeTexts([
+            "First valid line",
+            "Bad JSON item",
+            "Third valid line"
+        ])
+        #expect(result.translations == [
+            "译：First valid line",
+            nil,
+            "译：Third valid line"
+        ])
+        #expect(result.retryIndexes == [1])
+        session.stop()
     }
 }

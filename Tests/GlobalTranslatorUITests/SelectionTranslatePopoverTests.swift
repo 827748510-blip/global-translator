@@ -117,6 +117,58 @@ struct SelectionTranslatePopoverTests {
     }
 
     @Test
+    func screenshotCopyOriginalWritesFullUntruncatedOCRAndHasIndependentFeedback() async throws {
+        var written: [String] = []
+        var copiedOriginals: [String] = []
+        let controller = SelectionTranslatePanelController(
+            visibleFramesProvider: { [CGRect(x: 0, y: 0, width: 1440, height: 875)] },
+            pasteboardWriter: { written.append($0) },
+            copyFeedbackDelay: .milliseconds(40)
+        )
+        controller.onCopyOriginal = { copiedOriginals.append($0) }
+
+        let longOCR = String(repeating: "Full screenshot OCR text beyond preview cap. ", count: 4)
+        #expect(longOCR.count > SelectionTranslateSupport.originalPreviewLimit)
+        let loadingScreenshot = SelectionPopoverContent.loading(
+            original: longOCR,
+            screenFrame: .zero,
+            message: "流式部分译文"
+        ).asScreenshotResult()
+        controller.show(loadingScreenshot)
+        #expect(loadingScreenshot.allowsCopyOriginal)
+        controller.copyCurrentOriginal()
+        #expect(written == [longOCR.trimmingCharacters(in: .whitespacesAndNewlines)])
+        #expect(copiedOriginals == [longOCR.trimmingCharacters(in: .whitespacesAndNewlines)])
+        #expect(controller.copyOriginalFeedback == .copied)
+        #expect(controller.copyFeedback == .idle)
+
+        // Streaming finish with identical original preserves copyOriginalFeedback until delay elapses.
+        let translatedScreenshot = SelectionPopoverContent.translated(
+            original: longOCR,
+            translation: "完整截图翻译结果",
+            screenFrame: .zero
+        ).asScreenshotResult()
+        controller.show(translatedScreenshot)
+        #expect(controller.copyOriginalFeedback == .copied)
+
+        controller.copyCurrentTranslation()
+        #expect(written.last == "完整截图翻译结果")
+        #expect(controller.copyFeedback == .copied)
+
+        let deadline = ContinuousClock.now + .seconds(2)
+        while controller.copyOriginalFeedback != .idle || controller.copyFeedback != .idle {
+            if ContinuousClock.now >= deadline {
+                Issue.record("copy feedback stayed non-idle after copyFeedbackDelay")
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(controller.copyOriginalFeedback == .idle)
+        #expect(controller.copyFeedback == .idle)
+        controller.dismiss()
+    }
+
+    @Test
     func contentSizeIncludesModePickerAndCopyButton() {
         let loading = SelectionPopoverContent.loading(
             original: "Hello",
@@ -424,5 +476,12 @@ struct SelectionTranslatePopoverTests {
         controller.handlePotentialOutsideClick(at: CGPoint(x: 1200, y: 800), auxiliaryFrames: [menuFrame])
         #expect(dismissed == 1)
         #expect(controller.currentContent == nil)
+    }
+
+    @Test
+    func panelContainsOwnedUIShortCircuitsInsidePanelFrame() {
+        let panel = SelectionTranslatePanel(contentRect: CGRect(x: 100, y: 200, width: 220, height: 120))
+        #expect(panel.containsOwnedUI(at: CGPoint(x: 150, y: 250), windows: []))
+        #expect(!panel.containsOwnedUI(at: CGPoint(x: 500, y: 500), windows: []))
     }
 }

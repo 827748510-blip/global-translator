@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import GlobalTranslatorCore
 
@@ -52,6 +53,19 @@ public actor CDPInPageTranslator: InPageTranslating {
     private var lastProbeResult = false
     private var browserPID: Int32?
     private var nodeIdentifiers: [String: UUID] = [:]
+    private var cachedSession: IsolatedSession?
+    private var nextRPCID = 1
+
+    private struct IsolatedSession {
+        let targetID: String
+        let webSocketURL: String
+        let webSocket: URLSessionWebSocketTask
+        let contextID: Int
+    }
+
+    deinit {
+        cachedSession?.webSocket.cancel(with: .normalClosure, reason: nil)
+    }
 
     public init(port: UInt16 = 9_222) {
         self.port = port
@@ -74,16 +88,36 @@ public actor CDPInPageTranslator: InPageTranslating {
         return available && owns(windowPID: windowPID)
     }
 
-    /// Only the browser instance exposing the debug port gets in-page
-    /// translation; windows of any other process with the same bundle
-    /// identifier (e.g. a main Chrome running next to the dedicated
-    /// debug-profile instance) must reach the bubble pipeline instead of
-    /// being silently swallowed. Unknown PIDs (query failure or a caller
-    /// without one) keep the legacy claim-everything behavior so
-    /// single-instance setups are unaffected.
+    /// Only the browser instance exposing the debug port owned by the current
+    /// OS user gets in-page translation; unknown PIDs or missing browser PIDs
+    /// fail closed so normal/foreign windows fall through to the bubble
+    /// pipeline instead of risking misattribution.
     private func owns(windowPID: Int32) -> Bool {
-        guard windowPID > 0, let browserPID else { return true }
+        guard windowPID > 0, let browserPID else { return false }
         return browserPID == windowPID
+    }
+
+    private static func isOwnedByCurrentUser(pid: Int32) -> Bool {
+        guard pid > 0 else { return false }
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.stride)
+        let read = Darwin.proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size)
+        guard read == size else { return false }
+        return info.pbi_uid == getuid()
+    }
+
+    static func validatedWebSocketURL(_ raw: String, port: UInt16) -> URL? {
+        guard let components = URLComponents(string: raw),
+              components.scheme?.lowercased() == "ws",
+              components.user == nil,
+              components.password == nil,
+              let host = components.host?.lowercased(),
+              ["127.0.0.1", "localhost", "::1"].contains(host),
+              components.port == Int(port),
+              components.path.hasPrefix("/devtools/") else {
+            return nil
+        }
+        return components.url
     }
 
     /// Main-process PID of the debug-enabled browser, resolved through the
@@ -94,10 +128,15 @@ public actor CDPInPageTranslator: InPageTranslating {
               (response as? HTTPURLResponse)?.statusCode == 200,
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let webSocketURL = object["webSocketDebuggerUrl"] as? String,
+              Self.validatedWebSocketURL(webSocketURL, port: port) != nil,
               let payload = try? await rpc(webSocketURL: webSocketURL, method: "SystemInfo.getProcessInfo", params: [:]),
               let processes = payload["processInfo"] as? [[String: Any]] else { return nil }
         for process in processes where process["type"] as? String == "browser" {
-            if let id = process["id"] as? Int { return Int32(id) }
+            if let id = process["id"] as? Int {
+                let candidate = Int32(clamping: id)
+                guard Self.isOwnedByCurrentUser(pid: candidate) else { return nil }
+                return candidate
+            }
         }
         return nil
     }
@@ -106,11 +145,15 @@ public actor CDPInPageTranslator: InPageTranslating {
         // Only the OS-focused, visible tab of the browser is translated —
         // other CDP targets (background tabs, automation browsers sharing the
         // debug port) are skipped so the wrong page is never rewritten.
-        for page in try await pageTargets() {
-            let focused = try await rpc(page: page, method: "Runtime.evaluate", params: [
-                "expression": Self.focusScript,
-                "returnByValue": true
-            ])
+        var targets = try await pageTargets()
+        if let activeID = activePageIdentifier,
+           let activeIndex = targets.firstIndex(where: { $0.identifier == activeID }),
+           activeIndex > 0 {
+            let active = targets.remove(at: activeIndex)
+            targets.insert(active, at: 0)
+        }
+        for page in targets {
+            let focused = try await evaluateInIsolatedWorld(page: page, expression: Self.focusScript)
             guard Self.resultValue(focused) as? Bool == true else { continue }
             activePageIdentifier = page.identifier
             extractionTargetURL = page.url
@@ -123,10 +166,7 @@ public actor CDPInPageTranslator: InPageTranslating {
     private var activePageIdentifier: String?
 
     private func extractTexts(from page: PageTarget) async throws -> [InPageText] {
-        let payload = try await rpc(page: page, method: "Runtime.evaluate", params: [
-            "expression": Self.extractScript,
-            "returnByValue": true
-        ])
+        let payload = try await evaluateInIsolatedWorld(page: page, expression: Self.extractScript)
         if let exception = payload["exceptionDetails"] as? [String: Any] {
             let detail = (exception["exception"] as? [String: Any])?["description"] as? String
                 ?? (exception["text"] as? String) ?? "script exception"
@@ -138,13 +178,25 @@ public actor CDPInPageTranslator: InPageTranslating {
             throw CDPError.requestFailed(message)
         }
         guard let entries = decoded as? [[String: Any]] else { return [] }
-        return entries.compactMap { entry in
+        var seenNodeIDs: Set<String> = []
+        var collected: [InPageText] = []
+        collected.reserveCapacity(min(entries.count, 200))
+        for entry in entries.prefix(200) {
             guard let nodeID = entry["id"] as? String,
-                  let text = entry["text"] as? String, !text.isEmpty else { return nil }
+                  !nodeID.isEmpty,
+                  seenNodeIDs.insert(nodeID).inserted,
+                  let text = entry["text"] as? String,
+                  !text.isEmpty,
+                  text.count <= 4_000 else { continue }
             let id = nodeIdentifier(for: nodeID)
-            return InPageText(nodeID: nodeID, id: id, text: text,
-                              sourceLanguage: (entry["sourceLanguage"] as? String).flatMap(TranslationSourceLanguage.init))
+            collected.append(InPageText(
+                nodeID: nodeID,
+                id: id,
+                text: text,
+                sourceLanguage: (entry["sourceLanguage"] as? String).flatMap(TranslationSourceLanguage.init)
+            ))
         }
+        return collected
     }
 
     public func apply(_ replacements: [InPageReplacement]) async throws {
@@ -152,12 +204,12 @@ public actor CDPInPageTranslator: InPageTranslating {
         let targets = try await pageTargets()
         let page = targets.first { $0.identifier == activePageIdentifier }
             ?? targets.first { $0.url == extractionTargetURL }
-            ?? targets.first
         guard let page else { return }
-        let map = Dictionary(uniqueKeysWithValues: replacements.compactMap { replacement -> (String, String)? in
+        let pairs = replacements.compactMap { replacement -> (String, String)? in
             let text = replacement.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return text.isEmpty ? nil : (replacement.nodeID, text)
-        })
+        }
+        let map = Dictionary(pairs, uniquingKeysWith: { _, latest in latest })
         let json = try JSONSerialization.data(withJSONObject: map)
         let expression = "(() => { const m = \(String(decoding: json, as: UTF8.self));"
             + " let applied = 0;"
@@ -168,10 +220,7 @@ public actor CDPInPageTranslator: InPageTranslating {
             + " window.__gtTranslator.entries[id] = { source: trimmed, translation: m[id] };"
             + " node.nodeValue = original.replace(trimmed, m[id]); applied++; } } } }"
             + " return String(applied); })()"
-        let payload = try await rpc(page: page, method: "Runtime.evaluate", params: [
-            "expression": expression,
-            "returnByValue": true
-        ])
+        let payload = try await evaluateInIsolatedWorld(page: page, expression: expression)
         _ = Self.resultValue(payload)
     }
 
@@ -199,22 +248,96 @@ public actor CDPInPageTranslator: InPageTranslating {
         return targets.compactMap { target in
             guard let identifier = target["id"] as? String,
                   let webSocketURL = target["webSocketDebuggerUrl"] as? String,
+                  Self.validatedWebSocketURL(webSocketURL, port: port) != nil,
                   let kind = target["type"] as? String, kind == "page",
                   let pageURL = target["url"] as? String, pageURL.hasPrefix("http") else { return nil }
             return PageTarget(identifier: identifier, url: pageURL, kind: kind, webSocketURL: webSocketURL)
         }
     }
 
-    private func rpc(page: PageTarget, method: String, params: [String: Any]) async throws -> [String: Any] {
-        try await rpc(webSocketURL: page.webSocketURL, method: method, params: params)
+    private func evaluateInIsolatedWorld(page: PageTarget, expression: String) async throws -> [String: Any] {
+        if let cached = cachedSession,
+           cached.targetID == page.identifier,
+           cached.webSocketURL == page.webSocketURL {
+            do {
+                return try await sendRPC(on: cached.webSocket, method: "Runtime.evaluate", params: [
+                    "expression": expression,
+                    "contextId": cached.contextID,
+                    "returnByValue": true
+                ])
+            } catch {
+                cached.webSocket.cancel(with: .normalClosure, reason: nil)
+                cachedSession = nil
+            }
+        } else if let stale = cachedSession {
+            stale.webSocket.cancel(with: .normalClosure, reason: nil)
+            cachedSession = nil
+        }
+
+        let session = try await openIsolatedSession(for: page)
+        cachedSession = session
+        do {
+            return try await sendRPC(on: session.webSocket, method: "Runtime.evaluate", params: [
+                "expression": expression,
+                "contextId": session.contextID,
+                "returnByValue": true
+            ])
+        } catch {
+            session.webSocket.cancel(with: .normalClosure, reason: nil)
+            if cachedSession?.webSocket === session.webSocket {
+                cachedSession = nil
+            }
+            throw error
+        }
+    }
+
+    private func openIsolatedSession(for page: PageTarget) async throws -> IsolatedSession {
+        guard let url = Self.validatedWebSocketURL(page.webSocketURL, port: port) else {
+            throw CDPError.requestFailed("untrusted websocket url")
+        }
+        let webSocket = urlSession.webSocketTask(with: url)
+        webSocket.resume()
+        do {
+            let frameTree = try await sendRPC(on: webSocket, method: "Page.getFrameTree", params: [:])
+            guard let frame = frameTree["frameTree"] as? [String: Any],
+                  let rootFrame = frame["frame"] as? [String: Any],
+                  let frameID = rootFrame["id"] as? String, !frameID.isEmpty else {
+                throw CDPError.requestFailed("missing root frame id")
+            }
+            let world = try await sendRPC(on: webSocket, method: "Page.createIsolatedWorld", params: [
+                "frameId": frameID,
+                "worldName": "GlobalTranslatorIsolated",
+                "grantUniveralAccess": false
+            ])
+            guard let contextID = world["executionContextId"] as? Int else {
+                throw CDPError.requestFailed("missing isolated executionContextId")
+            }
+            return IsolatedSession(
+                targetID: page.identifier,
+                webSocketURL: page.webSocketURL,
+                webSocket: webSocket,
+                contextID: contextID
+            )
+        } catch {
+            webSocket.cancel(with: .normalClosure, reason: nil)
+            throw error
+        }
     }
 
     private func rpc(webSocketURL: String, method: String, params: [String: Any]) async throws -> [String: Any] {
-        guard let url = URL(string: webSocketURL) else { throw URLError(.badURL) }
+        guard let url = Self.validatedWebSocketURL(webSocketURL, port: port) else {
+            throw CDPError.requestFailed("untrusted websocket url")
+        }
         let webSocket = urlSession.webSocketTask(with: url)
         webSocket.resume()
         defer { webSocket.cancel(with: .normalClosure, reason: nil) }
-        let requestID = Int.random(in: 1...1_000_000)
+        return try await sendRPC(on: webSocket, method: method, params: params)
+    }
+
+    private func sendRPC(on webSocket: URLSessionWebSocketTask, method: String, params: [String: Any]) async throws -> [String: Any] {
+        let requestID = nextRPCID
+        nextRPCID &+= 1
+        if nextRPCID <= 0 { nextRPCID = 1 }
         let body: [String: Any] = ["id": requestID, "method": method, "params": params]
         let data = try JSONSerialization.data(withJSONObject: body)
         try await webSocket.send(.string(String(decoding: data, as: UTF8.self)))
@@ -284,10 +407,17 @@ public actor CDPInPageTranslator: InPageTranslating {
     private static let extractScript = """
     (() => {
       try {
-      if (!window.__gtTranslator) window.__gtTranslator = { nodes: {}, next: 0 };
+      if (!window.__gtTranslator) window.__gtTranslator = { nodes: {}, nodeIds: new WeakMap(), next: 0 };
       const store = window.__gtTranslator;
       if (!store.entries) store.entries = {};
       if (!store.requested) store.requested = {};
+      if (!store.nodeIds) {
+        store.nodeIds = new WeakMap();
+        for (const existing in store.nodes) {
+          const n = store.nodes[existing];
+          if (n) store.nodeIds.set(n, existing);
+        }
+      }
       const rawLang = document.documentElement.lang || '';
       const match = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*$/.exec(rawLang);
       const pageLang = rawLang.length <= 63 && match && match[0] === rawLang ? rawLang.toLowerCase() : null;
@@ -297,7 +427,8 @@ public actor CDPInPageTranslator: InPageTranslating {
         (parts[0] === 'zh' && script !== 'hans' &&
           (script === 'hant' || ['tw', 'hk', 'mo'].includes(parts[script ? 2 : 1])));
       const results = [];
-      const skipped = ['SCRIPT', 'STYLE', 'NOSCRIPT', 'CODE', 'PRE', 'TEXTAREA'];
+      const pendingWrites = [];
+      const skipped = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'CODE', 'PRE', 'TEXTAREA']);
       const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
       let node;
       while ((node = walker.nextNode())) {
@@ -310,24 +441,30 @@ public actor CDPInPageTranslator: InPageTranslating {
         const cjk = /[\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF]/.test(text);
         if (cjk && !kana && !hangul && !foreignCJKPage && !/[A-Za-z]/.test(text)) continue;
         const element = node.parentElement;
-        if (!element || skipped.indexOf(element.tagName) !== -1) continue;
+        if (!element || skipped.has(element.tagName)) continue;
         if (element.closest && element.closest('[contenteditable="true"], [contenteditable=""]')) continue;
         const rect = element.getBoundingClientRect();
         if (rect.width < 4 || rect.height < 4) continue;
         const style = getComputedStyle(element);
         if (style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) === 0) continue;
-        let id = null;
-        for (const existing in store.nodes) if (store.nodes[existing] === node) { id = existing; break; }
-        if (id == null) { id = String(store.next++); store.nodes[id] = node; }
+        let id = store.nodeIds.get(node);
+        if (id == null) {
+          id = String(store.next++);
+          store.nodes[id] = node;
+          store.nodeIds.set(node, id);
+        }
         const entry = store.entries[id];
         if (entry && entry.translation === text) continue;
         if (entry && entry.source === text) {
-          node.nodeValue = original.replace(text, entry.translation);
+          pendingWrites.push([node, original.replace(text, entry.translation)]);
           continue;
         }
         store.requested[id] = text;
         results.push({ id: id, text: text, sourceLanguage: pageLang });
         if (results.length >= 200) break;
+      }
+      for (let i = 0; i < pendingWrites.length; i++) {
+        pendingWrites[i][0].nodeValue = pendingWrites[i][1];
       }
       return JSON.stringify(results);
       } catch (error) { return JSON.stringify({ error: String(error) }); }

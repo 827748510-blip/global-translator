@@ -225,6 +225,19 @@ struct HomebrewOllamaLifecycleTests {
         #expect(result.exitCode == 0)
         #expect(result.output.contains("ollama-lifecycle-probe"))
     }
+
+    @Test
+    func systemRunnerDrainsLargeOutputWithoutPipeDeadlock() async throws {
+        // Output >128KB exceeds typical 64KB Darwin pipe capacity and would deadlock
+        // if the runner waited for termination before draining the pipe.
+        let result = try await SystemOllamaCommandRunner().run(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "python3 - <<'EOF'\nprint('x' * 200000)\nEOF"],
+            timeout: 5
+        )
+        #expect(result.exitCode == 0)
+        #expect(result.output.utf8.count >= 200_000)
+    }
 }
 
 @MainActor

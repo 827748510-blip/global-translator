@@ -251,7 +251,7 @@ struct BridgeLanguageIntegrationTests {
         #expect(status == 200)
         #expect((response["translations"] as? [String])?.count == texts.count)
         let calls = await fixture.transport.calls
-        #expect(calls.map { $0.sources.count } == [24, 2])
+        #expect(calls.map { $0.sources.count }.sorted(by: >) == [24, 2])
         #expect(calls.allSatisfy { $0.system.contains("hint: ja.") })
     }
 

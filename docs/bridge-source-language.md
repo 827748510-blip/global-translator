@@ -33,7 +33,7 @@ GT_CHROMIUM_PATH='/absolute/path/to/testing-chromium' \
 swift test -Xswiftc -warnings-as-errors --filter BridgeLanguageIntegrationTests
 ```
 
-该测试只在临时扩展副本中把桥接目标改为 fixture 的随机端口，沿用正式 manifest key 和 Origin。它加载正式内容脚本、background 和字幕脚本，在 loopback 合成页面中检查 DOM 与原生 TextTrack 闭合 Shadow DOM 内的中文显示，结束时关闭浏览器并清除测试配置。正式扩展版本为 1.0.12。
+该测试只在临时扩展副本中把桥接目标改为 fixture 的随机端口，沿用正式 manifest key 和 Origin。它加载正式内容脚本、background 和字幕脚本，在 loopback 合成页面中检查 DOM 与原生 TextTrack 闭合 Shadow DOM 内的中文显示，结束时关闭浏览器并清除测试配置。正式扩展版本为 1.1.0。
 
 ## CDP 与生产包装器的补充验证
 
@@ -43,4 +43,4 @@ CDP 提取的 `InPageText` 同样携带已校验的来源语言，会话按上�
 
 `CDPLanguageIntegrationTests` 使用单独 Chromium 的随机调试端口，通过真实 CDP、会话和生产 factory 验证日文、韩文、繁体、普通中文及缺失/非法语言；本地与云端适配器均使用假传输。扩展浏览器测试也分别覆盖这两个后端，云端假响应刻意保留译文尾随空格/换行，确认 DOM、原文恢复和 mutation 请求数仍幂等。`CoalescingRequestContextTests` 验证进行中请求的隔离与相同上下文的 ID/revision 重映射。
 
-本次桌面打包版本为 1.1.3（2026102701），使用 `scripts/package-app.sh` 的既有 `Global Translator Dev` 签名身份。
+本次桌面打包版本为 1.2.0（2026112501），使用 `scripts/package-app.sh` 配合签名身份构建与校验。

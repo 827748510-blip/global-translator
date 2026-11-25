@@ -254,4 +254,38 @@ struct OverlayPanelControllerTests {
         controller.update(translations: [RenderedTranslation(region: offScreen, text: "看不到")], revision: 1)
         #expect(controller.panelCount == 0)
     }
+
+    @Test
+    func multipleRegionsOnOneDisplayReuseSingleContainerWindow() {
+        let controller = OverlayPanelController(visibleFramesProvider: { self.visibleFrames })
+        let items = (0..<8).map { index in
+            RenderedTranslation(
+                region: makeRegion(frame: CGRect(x: 60, y: 100 + index * 40, width: 200, height: 22), text: "s\(index)"),
+                text: "译文 \(index)"
+            )
+        }
+        controller.update(translations: items, revision: 1)
+        #expect(controller.panelCount == 8)
+        #expect(controller.backingWindowCount == 1)
+
+        controller.hideAll()
+        #expect(controller.panelCount == 0)
+        #expect(controller.backingWindowCount == 0)
+    }
+
+    @Test
+    func overlayLayoutSizeCachePreservesRepeatedMeasurements() {
+        let first = OverlayLayout.estimatedTextSize(
+            for: "Cached measurement sample for overlay",
+            maxWidth: GTOverlayMetrics.maxTextWidth,
+            maxLines: GTOverlayMetrics.maxLines
+        )
+        let second = OverlayLayout.estimatedTextSize(
+            for: "Cached measurement sample for overlay",
+            maxWidth: GTOverlayMetrics.maxTextWidth,
+            maxLines: GTOverlayMetrics.maxLines
+        )
+        #expect(first == second)
+        #expect(first.width > 0 && first.height > 0)
+    }
 }

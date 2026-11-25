@@ -137,6 +137,83 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
         return try TranslationResponseParser.parsePlainChatCompletions(response.body)
     }
 
+    public func streamPlain(
+        system: String,
+        user: String,
+        onDelta: @escaping @Sendable (String) async -> Void
+    ) async throws -> String {
+        let trimmedSystem = system.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedUser = user.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSystem.isEmpty, !trimmedUser.isEmpty else {
+            throw TranslationError.invalidRequest("plain completion is empty")
+        }
+        guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw TranslationError.invalidConfiguration("local model is not configured")
+        }
+        let maxTokens = min(4_096, max(Self.plainCompletionMaxTokens, trimmedUser.count * 2 + 128))
+        let body = try makePlainPayload(
+            system: trimmedSystem,
+            user: trimmedUser,
+            stream: true,
+            temperature: 0.1,
+            maxTokens: maxTokens
+        )
+        var urlRequest = URLRequest(url: baseURL.appendingPathComponent("chat/completions"))
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        urlRequest.httpBody = body
+
+        let collector = LocalSSEStreamCollector()
+        let response: HTTPResponse
+        do {
+            response = try await transport.sendStreaming(urlRequest) { chunk in
+                await collector.push(chunk, onDelta: onDelta)
+            }
+        } catch {
+            throw AdapterHTTPMapping.error(for: error)
+        }
+        if let error = AdapterHTTPMapping.error(for: response) {
+            throw error
+        }
+        guard (200..<300).contains(response.statusCode) else {
+            throw TranslationError.invalidResponse("unexpected local HTTP status")
+        }
+        let finished = await collector.finish(onDelta: onDelta)
+        let trimmed = finished.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            return trimmed
+        }
+        // Test stubs / non-SSE endpoints may return a standard non-streaming JSON body.
+        if !finished.sawSSE {
+            let fallbackData = !response.body.isEmpty ? response.body : finished.rawFallback
+            if !fallbackData.isEmpty {
+                let parsed = try TranslationResponseParser.parsePlainChatCompletions(fallbackData)
+                await onDelta(parsed)
+                return parsed
+            }
+        }
+        throw TranslationError.invalidResponse("local stream completion is empty")
+    }
+
+    static func extractSSEDelta(from payload: String) -> String? {
+        guard let data = payload.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let choice = choices.first else {
+            return nil
+        }
+        if let delta = choice["delta"] as? [String: Any],
+           let content = delta["content"] as? String {
+            return content
+        }
+        if let message = choice["message"] as? [String: Any],
+           let content = message["content"] as? String {
+            return content
+        }
+        return nil
+    }
+
     /// Caps generation so a short UI string does not walk toward the
     /// Modelfile `num_predict` default. Overlay / page batches stay at
     /// 128 (one item) / 256 (three). Long selection chunks scale up so a
@@ -186,7 +263,8 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
                 ChatPrompt(role: "system", content: LocalTranslationPrompt.system(for: direction, sourceLanguage: request.sourceLanguage)),
                 ChatPrompt(role: "user", content: LocalTranslationPrompt.userContent(
                     for: request.items,
-                    direction: direction
+                    direction: direction,
+                    sourceLanguage: request.sourceLanguage
                 ))
             ],
             maxTokens: Self.maxTokens(
@@ -197,27 +275,31 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
             responseFormat: ChatResponseFormat()
         )
         do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.sortedKeys]
-            return try encoder.encode(payload)
+            return try JSONEncoder().encode(payload)
         } catch {
             throw TranslationError.invalidRequest("unable to encode translation request")
         }
     }
 
-    private func makePlainPayload(system: String, user: String) throws -> Data {
+    private func makePlainPayload(
+        system: String,
+        user: String,
+        stream: Bool = false,
+        temperature: Double = 0.3,
+        maxTokens: Int = LocalOpenAIBackend.plainCompletionMaxTokens
+    ) throws -> Data {
         let payload = PlainChatPayload(
             model: model,
             messages: [
                 ChatPrompt(role: "system", content: system),
                 ChatPrompt(role: "user", content: user)
             ],
-            maxTokens: Self.plainCompletionMaxTokens
+            stream: stream,
+            temperature: temperature,
+            maxTokens: maxTokens
         )
         do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.sortedKeys]
-            return try encoder.encode(payload)
+            return try JSONEncoder().encode(payload)
         } catch {
             throw TranslationError.invalidRequest("unable to encode plain completion")
         }
@@ -258,8 +340,8 @@ private struct ChatPayload: Encodable {
 private struct PlainChatPayload: Encodable {
     let model: String
     let messages: [ChatPrompt]
-    let stream = false
-    let temperature = 0.3
+    let stream: Bool
+    let temperature: Double
     let maxTokens: Int
 
     private enum CodingKeys: String, CodingKey {
@@ -268,6 +350,44 @@ private struct PlainChatPayload: Encodable {
         case stream
         case temperature
         case maxTokens = "max_tokens"
+    }
+}
+
+private actor LocalSSEStreamCollector {
+    private var sse = SSELineParser()
+    private var think = ThinkTagStreamFilter()
+    private var accumulated = ""
+    private var rawFallback = Data()
+    private let maxFallbackBytes = 65_536
+
+    func push(_ chunk: Data, onDelta: @Sendable (String) async -> Void) async {
+        if !sse.sawDataLine && rawFallback.count < maxFallbackBytes {
+            rawFallback.append(chunk.prefix(maxFallbackBytes - rawFallback.count))
+        }
+        for payload in sse.push(chunk) {
+            await handlePayload(payload, onDelta: onDelta)
+        }
+    }
+
+    func finish(onDelta: @Sendable (String) async -> Void) async -> (text: String, sawSSE: Bool, rawFallback: Data) {
+        for payload in sse.finish() {
+            await handlePayload(payload, onDelta: onDelta)
+        }
+        let trailing = think.finish()
+        if !trailing.isEmpty {
+            accumulated.append(trailing)
+            await onDelta(trailing)
+        }
+        return (accumulated, sse.sawDataLine, rawFallback)
+    }
+
+    private func handlePayload(_ payload: String, onDelta: @Sendable (String) async -> Void) async {
+        guard let rawDelta = LocalOpenAIBackend.extractSSEDelta(from: payload), !rawDelta.isEmpty else { return }
+        let visible = think.push(rawDelta)
+        if !visible.isEmpty {
+            accumulated.append(visible)
+            await onDelta(visible)
+        }
     }
 }
 

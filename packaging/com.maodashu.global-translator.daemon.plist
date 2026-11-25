@@ -16,7 +16,11 @@
     Forking a detached child would let the job exit immediately, which silently
     disables KeepAlive and leaves the job's exit code describing nothing.
 
-  Note: this template is not installed automatically and does not enable the
+  Note: this template assumes Global Translator.app is installed in ~/Applications/
+  (matching the README quick-start instructions). If you installed the app under
+  /Applications/ instead, change the first ProgramArguments string below to
+  /Applications/Global Translator.app/Contents/MacOS/global-translator.
+  This template is not installed automatically and does not enable the
   app at login by itself. Remove the plist and bootout the job to undo.
 -->
 <plist version="1.0">
@@ -25,7 +29,7 @@
 	<string>com.maodashu.global-translator.daemon</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/Applications/Global Translator.app/Contents/MacOS/global-translator</string>
+		<string>__HOME__/Applications/Global Translator.app/Contents/MacOS/global-translator</string>
 		<string>run</string>
 		<string>--daemon-child</string>
 	</array>

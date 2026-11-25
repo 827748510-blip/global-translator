@@ -4,15 +4,21 @@
 
 A privacy-first, native global translation utility for Apple Silicon Macs, shipping with a double-clickable `Global Translator.app`, menu-bar control panel, `global-translator` CLI, and a companion Chrome Manifest V3 extension (**Global Translator Bridge**).
 
-Built for developers and everyday readers who translate across apps, codebases, screenshots, and foreign-language videos all day—without handing screen recordings, system audio, or plaintext API keys to a closed-source black box. It pairs native macOS **Liquid Glass** UI with **Accessibility + on-device Apple Vision OCR**, **ScreenCaptureKit + local Whisper.cpp** audio transcription, and switchable **Local Ollama / DeepSeek Cloud** backends.
+Built for developers and everyday readers who translate across apps, codebases, screenshots, and foreign-language videos all day—without handing screen recordings, system audio, or plaintext API keys to a closed-source black box. It pairs a native macOS **Liquid Glass 3-tab UI** (`翻译` / `后端` / `高级`) with **Accessibility + on-device Apple Vision OCR**, **ScreenCaptureKit + local Whisper.cpp** audio transcription, and switchable **Local Ollama / DeepSeek Cloud** streaming backends.
+
+## Screenshots
+
+| Menu-Bar Settings (Liquid Glass) | Selection & Prompt Polish Popover | Chrome Extension Popup |
+| :---: | :---: | :---: |
+| ![Settings Panel](docs/assets/settings-panel.png) | ![Selection Popover](docs/assets/selection-popover.png) | ![Chrome Extension Popup](docs/assets/extension-popup.png) |
 
 ## Key Features
 
-- **Click-Through Active Window Overlay**: Extracts text from the active window via macOS Accessibility first and automatically falls back to on-device Apple Vision OCR for custom-rendered canvases or scanned PDFs. Translations render as non-activating, mouse-passthrough floating patches and automatically hide whenever a password field or Secure Input is active.
+- **Click-Through Active Window Overlay**: Extracts text from the active window via macOS Accessibility first and automatically falls back to on-device Apple Vision OCR for custom-rendered canvases or scanned PDFs. Translations render as non-activating, mouse-passthrough solid patches and automatically hide whenever a password field, Secure Input, or screen lock is active.
 - **Universal Selection Translate, Prompt Polish & Code Explainer**: Select text in any app and release the mouse button to pop up a Liquid Glass card with automatic bidirectional translation (foreign languages → Simplified Chinese, Simplified Chinese → English). Includes lossless async clipboard borrow-and-restore for apps without AX selection exposure (such as Feishu, Lark, and Electron apps), one-click draft rewriting (**Polished Communication / Task Instruction / Wording Fix**), and automatic **Code Explanation mode** across 15+ languages (translating comments/strings and explaining control flow and side effects in Chinese without mangling identifiers). See [Selection Translate Guide](docs/selection-translate.md).
-- **100% On-Device OCR Screenshot Translate (`⌃⇧T` by default)**: Drag to select any screen region, run local Apple Vision OCR (Chinese/English) strictly in memory, and translate via your chosen backend—raw screenshots are never uploaded to any cloud model. Supports optional auto-copy of translated text, saving cropped PNGs locally, or copying the screenshot to the clipboard. See [Screenshot Translate Guide](docs/screenshot-translate.md).
-- **In-Page Web Translation & Dual-Mode Video Subtitles**: The bundled `extension/` Chrome extension translates multi-language web pages in place (see [Bridge Source Language](docs/bridge-source-language.md)) and overlays Simplified Chinese subtitles onto HTML5 `<video>` tracks, local `.srt`/`.vtt` sidecar files, or active YouTube captions. When a video has no foreign subtitle track, it falls back to capturing window/system audio via ScreenCaptureKit + local `whisper.cpp` transcription—never touching your microphone or interrupting playback. See [Video Translate Guide](docs/video-translate.md).
-- **Dual Backend: Local Ollama & DeepSeek Cloud**: Run completely offline against a loopback Ollama server (`http://127.0.0.1:11434/v1` by default, with automatic Homebrew Ollama suspend/resume when switching backends to free unified memory—see [Ollama Lifecycle](docs/ollama-lifecycle.md)), or connect to the official DeepSeek Responses API (`deepseek-flash`). Backends never silently cross-fallback or replay uncertain requests.
+- **100% On-Device OCR Screenshot Translate (`⌃⇧T` by default)**: Drag to select any screen region, run single-pass `.accurate` local Apple Vision OCR strictly in memory, and preempt background web traffic via the high-priority translation lane with live SSE streaming and both **Copy Original (`复制原文`)** and **Copy Translation (`复制译文`)** buttons—raw screenshots are never uploaded to any cloud model. Supports optional auto-copy of translated text, saving cropped PNGs locally, or copying the screenshot to the clipboard. See [Screenshot Translate Guide](docs/screenshot-translate.md).
+- **In-Page Web Translation & Dual-Mode Video Subtitles**: The bundled `extension/` Chrome extension (v1.1.0) translates multi-language web pages in place while automatically skipping `translate="no"`, `.notranslate`, `aria-hidden` icon words, icon-font glyphs, and mislabeled Simplified Chinese pages (`lang="en"` / `lang="zh-TW"`), restoring original text cleanly when toggled off (see [Bridge Source Language](docs/bridge-source-language.md)). Its popup lets you toggle **Video Translate** directly (synced with the desktop app) and load local `.srt`/`.vtt` sidecar files alongside HTML5 `<video>` tracks or active YouTube captions. When a video has no foreign subtitle track, it falls back to capturing window/system audio via ScreenCaptureKit + local `whisper.cpp` transcription—never touching your microphone or interrupting playback. See [Video Translate Guide](docs/video-translate.md).
+- **Dual Backend: Local Ollama & DeepSeek Cloud**: Run completely offline against a loopback Ollama server (`http://127.0.0.1:11434/v1` by default, with automatic Homebrew Ollama suspend/resume when switching backends to free unified memory—see [Ollama Lifecycle](docs/ollama-lifecycle.md)), or connect to the official DeepSeek Responses API (`deepseek-flash`). Both backends support SSE token streaming and never silently cross-fallback or replay uncertain requests.
 
 ## Privacy & Security by Design
 
@@ -20,11 +26,12 @@ Global translation utilities require sensitive macOS permissions (`Accessibility
 
 | Area | Architectural Guarantee |
 | :--- | :--- |
-| **API Key Isolation** | Stored exclusively in the macOS **Keychain** (preferring the Data Protection Keychain when entitled, falling back cleanly to the login Keychain for ad-hoc builds). Keys never touch `config.json`, CLI arguments, environment variables, caches, or logs, and are sanitized against control/non-ASCII characters to prevent header injection. |
-| **Zero Screenshot Uploads** | Screenshot translation runs Apple Vision OCR locally; cropped images are **never** sent to cloud or local LLMs. Window scroll/change detection retains only quantized `256×256` frames at up to 4 fps in memory for diffing—never written to disk or transmitted. |
-| **System Audio Stays Local** | Visual capture streams enforce `capturesAudio = false`. A dedicated ScreenCaptureKit audio stream (`captureMicrophone = false`) starts **only** when Video Translate is enabled and no subtitle track exists. Audio is transcribed locally by `whisper.cpp` using `0600` scratch files deleted immediately after transcription. |
-| **Zero Text Persistence** | Source text, translations, and LRU caches live strictly in process memory. Configuration (`~/Library/Application Support/GlobalTranslator/config.json`) and redacted telemetry logs (`~/Library/Logs/GlobalTranslator/`) enforce `0600` permissions and log only status codes, character counts, and latencies—never user text. |
-| **Secure Input & Clipboard Safety** | Overlays and selection hooks pause immediately when `SecureTextField` or macOS Secure Input is active. The `⌘C` fallback runs only when existing pasteboard items can be backed up in full, restoring your original clipboard immediately via an uninterruptible async guard window. |
+| **API Key Isolation** | Stored exclusively in the macOS **Keychain** (preferring the Data Protection Keychain with iCloud sync disabled when entitled, falling back only on `errSecMissingEntitlement` to the login Keychain). Keys never touch `config.json`, CLI arguments, environment variables, caches, or logs, and are sanitized against control/non-ASCII characters to prevent header injection. |
+| **Zero Screenshot Uploads** | Screenshot translation runs Apple Vision OCR locally; cropped images are **never** sent to cloud or local LLMs. Window scroll/change detection retains only quantized `256×256` frames at up to 4 fps in memory for diffing—never written to disk or transmitted. Optional screenshot PNG saves use `O_EXCL\|O_NOFOLLOW` atomic writes with `0600` permissions. |
+| **System Audio Stays Local** | Visual capture streams enforce `capturesAudio = false`. A dedicated ScreenCaptureKit audio stream (`captureMicrophone = false`) starts **only** when Video Translate is enabled, no subtitle track exists, and a matching browser window is present. Audio is transcribed locally by ownership/permission-verified `whisper.cpp` using `0600` scratch files deleted immediately after transcription. |
+| **Zero Text Persistence** | Source text, translations, and O(1) LRU caches live strictly in process memory. Configuration (`~/Library/Application Support/GlobalTranslator/config.json`) and redacted telemetry logs (`~/Library/Logs/GlobalTranslator/`, including `cli.log`) enforce `0600` permissions and log only status codes, character counts, and latencies—never user text. |
+| **Secure Input & Clipboard Safety** | Overlays, selection hooks, screenshots, bridge calls, and video ASR pause immediately when `SecureTextField`, macOS Secure Input, or screen lock is active. The `⌘C` fallback skips sensitive pasteboard types (e.g., 1Password / `ConcealedType` / `TransientType`) and runs only when existing pasteboard items can be backed up in full, restoring your original clipboard inside an uninterruptible async guard window. |
+| **Local Bridge & Hardened Runtime** | The `:9233` extension bridge binds strictly to loopback `127.0.0.1` and enforces `Host` checks, `Origin` allowlists, connection/concurrency caps, token-bucket rate limiting, and `pageOrigin` cache isolation; packaged `.app` bundles enforce **Hardened Runtime** (`--options runtime`). |
 
 ## Quick Start
 
@@ -85,7 +92,7 @@ global-translator stop            # Stop the background worker
 global-translator run --foreground # Run in the foreground for debugging
 ```
 
-For automatic login startup or crash supervision, copy [com.maodashu.global-translator.daemon.plist](packaging/com.maodashu.global-translator.daemon.plist), replace `__HOME__` with your home directory path, place it in `~/Library/LaunchAgents/`, and load it via `launchctl bootstrap gui/$(id -u) ...`. Every CLI exit is audited in `~/Library/Logs/GlobalTranslator/cli.log`.
+For automatic login startup or crash supervision, copy [com.maodashu.global-translator.daemon.plist](packaging/com.maodashu.global-translator.daemon.plist) (configured for `~/Applications/Global Translator.app`; if you installed into `/Applications/`, update the first `ProgramArguments` entry accordingly), replace `__HOME__` with your home directory path, place it in `~/Library/LaunchAgents/`, and load it via `launchctl bootstrap gui/$(id -u) ...`. Every CLI exit is audited in `~/Library/Logs/GlobalTranslator/cli.log`.
 
 ## Architecture & Development
 
@@ -114,8 +121,9 @@ swift build -c release -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-
 node --test extension/*.test.js
 
 # Package Global Translator.app and build dist/Global-Translator-<ver>-<arch>.zip + .sha256
+# Public releases require a valid CODESIGN_IDENTITY; pass ALLOW_ADHOC=1 for local unsigned tests
 bash scripts/package-app.sh
-bash scripts/make-release.sh
+ALLOW_ADHOC=1 bash scripts/make-release.sh
 ```
 
 ## License & Contributing

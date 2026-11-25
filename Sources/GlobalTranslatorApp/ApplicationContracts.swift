@@ -185,15 +185,21 @@ extension CapturePipeline: CapturePipelining {}
 
 @MainActor
 public protocol StatusItemControlling: AnyObject {
+    var isDropdownVisible: Bool { get }
     func applyStatus(_ status: MenuBarStatus)
     func showSettings()
     func showSettings(fromLaunch: Bool)
+    func beginModalPicker()
+    func endModalPicker(restoreFocus: Bool)
     func stop()
 }
 
 public extension StatusItemControlling {
+    var isDropdownVisible: Bool { false }
     /// Fakes and older call sites do not need to know about launch semantics.
     func showSettings(fromLaunch: Bool) { showSettings() }
+    func beginModalPicker() {}
+    func endModalPicker(restoreFocus: Bool) {}
 }
 
 extension StatusItemController: StatusItemControlling {}
@@ -217,6 +223,12 @@ public protocol TranslationCoordinating: Sendable {
         visionFallbackEnabled: Bool
     ) async throws -> EngineOutput
     func completePlain(system: String, user: String, backend: BackendKind) async throws -> String
+    func streamPlain(
+        system: String,
+        user: String,
+        backend: BackendKind,
+        onDelta: @escaping @Sendable (String) async -> Void
+    ) async throws -> String
 }
 
 extension TranslationCoordinator: TranslationCoordinating {}
@@ -227,6 +239,18 @@ public extension TranslationCoordinating {
     func cancelPendingRequests() async {}
     func completePlain(system: String, user: String, backend: BackendKind) async throws -> String {
         throw TranslationError.invalidConfiguration("plain completion is not supported")
+    }
+    func streamPlain(
+        system: String,
+        user: String,
+        backend: BackendKind,
+        onDelta: @escaping @Sendable (String) async -> Void
+    ) async throws -> String {
+        let result = try await completePlain(system: system, user: user, backend: backend)
+        if !result.isEmpty {
+            await onDelta(result)
+        }
+        return result
     }
 }
 
@@ -258,8 +282,13 @@ public final class NoopTranslationScheduler: TranslationScheduling {
 @MainActor
 public protocol ApplicationRuntimeWorker: AnyObject {
     var isRunning: Bool { get }
+    var notifiesOnStop: Bool { get }
     func start() throws
     func stop()
+}
+
+public extension ApplicationRuntimeWorker {
+    var notifiesOnStop: Bool { false }
 }
 
 @MainActor
@@ -271,6 +300,7 @@ public final class RuntimeWorkerAdapter: ApplicationRuntimeWorker {
     }
 
     public var isRunning: Bool { worker.isRunning }
+    public var notifiesOnStop: Bool { true }
     public func start() throws { try worker.start() }
     public func stop() { worker.stop() }
 }

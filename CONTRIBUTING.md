@@ -22,7 +22,7 @@ node --test extension/*.test.js
 
 ## 本地打包与权限调试技巧
 
-默认执行 `bash scripts/package-app.sh` 会使用 `-`（ad-hoc）签名生成 `.build/desktop/Global Translator.app`，开箱即用无需证书。
+默认执行 `bash scripts/package-app.sh` 会使用 `-`（ad-hoc）签名生成 `.build/desktop/Global Translator.app`，开箱即用无需证书。注意 `scripts/make-release.sh` 出于安全考虑默认拒绝 ad-hoc 签名产物，若本地无证书仅做打包自测，请显式传入 `ALLOW_ADHOC=1 bash scripts/make-release.sh`。
 
 如果你在反复修改代码并真机调试辅助功能 / 屏幕录制权限，建议在「钥匙串访问」中创建一张名为 `Global Translator Dev` 的本机自签名代码签名证书，然后通过环境变量固定签名身份，避免每次重编译后 `cdhash` 变化导致需要重新开关系统权限：
 

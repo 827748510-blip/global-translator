@@ -173,6 +173,7 @@ extension ApplicationController {
         screenshotDirectoryPicker = panel
         let completion: (NSApplication.ModalResponse) -> Void = { [weak self, panel] response in
             guard let self else { return }
+            self.statusItem?.endModalPicker(restoreFocus: true)
             if self.screenshotDirectoryPicker === panel {
                 self.screenshotDirectoryPicker = nil
             }
@@ -182,6 +183,7 @@ extension ApplicationController {
         // The settings surface is a nonactivating panel. Attaching a sheet to
         // it can fail and leave the picker state stuck; present a standalone
         // open panel instead.
+        statusItem?.beginModalPicker()
         NSApplication.shared.activate()
         panel.begin(completionHandler: completion)
     }
@@ -295,7 +297,10 @@ extension ApplicationController {
             || (health.status == .modelUnavailable && !health.availableModels.isEmpty) else {
             throw ApplicationActionError.backendUnhealthy(health.status)
         }
-        try components.credentialStore.save(apiKey: value)
+        let credentialStore = components.credentialStore
+        try await Task.detached(priority: .userInitiated) {
+            try credentialStore.save(apiKey: value)
+        }.value
         persistDeepSeekAPIKeyConfigured(true)
         viewModel.isReplacingKey = false
         viewModel.keyDraft = ""
@@ -331,7 +336,10 @@ extension ApplicationController {
     }
 
     public func deleteAPIKey() async throws {
-        try components.credentialStore.delete()
+        let credentialStore = components.credentialStore
+        try await Task.detached(priority: .userInitiated) {
+            try credentialStore.delete()
+        }.value
         persistDeepSeekAPIKeyConfigured(false)
         viewModel.isReplacingKey = false
         viewModel.keyDraft = ""
@@ -420,6 +428,11 @@ extension ApplicationController {
         let previous = viewModel.permissionSnapshot
         let snapshot = components.permissionController.snapshot
         viewModel.permissionSnapshot = snapshot
+        if snapshot.sessionLocked || snapshot.secureInputEnabled {
+            screenshotTranslate?.handleProtectionState()
+            selectionTranslate?.handleProtectionState()
+            videoASR?.handleProtectionState()
+        }
         let grantsChanged = previous.accessibilityTrusted != snapshot.accessibilityTrusted
             || previous.screenCaptureAuthorized != snapshot.screenCaptureAuthorized
         guard !configurationLoadFailed else { return }
@@ -537,6 +550,7 @@ extension ApplicationController {
         applicationPicker = panel
         let completion: (NSApplication.ModalResponse) -> Void = { [weak self, panel] response in
             guard let self else { return }
+            self.statusItem?.endModalPicker(restoreFocus: true)
             if self.applicationPicker === panel {
                 self.applicationPicker = nil
             }
@@ -552,6 +566,7 @@ extension ApplicationController {
         // See chooseScreenshotSaveDirectory: a standalone panel works with the
         // nonactivating settings surface, and a sheet attachment can silently
         // leave the button unresponsive on later clicks.
+        statusItem?.beginModalPicker()
         NSApplication.shared.activate()
         panel.begin(completionHandler: completion)
     }

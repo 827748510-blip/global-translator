@@ -47,8 +47,8 @@ async function main() {
     "/ja": ['ja', '<p id="first">切手</p><p id="second">大丈夫</p>'],
     "/zh": ['zh-Hans', '<p id="first">普通中文</p>'],
     "/traditional": ['zh-TW', '<p id="first">歡迎使用</p>'],
-    "/missing": ['', '<p id="first">普通中文</p><p id="second">Hello world</p>'],
-    "/invalid": ['java', '<p id="first">普通中文</p><p id="second">Hello world</p>'],
+    "/missing": ['', '<p id="first">普通中文</p><p id="second">Missing hint text</p>'],
+    "/invalid": ['java', '<p id="first">普通中文</p><p id="second">Invalid hint text</p>'],
     "/multiline": ['en', `<article><div data-testid="tweetText" style="white-space:pre-wrap"><span id="post">${postLines.join("\n")}</span><a id="plan" href="/token-plan">example.com/token-plan</a></div></article>`],
     "/video": ['ja', `<video width="640" height="360" controls></video><script>
       const track = document.querySelector('video').addTextTrack('subtitles', 'English', 'en');
@@ -99,7 +99,7 @@ async function main() {
     await textIs("second", "没关系");
     await settle();
     assert.equal(calls.length, 1, "own translated DOM must not be resubmitted");
-    assert.deepEqual(calls[0], { texts: ["切手", "大丈夫"], sourceLanguage: "ja" });
+    assert.deepEqual(calls[0], { texts: ["切手", "大丈夫"], sourceLanguage: "ja", pageOrigin: fixtureEndpoint });
     await page.evaluate(() => { document.getElementById("first").firstChild.nodeValue = "切手"; });
     await textIs("first", "邮票");
     await settle();
@@ -116,7 +116,7 @@ async function main() {
     await page.waitForFunction(() => document.querySelector("video").textTracks[0].cues.length === 2);
     for (let i = 0; i < 50 && calls.length < 3; i++) await page.waitForTimeout(100);
     assert.equal(calls.length, 3, "native subtitle must reach the bridge");
-    assert.deepEqual(calls[2], { texts: ["Hello world"] });
+    assert.deepEqual(calls[2], { texts: ["Hello world"], pageOrigin: fixtureEndpoint });
     // Inspect the closed overlay via browser DevTools, without changing its
     // production visibility boundary or adding a test API to the extension.
     const devtools = await context.newCDPSession(page);
@@ -140,14 +140,14 @@ async function main() {
     await settle();
     assert.equal(calls.length, 4);
     assert.equal(calls[3].sourceLanguage, "zh-tw");
-    for (const route of ["/missing", "/invalid"]) {
+    for (const [route, sampleText] of [["/missing", "Missing hint text"], ["/invalid", "Invalid hint text"]]) {
       const before = calls.length;
       await navigate(route);
-      await textIs("second", "你好世界");
+      await textIs("second", "译文：" + sampleText);
       await settle();
       assert.equal(await page.locator("#first").textContent(), "普通中文");
       assert.equal(calls.length, before + 1);
-      assert.deepEqual(calls.at(-1), { texts: ["Hello world"] });
+      assert.deepEqual(calls.at(-1), { texts: [sampleText], pageOrigin: fixtureEndpoint });
     }
 
     const beforePost = calls.length;
@@ -157,8 +157,8 @@ async function main() {
     await textIs("post", translatedPost);
     await settle();
     assert.deepEqual(calls.slice(beforePost), [
-      { texts: [postLines[0], postLines[2], postLines[6].trim()], sourceLanguage: "en" },
-      { texts: [postLines[8], postLines[10].trim()], sourceLanguage: "en" }
+      { texts: [postLines[0], postLines[2], postLines[6].trim()], sourceLanguage: "en", pageOrigin: fixtureEndpoint },
+      { texts: [postLines[8], postLines[10].trim()], sourceLanguage: "en", pageOrigin: fixtureEndpoint }
     ]);
     assert.equal(await page.locator("#plan").getAttribute("href"), "/token-plan");
     assert.equal(await page.locator("#plan").textContent(), "example.com/token-plan");

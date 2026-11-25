@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全与隐私漏洞私密上报 / Report a Security Vulnerability
+    url: https://github.com/827748510-blip/global-translator/security/advisories/new
+    about: 请勿在公开 Issue 中披露凭据泄露、本地桥接越权或隐私风险细节，点击此处通过 GitHub Security Advisories 私密提交。

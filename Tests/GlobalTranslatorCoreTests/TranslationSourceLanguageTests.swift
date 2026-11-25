@@ -42,4 +42,26 @@ struct TranslationSourceLanguageTests {
         #expect(!TextFilter.shouldTranslate("切手"))
         #expect(TextFilter.selectionDirection("普通中文") == .toEnglish)
     }
+
+    @Test
+    func localPromptAddsExplicitCJKDisambiguationForJapaneseKoreanAndTraditional() throws {
+        let ja = try #require(TranslationSourceLanguage("ja"))
+        let ko = try #require(TranslationSourceLanguage("ko"))
+        let tw = try #require(TranslationSourceLanguage("zh-TW"))
+        let item = TranslationItem(id: UUID(), sourceText: "切手")
+
+        let jaSystem = LocalTranslationPrompt.system(for: .toChinese, sourceLanguage: ja)
+        #expect(jaSystem.contains("Source language hint: ja."))
+        #expect(jaSystem.contains("Japanese"))
+        #expect(LocalTranslationPrompt.userContent(for: [item], sourceLanguage: ja).hasPrefix("Translate Japanese to Simplified Chinese:"))
+
+        let koSystem = LocalTranslationPrompt.system(for: .toChinese, sourceLanguage: ko)
+        #expect(koSystem.contains("Source language hint: ko."))
+        #expect(koSystem.contains("Korean"))
+        #expect(LocalTranslationPrompt.userContent(for: [item], sourceLanguage: ko).hasPrefix("Translate Korean to Simplified Chinese:"))
+
+        let twSystem = LocalTranslationPrompt.system(for: .toChinese, sourceLanguage: tw)
+        #expect(twSystem.contains("Traditional Chinese"))
+        #expect(LocalTranslationPrompt.userContent(for: [item], sourceLanguage: tw).hasPrefix("Convert Traditional Chinese to Simplified Chinese:"))
+    }
 }

@@ -59,7 +59,6 @@ public final class VisionOCRService: VisionOCRProviding, @unchecked Sendable {
         } else {
             selected = fast
         }
-        _ = Self.detectLanguage(in: selected.map(\.text).joined(separator: " "))
         return normalized(selected)
     }
 
@@ -93,6 +92,13 @@ public final class VisionOCRService: VisionOCRProviding, @unchecked Sendable {
 
 @available(macOS 14.0, *)
 public final class VisionFrameworkRecognizer: VisionTextRecognizing, @unchecked Sendable {
+    private static let ocrQueue = DispatchQueue(
+        label: "global-translator.vision-ocr",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
+    private static let ocrConcurrencyLimiter = DispatchSemaphore(value: 2)
+
     public let recognitionLanguages: [String]
 
     public init(recognitionLanguages: [String] = []) {
@@ -101,28 +107,41 @@ public final class VisionFrameworkRecognizer: VisionTextRecognizing, @unchecked 
 
     public func recognize(image: CGImage, level: OCRRecognitionLevel) async throws -> [VisionTextObservation] {
         try Task.checkCancellation()
-        var output: [VisionTextObservation] = []
-        let request = VNRecognizeTextRequest { request, _ in
-            guard let observations = request.results as? [VNRecognizedTextObservation] else { return }
-            output = observations.compactMap { observation in
-                guard let candidate = observation.topCandidates(1).first else { return nil }
-                return VisionTextObservation(
-                    text: candidate.string,
-                    boundingBox: observation.boundingBox,
-                    confidence: candidate.confidence
-                )
+        let languages = recognitionLanguages
+        return try await withCheckedThrowingContinuation { continuation in
+            Self.ocrQueue.async {
+                Self.ocrConcurrencyLimiter.wait()
+                defer { Self.ocrConcurrencyLimiter.signal() }
+                autoreleasepool {
+                    do {
+                        var output: [VisionTextObservation] = []
+                        let request = VNRecognizeTextRequest { request, _ in
+                            guard let observations = request.results as? [VNRecognizedTextObservation] else { return }
+                            output = observations.compactMap { observation in
+                                guard let candidate = observation.topCandidates(1).first else { return nil }
+                                return VisionTextObservation(
+                                    text: candidate.string,
+                                    boundingBox: observation.boundingBox,
+                                    confidence: candidate.confidence
+                                )
+                            }
+                        }
+                        request.recognitionLevel = level == .fast ? .fast : .accurate
+                        request.usesLanguageCorrection = (level == .accurate)
+                        if languages.isEmpty {
+                            request.automaticallyDetectsLanguage = true
+                        } else {
+                            request.recognitionLanguages = languages
+                            request.automaticallyDetectsLanguage = false
+                        }
+                        let handler = VNImageRequestHandler(cgImage: image, options: [:])
+                        try handler.perform([request])
+                        continuation.resume(returning: output)
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
             }
         }
-        request.recognitionLevel = level == .fast ? .fast : .accurate
-        request.usesLanguageCorrection = true
-        if recognitionLanguages.isEmpty {
-            request.automaticallyDetectsLanguage = true
-        } else {
-            request.recognitionLanguages = recognitionLanguages
-            request.automaticallyDetectsLanguage = true
-        }
-        let handler = VNImageRequestHandler(cgImage: image, options: [:])
-        try handler.perform([request])
-        return output
     }
 }

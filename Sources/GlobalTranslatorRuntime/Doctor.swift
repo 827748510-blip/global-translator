@@ -80,10 +80,11 @@ public struct DoctorInputs: Equatable, Sendable {
         let physicalMemoryGiB = Int(ProcessInfo.processInfo.physicalMemory / (1_073_741_824))
         let accessibilityTrusted = AXIsProcessTrusted()
         let screenCapturePreflight = CGPreflightScreenCaptureAccess()
-        let binaryPath = URL(fileURLWithPath: CommandLine.arguments.first ?? "")
-            .standardizedFileURL
-        let binaryAtRecommendedPath = binaryPath.path == paths.recommendedBinaryURL.path &&
-            FileManager.default.isExecutableFile(atPath: binaryPath.path)
+        let binaryAtRecommendedPath = Self.isBinaryAtRecommendedPath(
+            argv0: CommandLine.arguments.first ?? "",
+            pathEnvironment: ProcessInfo.processInfo.environment["PATH"],
+            recommendedBinaryURL: paths.recommendedBinaryURL
+        )
         let keychainReadable: Bool
         do {
             _ = try MacOSKeychainStore().read()
@@ -116,6 +117,50 @@ public struct DoctorInputs: Equatable, Sendable {
             configurationDecodable: configurationDecodable,
             whisperAvailable: whisperAvailable
         )
+    }
+
+    static func isBinaryAtRecommendedPath(
+        argv0: String,
+        pathEnvironment: String?,
+        recommendedBinaryURL: URL,
+        isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> Bool {
+        let recommendedStandardized = recommendedBinaryURL.standardizedFileURL
+        guard isExecutable(recommendedStandardized.path) else { return false }
+        guard let invoked = resolvedExecutableURL(
+            argv0: argv0,
+            pathEnvironment: pathEnvironment,
+            isExecutable: isExecutable
+        ) else {
+            return false
+        }
+        if invoked.standardizedFileURL.path == recommendedStandardized.path {
+            return true
+        }
+        return invoked.resolvingSymlinksInPath().path == recommendedStandardized.resolvingSymlinksInPath().path
+    }
+
+    private static func resolvedExecutableURL(
+        argv0: String,
+        pathEnvironment: String?,
+        isExecutable: (String) -> Bool
+    ) -> URL? {
+        let trimmed = argv0.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.contains("/") {
+            let url = URL(fileURLWithPath: trimmed).standardizedFileURL
+            return isExecutable(url.path) ? url : nil
+        }
+        guard let pathEnvironment else { return nil }
+        for entry in pathEnvironment.split(separator: ":") where !entry.isEmpty {
+            let candidate = URL(fileURLWithPath: String(entry), isDirectory: true)
+                .appendingPathComponent(trimmed, isDirectory: false)
+                .standardizedFileURL
+            if isExecutable(candidate.path) {
+                return candidate
+            }
+        }
+        return nil
     }
 }
 

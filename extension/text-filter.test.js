@@ -86,3 +86,58 @@ for (const tag of ["", "ja\n", "ja_JP", null, {}, "ja-", "ja--JP", "a".repeat(64
   assertEqual(filter.normalizeSourceLanguage(tag), undefined, "invalid tag not relayed");
 }
 assertEqual(filter.normalizeSourceLanguage("JA-jp"), "ja-jp", "canonical hint");
+
+// Icon glyphs, PUA symbols, keyboard shortcuts, and isolated math symbols are skipped.
+for (const skipSymbol of [
+  "\uE88A",
+  "\uE000 home",
+  "Ctrl+Shift+P",
+  "Cmd+K",
+  "⌘K",
+  "8oz",
+  "16:9",
+  "1920x1080",
+  "2x",
+  "A / B",
+  "x + y = z"
+]) {
+  assertEqual(filter.shouldSendForPageTranslate(skipSymbol, "en"), false, "skip symbol " + JSON.stringify(skipSymbol));
+  assertEqual(filter.shouldTranslate(skipSymbol), false, "shouldTranslate skip " + JSON.stringify(skipSymbol));
+}
+
+assertEqual(filter.isIconFontFamily('"Material Symbols Outlined", sans-serif'), true, "material symbols font");
+assertEqual(filter.isIconFontFamily("Material Icons"), true, "material icons font");
+assertEqual(filter.isIconFontFamily('"Font Awesome 6 Free"'), true, "font awesome font");
+assertEqual(filter.isIconFontFamily("Inter, -apple-system, sans-serif"), false, "normal UI font");
+
+assertEqual(
+  filter.isLikelySimplifiedChinesePage(
+    ["所有媒体", "图片", "视频", "角色", "场景", "上传的内容", "创建工具", "回收站", "简体中文设置"],
+    "en"
+  ),
+  true,
+  "misdeclared English tag on Simplified Chinese page"
+);
+assertEqual(
+  filter.isLikelySimplifiedChinesePage(
+    ["所有媒体", "图片", "视频", "角色", "场景", "上传的内容", "创建工具", "回收站"],
+    "zh-TW"
+  ),
+  true,
+  "misdeclared zh-TW tag on Simplified Chinese page"
+);
+assertEqual(
+  filter.isLikelySimplifiedChinesePage(["歡迎使用本系統進行設定與管理"], "zh-TW"),
+  false,
+  "genuine Traditional Chinese page stays eligible"
+);
+assertEqual(
+  filter.isLikelySimplifiedChinesePage(["こんにちは世界", "設定を開く"], "ja"),
+  false,
+  "Japanese page stays eligible"
+);
+assertEqual(
+  filter.isLikelySimplifiedChinesePage(["Qwen4 is coming.", "Built for real-world tasks.", "普通中文"], "en"),
+  false,
+  "English page with short Chinese snippet stays eligible"
+);

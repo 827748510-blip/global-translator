@@ -22,12 +22,14 @@ public final class ScreenshotTranslateController {
     private let requestScreenCapture: () -> Void
     private let imageSaver: @Sendable (Data, URL) throws -> URL
     private let imageCopier: @Sendable (Data) -> Void
+    private let clipboardCoordinator: ClipboardBorrowCoordinator
 
     private var shortcut: KeyboardShortcutSpec
     private var autoCopy = false
     private var backend: BackendKind = .deepSeekCloud
     private var hotkeyEnabled = false
     private var runTask: Task<Void, Never>?
+    private var translateTask: Task<Void, Never>?
     private var presentationGeneration: UInt64 = 0
     /// 每次截图（含选区流程）自增的身份。后台编码/写盘返回后据此丢弃过期结果，
     /// 避免上一轮截图覆盖新一轮的保存路径与剪贴板。
@@ -42,6 +44,9 @@ public final class ScreenshotTranslateController {
     private var clipboardImageKept = false
 
     public var lastHotkeyError: String?
+    public var onOpenSettings: (() -> Void)?
+    public var isPopoverVisible: Bool { popover.isVisible }
+    public var isSelectingRegion: Bool { selector.isSelecting }
 
     public init(
         selector: any RegionSelectionPresenting,
@@ -68,7 +73,8 @@ public final class ScreenshotTranslateController {
         },
         imageCopier: @escaping @Sendable (Data) -> Void = { data in
             ScreenshotImageIO.copyToClipboard(pngData: data)
-        }
+        },
+        clipboardCoordinator: ClipboardBorrowCoordinator = .shared
     ) {
         self.selector = selector
         self.capturer = capturer
@@ -85,11 +91,15 @@ public final class ScreenshotTranslateController {
         self.shortcut = shortcut
         self.imageSaver = imageSaver
         self.imageCopier = imageCopier
+        self.clipboardCoordinator = clipboardCoordinator
         popover.onUserDismiss = { [weak self] in
             self?.cancelPresentation()
         }
         popover.onTranslate = { [weak self] in
             self?.retryCurrent()
+        }
+        popover.onOpenSettings = { [weak self] in
+            self?.onOpenSettings?()
         }
     }
 
@@ -164,9 +174,30 @@ public final class ScreenshotTranslateController {
         }
         runTask?.cancel()
         cancelPresentation()
+        if isCaptureProtected() {
+            logger.event("screenshot_protected_blocked", fields: [:])
+            popover.dismiss()
+            return
+        }
         runTask = Task { @MainActor [weak self] in
             await self?.runCaptureTranslate()
         }
+    }
+
+    public func handleProtectionState() {
+        guard isCaptureProtected() else { return }
+        if selector.isSelecting {
+            selector.cancel()
+        }
+        runTask?.cancel()
+        runTask = nil
+        cancelPresentation()
+        popover.dismiss()
+    }
+
+    private func isCaptureProtected() -> Bool {
+        let snap = permissions.snapshot
+        return snap.secureInputEnabled || snap.sessionLocked
     }
 
     public func completeSelectionForTesting(_ outcome: RegionSelectionOutcome) async {
@@ -174,9 +205,15 @@ public final class ScreenshotTranslateController {
     }
 
     private func retryCurrent() {
+        guard !isCaptureProtected() else {
+            popover.dismiss()
+            return
+        }
         guard let original = popover.currentContent?.original, !original.isEmpty,
               let frame = popover.currentContent?.screenFrame else { return }
-        presentTranslation(original: original, screenFrame: frame)
+        runTask = Task { @MainActor [weak self] in
+            await self?.presentTranslation(original: original, screenFrame: frame)
+        }
     }
 
     private func runCaptureTranslate() async {
@@ -186,21 +223,44 @@ public final class ScreenshotTranslateController {
         // `handleImageArtifacts` 之前返回，残留会让弹层误报「截图已保存/已复制」。
         lastSavedImagePath = nil
         clipboardImageKept = false
+        guard !isCaptureProtected() else {
+            logger.event("screenshot_protected_blocked", fields: [:])
+            popover.dismiss()
+            return
+        }
         if !permissions.snapshot.screenCaptureAuthorized {
             requestScreenCapture()
             guard permissions.snapshot.screenCaptureAuthorized else {
                 logger.event("screenshot_permission_missing", fields: ["reason": "screenCapture"])
-                presentFailure(original: "", message: ScreenshotTranslateSupport.missingScreenCaptureCopy)
+                presentFailure(
+                    original: "",
+                    message: ScreenshotTranslateSupport.missingScreenCaptureCopy,
+                    showsOpenSettingsAction: true
+                )
                 return
             }
         }
+        let prewarmTask = Task { [capturer] in
+            await capturer.prewarm()
+        }
+        defer { prewarmTask.cancel() }
         let outcome = await selector.selectRegion()
         guard !Task.isCancelled else { return }
+        guard !isCaptureProtected() else {
+            logger.event("screenshot_protected_blocked", fields: [:])
+            popover.dismiss()
+            return
+        }
         await process(outcome, capture: capture)
     }
 
     private func process(_ outcome: RegionSelectionOutcome, capture: UInt64) async {
         guard !Task.isCancelled, isCurrent(capture) else { return }
+        guard !isCaptureProtected() else {
+            logger.event("screenshot_protected_blocked", fields: [:])
+            popover.dismiss()
+            return
+        }
         switch outcome {
         case .cancelled:
             logger.event("screenshot_cancelled", fields: [:])
@@ -212,6 +272,11 @@ public final class ScreenshotTranslateController {
 
     private func process(rect: CGRect, capture: UInt64) async {
         guard !Task.isCancelled, isCurrent(capture) else { return }
+        guard !isCaptureProtected() else {
+            logger.event("screenshot_protected_blocked", fields: [:])
+            popover.dismiss()
+            return
+        }
         guard ScreenshotTranslateSupport.isUsableRegion(rect) else {
             logger.event("screenshot_region_empty", fields: [:])
             presentFailure(
@@ -221,11 +286,23 @@ public final class ScreenshotTranslateController {
             )
             return
         }
+        popover.show(
+            SelectionPopoverContent.loading(
+                original: "",
+                screenFrame: rect,
+                message: "正在识别文字…"
+            ).asScreenshotResult()
+        )
+        let pipelineStartedAt = ProcessInfo.processInfo.systemUptime
         let image: CGImage
         do {
             image = try await capturer.capture(rect: rect)
             try Task.checkCancellation()
         } catch is CancellationError {
+            return
+        } catch CaptureError.protected {
+            logger.event("screenshot_protected_blocked", fields: [:])
+            popover.dismiss()
             return
         } catch {
             logger.event("screenshot_capture_failed", fields: ["status": "error"])
@@ -236,9 +313,18 @@ public final class ScreenshotTranslateController {
             )
             return
         }
-        // 保存 / 复制截图发生在 OCR 之前：即使识别不到文字，用户要的截图也已保留。
-        await handleImageArtifacts(image, capture: capture)
+        let captureMS = Self.elapsedMilliseconds(since: pipelineStartedAt)
         guard isCurrent(capture) else { return }
+        guard !isCaptureProtected() else {
+            popover.dismiss()
+            return
+        }
+        // 并发启动截图编码/保存/复制与 OCR 识别，缩短从框选完成到首屏结果的总耗时。
+        let artifactTask = Task<Void, Never> { @MainActor [weak self] in
+            guard let self else { return }
+            await self.handleImageArtifacts(image, capture: capture)
+        }
+        let ocrStartedAt = ProcessInfo.processInfo.systemUptime
         let recognized: String
         do {
             recognized = try await ocr.recognizeJoinedText(image: image)
@@ -246,6 +332,10 @@ public final class ScreenshotTranslateController {
         } catch is CancellationError {
             return
         } catch {
+            if needsArtifactHintsBeforePresent {
+                await artifactTask.value
+            }
+            guard isCurrent(capture) else { return }
             logger.event("screenshot_ocr_failed", fields: ["status": "error"])
             presentFailure(
                 original: "",
@@ -254,9 +344,18 @@ public final class ScreenshotTranslateController {
             )
             return
         }
+        let ocrMS = Self.elapsedMilliseconds(since: ocrStartedAt)
         guard isCurrent(capture) else { return }
+        guard !isCaptureProtected() else {
+            popover.dismiss()
+            return
+        }
         let text = recognized.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
+            if needsArtifactHintsBeforePresent {
+                await artifactTask.value
+            }
+            guard isCurrent(capture) else { return }
             // 图里没有文字 = 没什么可翻的，不是失败：不弹红色，也不调模型。
             logger.event("screenshot_ocr_empty", fields: [:])
             presentNoTranslationNeeded(
@@ -268,6 +367,10 @@ public final class ScreenshotTranslateController {
         }
         switch TextFilter.selectionDecision(text) {
         case .skip:
+            if needsArtifactHintsBeforePresent {
+                await artifactTask.value
+            }
+            guard isCurrent(capture) else { return }
             // 只识别到 URL / 版本号 / 快捷键这类不可译内容：同样属于「无需翻译」。
             logger.event("screenshot_not_translatable", fields: [:])
             presentNoTranslationNeeded(
@@ -277,11 +380,29 @@ public final class ScreenshotTranslateController {
             )
         case .alreadyTargetLanguage:
             // 双向互译：截图识别出的简体中文也翻译成英文，不再只提示「已是中文」。
-            presentTranslation(original: text, screenFrame: rect)
+            await presentTranslation(
+                original: text,
+                screenFrame: rect,
+                artifactTask: artifactTask,
+                captureMS: captureMS,
+                ocrMS: ocrMS,
+                pipelineStartedAt: pipelineStartedAt
+            )
         case .noTranslationNeeded:
+            if needsArtifactHintsBeforePresent {
+                await artifactTask.value
+            }
+            guard isCurrent(capture) else { return }
             presentNoTranslationNeeded(original: text, screenFrame: rect)
         case .translate:
-            presentTranslation(original: text, screenFrame: rect)
+            await presentTranslation(
+                original: text,
+                screenFrame: rect,
+                artifactTask: artifactTask,
+                captureMS: captureMS,
+                ocrMS: ocrMS,
+                pipelineStartedAt: pipelineStartedAt
+            )
         }
     }
 
@@ -300,22 +421,52 @@ public final class ScreenshotTranslateController {
         ))
     }
 
-    private func presentTranslation(original: String, screenFrame: CGRect) {
+    private var needsArtifactHintsBeforePresent: Bool {
+        saveImageEnabled || (copyImageEnabled && autoCopy)
+    }
+
+    private nonisolated static func elapsedMilliseconds(since startUptime: TimeInterval) -> Int {
+        max(0, Int(((ProcessInfo.processInfo.systemUptime - startUptime) * 1_000).rounded()))
+    }
+
+    private func presentTranslation(
+        original: String,
+        screenFrame: CGRect,
+        artifactTask: Task<Void, Never>? = nil,
+        captureMS: Int = 0,
+        ocrMS: Int = 0,
+        pipelineStartedAt: TimeInterval? = nil
+    ) async {
         cancelPresentation()
+        guard !isCaptureProtected() else {
+            logger.event("screenshot_protected_blocked", fields: [:])
+            popover.dismiss()
+            return
+        }
         let generation = presentationGeneration
         switch backendReadiness() {
         case .missingCloudKey:
+            if needsArtifactHintsBeforePresent {
+                await artifactTask?.value
+            }
+            guard !Task.isCancelled, presentationGeneration == generation else { return }
             presentFailure(
                 original: original,
                 message: ScreenshotTranslateSupport.missingDeepSeekKeyCopy,
-                screenFrame: screenFrame
+                screenFrame: screenFrame,
+                showsOpenSettingsAction: true
             )
             return
         case .localNotReady:
+            if needsArtifactHintsBeforePresent {
+                await artifactTask?.value
+            }
+            guard !Task.isCancelled, presentationGeneration == generation else { return }
             presentFailure(
                 original: original,
                 message: ScreenshotTranslateSupport.localBackendNotReadyCopy,
-                screenFrame: screenFrame
+                screenFrame: screenFrame,
+                showsOpenSettingsAction: true
             )
             return
         case .ready:
@@ -326,17 +477,52 @@ public final class ScreenshotTranslateController {
                 .asScreenshotResult()
         ))
         guard let translator = translator() else {
+            if needsArtifactHintsBeforePresent {
+                await artifactTask?.value
+            }
+            guard !Task.isCancelled, presentationGeneration == generation else { return }
             presentFailure(
                 original: original,
                 message: ScreenshotTranslateSupport.translatorUnavailableCopy,
-                screenFrame: screenFrame
+                screenFrame: screenFrame,
+                showsOpenSettingsAction: true
             )
             return
         }
-        runTask = Task { @MainActor [weak self] in
+        let translateStartedAt = ProcessInfo.processInfo.systemUptime
+        translateTask = Task { @MainActor [weak self] in
             do {
-                let outcome = try await translator.translateSelection(original)
+                let outcome = try await translator.translateSelectionStreaming(original) { [weak self] partial in
+                    guard let self,
+                          !Task.isCancelled,
+                          self.presentationGeneration == generation,
+                          !self.isCaptureProtected() else { return }
+                    let trimmed = partial.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { return }
+                    self.popover.show(self.withArtifactHints(
+                        SelectionPopoverContent.loading(
+                            original: original,
+                            screenFrame: screenFrame,
+                            message: trimmed
+                        ).asScreenshotResult()
+                    ))
+                }
+                if self?.needsArtifactHintsBeforePresent == true {
+                    await artifactTask?.value
+                }
                 guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
+                guard !self.isCaptureProtected() else {
+                    self.popover.dismiss()
+                    return
+                }
+                let translateMS = Self.elapsedMilliseconds(since: translateStartedAt)
+                let totalMS = Self.elapsedMilliseconds(since: pipelineStartedAt ?? translateStartedAt)
+                self.logger.event("screenshot_timing", fields: [
+                    "capture_ms": String(captureMS),
+                    "ocr_ms": String(ocrMS),
+                    "translate_ms": String(translateMS),
+                    "total_ms": String(totalMS)
+                ])
                 let text = outcome.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if text.isEmpty {
                     self.presentFailure(
@@ -354,13 +540,24 @@ public final class ScreenshotTranslateController {
                         sourceWasTruncated: outcome.sourceWasTruncated
                     ).asScreenshotResult()
                 ))
-                self.autoCopyIfNeeded(text)
+                if self.clipboardCoordinator.tryAcquire() {
+                    defer { self.clipboardCoordinator.release() }
+                    self.performAutoCopyIfAllowed(text, generation: generation)
+                } else {
+                    await self.clipboardCoordinator.withMainActorExclusiveAccess {
+                        self.performAutoCopyIfAllowed(text, generation: generation)
+                    }
+                }
             } catch is CancellationError {
                 return
+            } catch CaptureError.protected {
+                guard let self, self.presentationGeneration == generation else { return }
+                self.popover.dismiss()
             } catch {
+                if self?.needsArtifactHintsBeforePresent == true {
+                    await artifactTask?.value
+                }
                 guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
-                // 模型原样回传唯一要翻的原文 = 专有名词，属于「无需翻译」而不是
-                // 失败：滑词早就这么处理，截图此前会弹红色「翻译失败」。
                 if let selection = error as? SelectionTranslateError, selection == .noTranslationNeeded {
                     self.presentNoTranslationNeeded(original: original, screenFrame: screenFrame)
                     return
@@ -375,21 +572,31 @@ public final class ScreenshotTranslateController {
         }
     }
 
-    private func presentFailure(original: String, message: String, screenFrame: CGRect? = nil) {
+    private func presentFailure(
+        original: String,
+        message: String,
+        screenFrame: CGRect? = nil,
+        showsOpenSettingsAction: Bool = false
+    ) {
         let frame = screenFrame ?? SelectionTranslateSupport.fallbackFrame(at: mouseLocation())
         popover.show(withArtifactHints(
             SelectionPopoverContent.failed(
                 original: original,
                 message: message,
-                screenFrame: frame
+                screenFrame: frame,
+                showsOpenSettingsAction: showsOpenSettingsAction
             ).asScreenshotResult()
         ))
     }
 
     /// 自动复制译文。「复制截图」刚把图片放进剪贴板的这一轮不覆盖：用户要的是
     /// 那张图，译文已经显示在弹层里，需要时点「拷贝」显式覆盖即可。
-    private func autoCopyIfNeeded(_ text: String) {
-        guard autoCopy, !clipboardImageKept else { return }
+    private func performAutoCopyIfAllowed(_ text: String, generation: UInt64) {
+        guard autoCopy,
+              !clipboardImageKept,
+              presentationGeneration == generation,
+              !Task.isCancelled,
+              !isCaptureProtected() else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         try? pasteboardWriter(trimmed)
@@ -423,10 +630,13 @@ public final class ScreenshotTranslateController {
             }
         }
         if copyImageEnabled {
-            guard isCurrent(capture) else { return }
-            imageCopier(data)
-            clipboardImageKept = true
-            logger.event("screenshot_copied", fields: [:])
+            guard isCurrent(capture), !isCaptureProtected() else { return }
+            await clipboardCoordinator.withMainActorExclusiveAccess {
+                guard self.isCurrent(capture), !self.isCaptureProtected() else { return }
+                self.imageCopier(data)
+                self.clipboardImageKept = true
+                self.logger.event("screenshot_copied", fields: [:])
+            }
         }
     }
 
@@ -456,8 +666,8 @@ public final class ScreenshotTranslateController {
 
     private func cancelPresentation() {
         presentationGeneration &+= 1
-        runTask?.cancel()
-        runTask = nil
+        translateTask?.cancel()
+        translateTask = nil
     }
 
     private func describe(_ error: Error) -> String {

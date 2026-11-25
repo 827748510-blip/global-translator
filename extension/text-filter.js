@@ -23,10 +23,16 @@
     /^\.?[A-Za-z0-9_.-]+\.(?:swift|tsx?|jsx?|json|ya?ml|toml|md|plist|lock|sh|css|html)(?:\s+[AMUDR?]|\s+\d+)?$/i,
     /^0x[0-9a-f]+$/i,
     /^v?\d+(?:\.\d+){2,}(?:[-+][a-z0-9.-]+)?$/i,
-    /^\d+(?:\.\d+)?\s*(?:[kmgt]i?b|bytes?|fps|hz|khz|mhz|ghz|px|dpi|ms|s|sec|min|%)$/i,
+    /^\d+(?:\.\d+)?\s*(?:[kmgt]i?b|bytes?|fps|hz|khz|mhz|ghz|px|pt|em|rem|vh|vw|dpi|ppi|db|mah|wh|mbps|gbps|ms|sec|min|oz|ml|cl|kg|mg|cm|mm|m|g|s|w|v|a|x|k|p|%)$/i,
+    /^\d+(?:\.\d+)?\s*[x×]\s*\d+(?:\.\d+)?$/i,
+    /^\d+\s*[:/]\s*\d+$/,
     /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i,
     /^[A-Za-z_][A-Za-z0-9_.]*\(\)$/
   ];
+
+  const PUA_RE = /[\uE000-\uF8FF\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/u;
+  const MULTI_LETTER_WORD_RE = /\p{L}[\p{M}]*\p{L}/u;
+  const ICON_FONT_FAMILY_RE = /material\s*(?:icons|symbols)|google\s*(?:symbols|material\s*icons)|font\s*awesome|fontawesome|icomoon|codicon|iconfont|icon-font|remixicon|bootstrap-icons|ionicons|glyphicons|feather|lucide|anticon|el-icon|tabler-icons|octicons/i;
 
   const CJK = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/;
   const CJK_GLOBAL = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/g;
@@ -35,6 +41,8 @@
   // Characters used only in Traditional Chinese. A hit means the node still
   // needs translation so the bridge can convert it to Simplified Chinese.
   const TRADITIONAL_ONLY = /[們這說時個學國為會來對開關於與機樣點電話見覺認識讓從麼兒頭實現發變邊過還進運遠選門問間隊際陸隨險難雖靜響頁項順須預領題顏風飛飯飲館馬驗體車東語讀寫書錢買賣資產給帶張場廠廣樓臺灣萬專師傳價億優儲兩內網線組織統經維護軟應該誰請謝歡樂愛錯權確證據庫檔設計畫圖標簽範圍環瀏覽擴縮啟動執誤訊號碼輸連斷續聽講聲錄製複雜亂鐘]/;
+  // Simplified counterparts exclusively used in Simplified Chinese (zero overlap with TRADITIONAL_ONLY).
+  const SIMPLIFIED_ONLY = /[们这说时个学国为会来对开关与机样点电话见觉认识让从么儿头实现发变边过还进运远选门问间队际陆随险难虽静响页项顺须预领题颜风飞饭饮馆马验体车东语读写书钱买卖资产给带张场厂广楼台湾万专师传价亿优储两内网线组织统经维护软应该谁请谢欢乐爱错权确证据库档设计画图标范围环浏览扩缩启动执误讯号码输连断续听讲声录制复杂乱钟]/;
 
   // Any Unicode letter counts, so Cyrillic, Arabic, Hebrew, Greek, Thai,
   // Devanagari, kana, hangul, ... are no longer dropped before the bridge.
@@ -156,16 +164,34 @@
     return value.toLowerCase();
   }
 
+  const MAX_CJK_PAGE_CACHE = 64;
+  const foreignCJKPageCache = new Map();
+
   function isForeignCJKPage(pageLanguage) {
+    const key = typeof pageLanguage === "string" ? pageLanguage : "";
+    if (foreignCJKPageCache.has(key)) {
+      return foreignCJKPageCache.get(key);
+    }
     const tag = normalizeSourceLanguage(pageLanguage);
-    if (!tag) return false;
-    const parts = tag.split("-");
-    if (parts[0] === "ja" || parts[0] === "ko") return true;
-    if (parts[0] !== "zh" || parts.length < 2) return false;
-    const script = parts[1].length === 4 ? parts[1] : null;
-    if (script === "hans") return false;
-    if (script === "hant") return true;
-    return ["tw", "hk", "mo"].includes(parts[script ? 2 : 1]);
+    let result = false;
+    if (tag) {
+      const parts = tag.split("-");
+      if (parts[0] === "ja" || parts[0] === "ko") {
+        result = true;
+      } else if (parts[0] === "zh" && parts.length >= 2) {
+        const script = parts[1].length === 4 ? parts[1] : null;
+        if (script === "hant") {
+          result = true;
+        } else if (script !== "hans") {
+          result = ["tw", "hk", "mo"].includes(parts[script ? 2 : 1]);
+        }
+      }
+    }
+    if (foreignCJKPageCache.size >= MAX_CJK_PAGE_CACHE) {
+      foreignCJKPageCache.clear();
+    }
+    foreignCJKPageCache.set(key, result);
+    return result;
   }
 
   // Simplified-Chinese detection for the page bridge. Kana/hangul always mean
@@ -190,12 +216,62 @@
   function shouldTranslate(text) {
     const value = String(text || "").trim();
     if (!value) return false;
+    if (PUA_RE.test(value)) return false;
     if (isURL(value) || isEmail(value) || isFilePath(value) || isShortcutOnly(value) || isIdentifierOrUnit(value)) {
       return false;
     }
     if (!hasLetter(value)) return false;
+    if (!CJK.test(value) && !KANA.test(value) && !HANGUL.test(value) && !MULTI_LETTER_WORD_RE.test(value)) {
+      return false;
+    }
     if (isTechnicalTokenPhrase(value)) return false;
     return true;
+  }
+
+  function isIconFontFamily(fontFamily) {
+    return ICON_FONT_FAMILY_RE.test(String(fontFamily || ""));
+  }
+
+  function isSimplifiedDeclaredLang(pageLanguage) {
+    const tag = normalizeSourceLanguage(pageLanguage);
+    if (!tag) return false;
+    return tag === "zh" || tag === "zh-cn" || tag === "zh-sg" || tag.startsWith("zh-hans");
+  }
+
+  function isLikelySimplifiedChinesePage(sampleTexts, declaredLang) {
+    if (!Array.isArray(sampleTexts) || sampleTexts.length === 0) return false;
+    let hanCount = 0;
+    let simpOnlyCount = 0;
+    let tradOnlyCount = 0;
+    let otherLetterCount = 0;
+    for (let i = 0; i < sampleTexts.length; i++) {
+      const sample = String(sampleTexts[i] || "");
+      if (!sample || PUA_RE.test(sample)) continue;
+      if (KANA.test(sample) || HANGUL.test(sample)) return false;
+      const cjkMatches = sample.match(CJK_GLOBAL);
+      if (cjkMatches) {
+        hanCount += cjkMatches.length;
+        for (let j = 0; j < cjkMatches.length; j++) {
+          const ch = cjkMatches[j];
+          if (TRADITIONAL_ONLY.test(ch)) {
+            tradOnlyCount++;
+          } else if (SIMPLIFIED_ONLY.test(ch)) {
+            simpOnlyCount++;
+          }
+        }
+      }
+      const nonCjkLetters = sample.replace(CJK_GLOBAL, "").match(/\p{L}/gu);
+      if (nonCjkLetters) {
+        otherLetterCount += nonCjkLetters.length;
+      }
+    }
+    const totalLetters = hanCount + otherLetterCount;
+    if (totalLetters === 0) return false;
+    const hanRatio = hanCount / totalLetters;
+    if (isSimplifiedDeclaredLang(declaredLang) && hanCount >= 6 && tradOnlyCount === 0 && hanRatio >= 0.6) {
+      return true;
+    }
+    return hanCount >= 12 && simpOnlyCount >= 3 && tradOnlyCount * 3 <= simpOnlyCount && hanRatio >= 0.65;
   }
 
   // Page-bridge gate: every script is eligible (Latin, CJK, Cyrillic, Arabic,
@@ -204,6 +280,7 @@
   function shouldSendForPageTranslate(text, pageLanguage) {
     const value = String(text || "").trim();
     if (value.length < 2) return false;
+    if (PUA_RE.test(value)) return false;
     if (!hasLetter(value)) return false;
     if (isAlreadyTargetLanguage(value, pageLanguage)) return false;
     return shouldTranslate(value);
@@ -212,7 +289,9 @@
   const api = {
     normalizeSourceLanguage,
     shouldTranslate,
-    shouldSendForPageTranslate
+    shouldSendForPageTranslate,
+    isIconFontFamily,
+    isLikelySimplifiedChinesePage
   };
   root.GlobalTranslatorTextFilter = api;
   if (typeof module !== "undefined" && module.exports) {

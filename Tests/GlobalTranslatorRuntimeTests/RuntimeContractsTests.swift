@@ -303,6 +303,39 @@ struct RuntimeContractsTests {
     }
 
     @Test
+    func doctorResolvesRecommendedBinaryAcrossPathAndSymlinks() throws {
+        let root = URL(fileURLWithPath: "/tmp/gt-doctor-bin-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let binDir = root.appendingPathComponent("bin", isDirectory: true)
+        let appDir = root.appendingPathComponent("App", isDirectory: true)
+        try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
+
+        let targetBinary = appDir.appendingPathComponent("global-translator")
+        try Data("#!/bin/sh\n".utf8).write(to: targetBinary)
+        try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: 0o755)], ofItemAtPath: targetBinary.path)
+
+        let recommendedSymlink = binDir.appendingPathComponent("global-translator")
+        try FileManager.default.createSymbolicLink(at: recommendedSymlink, withDestinationURL: targetBinary)
+
+        #expect(DoctorInputs.isBinaryAtRecommendedPath(
+            argv0: "global-translator",
+            pathEnvironment: "/usr/bin:\(binDir.path)",
+            recommendedBinaryURL: recommendedSymlink
+        ))
+        #expect(DoctorInputs.isBinaryAtRecommendedPath(
+            argv0: targetBinary.path,
+            pathEnvironment: nil,
+            recommendedBinaryURL: recommendedSymlink
+        ))
+        #expect(!DoctorInputs.isBinaryAtRecommendedPath(
+            argv0: "global-translator",
+            pathEnvironment: "/usr/bin:\(binDir.path)",
+            recommendedBinaryURL: root.appendingPathComponent("missing/global-translator")
+        ))
+    }
+
+    @Test
     func managerStopThrowsWhenDaemonDoesNotStopByDeadline() throws {
         let root = URL(fileURLWithPath: "/tmp/gt-stop-timeout-\(UUID().uuidString)")
         let paths = try RuntimePaths(validatingRoot: root)
@@ -473,6 +506,26 @@ struct RuntimeContractsTests {
         #expect(runtime == "错误：文件操作失败")
         #expect(unknown == "错误：运行失败")
         #expect(!unknown.contains("secret-token"))
+    }
+
+    @Test
+    func loggerRotationAndBackwardLogReaderHandleLargeFiles() throws {
+        let root = URL(fileURLWithPath: "/private/tmp/gt-log-\(UUID().uuidString)")
+        let paths = try RuntimePaths(validatingRoot: root)
+        try paths.prepareDirectories()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let logger = try RuntimeLogger(url: paths.logURL, maximumBytes: 65_536, backupCount: 1)
+        for index in 0..<250 {
+            try logger.write(
+                level: "info",
+                event: "perf_event",
+                fields: ["idx": String(index), "payload": String(repeating: "a", count: 220)]
+            )
+        }
+        let lines = try RuntimeLogReader(url: paths.logURL).lastLines(limit: 5)
+        #expect(lines.count == 5)
+        #expect(lines.last?.contains("\"idx\":\"249\"") == true)
     }
 }
 

@@ -42,7 +42,7 @@ body:
     attributes:
       label: 系统与环境信息 / Environment
       description: 芯片型号、macOS 版本、Global Translator 版本及目标应用名称（如有）
-      placeholder: "Apple M4 / macOS 27.2 / v1.1.3 / Chrome 142"
+      placeholder: "Apple M4 / macOS 27.2 / v1.2.0 / Chrome 142"
     validations:
       required: true
 

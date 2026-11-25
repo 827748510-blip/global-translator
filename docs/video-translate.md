@@ -1,12 +1,12 @@
 # 视频翻译（Phase A + B1 + B2）
 
-菜单栏设置里，**「视频翻译」与「滑词翻译」同一行并列**，**默认关闭**。不要单独再占一行。打开后，Chrome 扩展优先读取页面 `<video>` 的标准 `textTracks` cue、可选本地 SRT/VTT 侧车，或 **YouTube 用户已打开的字幕 / 本会话 timedtext**，经现有桌面端桥 `POST /translate` 译成简体中文，以 **叠加层** 显示在视频上方。
+桌面端设置页「翻译」分区里，**「视频翻译」** 默认关闭；Chrome 扩展弹窗（v1.1.0+）现也支持直接切换视频字幕翻译并与桌面端实时同步，同时提供可选本地 SRT/VTT 侧车字幕上传。打开后，Chrome 扩展优先读取页面 `<video>` 的标准 `textTracks` cue、可选本地 SRT/VTT 侧车，或 **YouTube 用户已打开的字幕 / 本会话 timedtext**，经现有桌面端桥 `POST /translate` 译成简体中文，以 **叠加层** 显示在视频上方。
 
 **没有可用外语字幕轨时**（Phase B2）：桌面端用独立的 ScreenCaptureKit 流采集 **系统/窗口音频**（不是麦克风），本地 Whisper.cpp 把英语转成文本，再走同一个 `POST /translate`，把简体中文叠在现有视频 overlay 上。失败只打日志/提示，**绝不停止播放**。音频不出本机；API Key 仍只在本地桥 / Keychain。
 
 **视觉采集路径不变**：`WindowVisualUpdates` 仍是 `capturesAudio = false`。B2 采音在 `SystemAudioCapture.swift`，单独一条 SCStream。扩展无 `tabCapture` / `desktopCapture` / 麦克风 / `getUserMedia`。不改原片、不改原字幕文件、不构造 timedtext 抓取 URL、不用 PoToken。
 
-开关只在菜单栏设置；扩展弹窗不再另放开关，只提供可选侧车字幕。菜单栏「翻译后端」（DeepSeek / 本地 Ollama）未改，本功能复用该后端。
+桌面端与扩展共享同一个视频翻译开关状态；「翻译后端」（DeepSeek / 本地 Ollama）仍在桌面端「后端」分区统一切换，本功能复用该后端。
 
 ## 能力边界
 
@@ -61,8 +61,8 @@ B2 **默认关闭**，与 B1 共用菜单栏「视频翻译」开关：只有显
 ### 打开方式
 
 1. 本机构建并运行 Global Translator，翻译后端健康（DeepSeek 或本地 Ollama）。
-2. 菜单栏设置打开 **视频翻译**（与滑词翻译同一行；默认关）。
-3. Chrome 加载仓库 `extension/`（manifest 1.0.11+），刷新视频标签页。
+2. 桌面端「翻译」分区或扩展弹窗打开 **视频翻译**（默认关）。
+3. Chrome 加载仓库 `extension/`（manifest 1.1.0+），刷新视频标签页。
 4. 播放 **没有可用外语字幕** 的页面（关 CC 的 HTML5 / YouTube，或无轨站点）。
 
 ### 权限（macOS）
@@ -137,7 +137,7 @@ Chrome 加载 `extension/`，打开视频翻译开关。
 
 1. 本机构建并运行 Global Translator，配置 DeepSeek 或本地 Ollama，保持自动翻译可用（桥依赖桌面端翻译会话）。
 2. Chrome → 扩展程序 → 加载已解包扩展 → 选仓库 `extension/`。
-3. 打开菜单栏设置：确认 **视频翻译** 在 **滑词翻译同一行右侧**，默认关；此时播放带字幕的 HTML5 视频，不应出现中文叠层。不要出现单独的视频翻译区块。
+3. 打开菜单栏设置：确认 **视频翻译** 在「翻译」分区内默认关闭；此时播放带字幕的 HTML5 视频，不应出现中文叠层。
 4. 打开「视频翻译」。用本地 HTTP 打开演示页（内容脚本不匹配 `file://`）：
 
    ```bash

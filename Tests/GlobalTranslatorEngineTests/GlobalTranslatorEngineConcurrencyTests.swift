@@ -118,4 +118,51 @@ extension GlobalTranslatorEngineTests {
             #expect(timestamps[1] - timestamps[0] >= 0.25)
         }
     }
+
+    @Test
+    func cloudMultiBatchExecutesWithBoundedConcurrency() async throws {
+        let backend = ConcurrentMeasuringBackend(kind: .deepSeekCloud)
+        let batcher = TranslationBatcher(maximumItems: 2, maximumSourceCharacters: 4_000)
+        let coordinator = TranslationCoordinator(
+            backends: [backend],
+            batcher: batcher,
+            permissions: SystemPermissionController(snapshotProvider: { .allGranted })
+        )
+        let regions = (0..<10).map { makeRegion(text: "Cloud label \($0)", y: CGFloat(500 - $0 * 30)) }
+        let output = try await coordinator.translate(
+            snapshot: makeSnapshot(regions: regions, revision: 1),
+            backend: .deepSeekCloud,
+            modelIdentifier: AppConfiguration.defaultDeepSeekModel,
+            visionFallbackEnabled: false
+        )
+        #expect(output.translations.count == 10)
+        #expect(output.metrics.batchCount == 5)
+        #expect(await backend.maxInFlight > 1)
+        #expect(await backend.maxInFlight <= 3)
+    }
+}
+
+private actor ConcurrentMeasuringBackend: TranslationBackend {
+    let kind: BackendKind
+    private var inFlight = 0
+    private(set) var maxInFlight = 0
+
+    init(kind: BackendKind) {
+        self.kind = kind
+    }
+
+    func healthCheck() async -> BackendHealth {
+        BackendHealth(status: .healthy, message: "ok")
+    }
+
+    func translate(_ request: TranslationRequest) async throws -> TranslationResult {
+        inFlight += 1
+        maxInFlight = max(maxInFlight, inFlight)
+        defer { inFlight -= 1 }
+        try await Task.sleep(for: .milliseconds(30))
+        return TranslationResult(
+            windowRevision: request.windowRevision,
+            translations: request.items.map { Translation(segmentId: $0.id, simplifiedChineseText: "云:" + $0.sourceText) }
+        )
+    }
 }

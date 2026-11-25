@@ -31,6 +31,8 @@ public final class RuntimeWorker: @unchecked Sendable {
     private var state: RuntimeState = .stopped
     private var signalSources: [DispatchSourceSignal] = []
     private var stopped = DispatchSemaphore(value: 0)
+    private var waitRunLoop: CFRunLoop?
+    private var waitSource: CFRunLoopSource?
 
     public init(paths: RuntimePaths, hook: any RuntimeWorkerHook = NoopRuntimeWorkerHook()) throws {
         self.paths = paths
@@ -96,8 +98,36 @@ public final class RuntimeWorker: @unchecked Sendable {
 
     public func run() throws {
         try start()
-        while isRunning {
-            _ = RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.2))
+        let currentRunLoop = CFRunLoopGetCurrent()
+        var context = CFRunLoopSourceContext()
+        context.version = 0
+        let source = CFRunLoopSourceCreate(kCFAllocatorDefault, 0, &context)
+        if let source {
+            CFRunLoopAddSource(currentRunLoop, source, .defaultMode)
+        }
+        stateLock.lock()
+        let stillRunning = state != .stopped
+        if stillRunning {
+            waitRunLoop = currentRunLoop
+            waitSource = source
+        }
+        stateLock.unlock()
+
+        defer {
+            stateLock.lock()
+            waitRunLoop = nil
+            waitSource = nil
+            stateLock.unlock()
+            if let source {
+                CFRunLoopRemoveSource(currentRunLoop, source, .defaultMode)
+                CFRunLoopSourceInvalidate(source)
+            }
+        }
+
+        if stillRunning {
+            while isRunning {
+                CFRunLoopRun()
+            }
         }
     }
 
@@ -119,6 +149,8 @@ public final class RuntimeWorker: @unchecked Sendable {
         state = .stopping
         let sources = signalSources
         signalSources.removeAll()
+        let activeRunLoop = waitRunLoop
+        let activeWakeSource = waitSource
         stateLock.unlock()
 
         for source in sources {
@@ -130,6 +162,13 @@ public final class RuntimeWorker: @unchecked Sendable {
         stateLock.lock()
         state = .stopped
         stateLock.unlock()
+        if let activeWakeSource {
+            CFRunLoopSourceSignal(activeWakeSource)
+        }
+        if let activeRunLoop {
+            CFRunLoopWakeUp(activeRunLoop)
+            CFRunLoopStop(activeRunLoop)
+        }
         stopped.signal()
         hook.workerWillStop()
     }

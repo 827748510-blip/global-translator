@@ -3,7 +3,8 @@
 (function (root) {
   const MESSAGES = Object.freeze({
     serviceUnavailable: "翻译服务不可用",
-    noForeign: "未检测到外语内容"
+    noForeign: "未检测到外语内容",
+    mutedForAsr: "视频当前静音，取消静音后可启用本机语音字幕转写"
   });
 
   const DEFAULTS = Object.freeze({
@@ -111,9 +112,75 @@
     return parseSrt(source);
   }
 
+  const sortedMetaCache = typeof WeakMap === "function" ? new WeakMap() : null;
+  const foreignCuesCache = typeof WeakMap === "function" ? new WeakMap() : null;
+
+  function cueMetaFor(cues) {
+    if (!sortedMetaCache || cues.length < 16) return null;
+    const cached = sortedMetaCache.get(cues);
+    const first = cues[0];
+    const last = cues[cues.length - 1];
+    if (
+      cached &&
+      cached.length === cues.length &&
+      cached.firstStart === (first && first.start) &&
+      cached.lastStart === (last && last.start)
+    ) {
+      return cached;
+    }
+    let isSorted = true;
+    const prefixMaxEnd = new Array(cues.length);
+    let maxEnd = -Infinity;
+    let prevStart = -Infinity;
+    for (let i = 0; i < cues.length; i++) {
+      const cue = cues[i];
+      if (!cue || !Number.isFinite(cue.start) || !Number.isFinite(cue.end)) {
+        isSorted = false;
+        break;
+      }
+      if (cue.start < prevStart) {
+        isSorted = false;
+        break;
+      }
+      prevStart = cue.start;
+      if (cue.end > maxEnd) maxEnd = cue.end;
+      prefixMaxEnd[i] = maxEnd;
+    }
+    const meta = {
+      length: cues.length,
+      firstStart: first && first.start,
+      lastStart: last && last.start,
+      isSorted,
+      prefixMaxEnd: isSorted ? prefixMaxEnd : null
+    };
+    sortedMetaCache.set(cues, meta);
+    return meta;
+  }
+
   function activeCue(cues, timeSeconds) {
     const time = Number(timeSeconds);
     if (!Array.isArray(cues) || !Number.isFinite(time)) return null;
+    const meta = cueMetaFor(cues);
+    if (meta && meta.isSorted && meta.prefixMaxEnd) {
+      let lo = 0;
+      let hi = cues.length - 1;
+      let upper = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (cues[mid].start <= time) {
+          upper = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      for (let i = upper; i >= 0; i--) {
+        if (meta.prefixMaxEnd[i] <= time) break;
+        const cue = cues[i];
+        if (time >= cue.start && time < cue.end) return cue;
+      }
+      return null;
+    }
     let found = null;
     for (let i = 0; i < cues.length; i++) {
       const cue = cues[i];
@@ -153,10 +220,35 @@
 
   function hasForeignCues(cues) {
     if (!Array.isArray(cues)) return false;
-    for (let i = 0; i < cues.length; i++) {
-      if (shouldSendForVideoTranslate(cues[i] && cues[i].text)) return true;
+    const first = cues[0];
+    const last = cues[cues.length - 1];
+    if (foreignCuesCache) {
+      const cached = foreignCuesCache.get(cues);
+      if (
+        cached &&
+        cached.length === cues.length &&
+        cached.firstText === (first && first.text) &&
+        cached.lastText === (last && last.text)
+      ) {
+        return cached.result;
+      }
     }
-    return false;
+    let result = false;
+    for (let i = 0; i < cues.length; i++) {
+      if (shouldSendForVideoTranslate(cues[i] && cues[i].text)) {
+        result = true;
+        break;
+      }
+    }
+    if (foreignCuesCache) {
+      foreignCuesCache.set(cues, {
+        length: cues.length,
+        firstText: first && first.text,
+        lastText: last && last.text,
+        result
+      });
+    }
+    return result;
   }
 
   function noForeignOverlayMessage(input, cues) {

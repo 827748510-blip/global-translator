@@ -87,6 +87,15 @@ public actor CoalescingTranslationBackend: TranslationBackend {
         return try await base.completePlain(system: system, user: user)
     }
 
+    public func streamPlain(
+        system: String,
+        user: String,
+        onDelta: @escaping @Sendable (String) async -> Void
+    ) async throws -> String {
+        try Task.checkCancellation()
+        return try await base.streamPlain(system: system, user: user, onDelta: onDelta)
+    }
+
     private func remap(_ values: [String: String], to request: TranslationRequest) throws -> TranslationResult {
         let translations = try request.items.map { item in
             guard let text = values[item.sourceText] else { throw TranslationError.invalidResponse("translation is missing") }

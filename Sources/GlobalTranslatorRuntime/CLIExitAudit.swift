@@ -54,14 +54,37 @@ public enum CLIExitAudit {
 
         let url = auditURL(homeDirectory: homeDirectory)
         let directory = url.deletingLastPathComponent()
+        let directoryExisted = FileManager.default.fileExists(atPath: directory.path)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if !directoryExisted {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: 0o700)],
+                ofItemAtPath: directory.path
+            )
+        }
         let line = Data((text + "\n").utf8)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(
+                atPath: url.path,
+                contents: Data(),
+                attributes: [.posixPermissions: NSNumber(value: 0o600)]
+            )
+        } else {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: 0o600)],
+                ofItemAtPath: url.path
+            )
+        }
         if let handle = FileHandle(forWritingAtPath: url.path) {
             handle.seekToEndOfFile()
             handle.write(line)
             try? handle.close()
         } else {
             try? line.write(to: url)
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: 0o600)],
+                ofItemAtPath: url.path
+            )
         }
         // A job's stderr goes to StandardErrorPath, giving a second copy that
         // survives a read-only or full log directory. Nothing is echoed for

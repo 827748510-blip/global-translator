@@ -214,6 +214,24 @@ const betweenCues = cues.overlayState({
 });
 assertDeep(betweenCues, { show: false, cueText: "", message: "" }, "hide between foreign cues");
 
+assertEqual(
+  cues.MESSAGES.mutedForAsr,
+  "视频当前静音，取消静音后可启用本机语音字幕转写",
+  "muted ASR hint message"
+);
+const mutedHint = cues.overlayState({
+  enabled: true,
+  cues: [],
+  time: 1,
+  probed: true,
+  noForeignMessage: cues.MESSAGES.mutedForAsr
+});
+assertDeep(
+  mutedHint,
+  { show: true, cueText: "", message: "视频当前静音，取消静音后可启用本机语音字幕转写" },
+  "muted video without captions shows ASR hint"
+);
+
 assertDeep(cues.desktopVideoPrefFromPing({ ok: true, videoTranslateEnabled: true }, null),
   { write: true, enabled: true }, "health true writes on");
 assertDeep(cues.desktopVideoPrefFromPing({ ok: true, videoTranslateEnabled: false }, null),
@@ -224,5 +242,26 @@ assertDeep(cues.desktopVideoPrefFromPing({ ok: true, videoTranslateEnabled: true
   { write: false, enabled: false }, "lastError must not clobber");
 assertDeep(cues.desktopVideoPrefFromPing(undefined, null),
   { write: false, enabled: false }, "missing response does not write");
+
+const sortedCues = [];
+for (let i = 0; i < 40; i++) {
+  sortedCues.push({ start: i * 3, end: i * 3 + 2, text: "Cue " + i });
+}
+assertEqual(cues.activeCue(sortedCues, 0).text, "Cue 0", "binary search hits first cue");
+assertEqual(cues.activeCue(sortedCues, 76).text, "Cue 25", "binary search hits middle cue");
+assertEqual(cues.activeCue(sortedCues, 117.5).text, "Cue 39", "binary search hits last cue");
+assertEqual(cues.activeCue(sortedCues, 77.5), null, "binary search returns null in gap");
+
+const overlappingSorted = [];
+for (let i = 0; i < 20; i++) {
+  overlappingSorted.push({ start: i * 2, end: i * 2 + 5, text: "Overlap " + i });
+}
+assertEqual(cues.activeCue(overlappingSorted, 5).text, "Overlap 2", "binary search returns latest overlapping cue");
+
+const unsortedCues = [];
+for (let i = 19; i >= 0; i--) {
+  unsortedCues.push({ start: i * 2, end: i * 2 + 1.5, text: "Unsorted " + i });
+}
+assertEqual(cues.activeCue(unsortedCues, 10.5).text, "Unsorted 5", "unsorted cue list falls back to linear scan");
 
 console.log("extension/subtitle-cues.test.js ok");

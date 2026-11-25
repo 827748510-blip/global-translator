@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import os
 
 /// Result of a backend-switch lifecycle action. Reasons are fixed tokens, not
 /// command output: brew may print local paths, and logs must stay metadata-only.
@@ -109,22 +110,36 @@ public struct SystemOllamaCommandRunner: OllamaCommandRunning {
             throw OllamaCommandError.launchFailed
         }
 
-        let deadline = Date().addingTimeInterval(max(timeout, 1))
-        while process.isRunning, Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-        let timedOut = process.isRunning
-        if timedOut {
-            process.terminate()
-            for _ in 0..<20 where process.isRunning {
-                Thread.sleep(forTimeInterval: 0.05)
+        let buffer = OSAllocatedUnfairLock(initialState: Data())
+        let readHandle = pipe.fileHandleForReading
+        readHandle.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else {
+                handle.readabilityHandler = nil
+                return
             }
-            if process.isRunning {
-                kill(process.processIdentifier, SIGKILL)
-            }
+            buffer.withLock { $0.append(chunk) }
         }
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let semaphore = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in
+            semaphore.signal()
+        }
+        let timeoutInterval = max(timeout, 1)
+        let timedOut = semaphore.wait(timeout: .now() + timeoutInterval) == .timedOut
+        if timedOut {
+            process.terminate()
+            if semaphore.wait(timeout: .now() + 1.0) == .timedOut {
+                kill(process.processIdentifier, SIGKILL)
+                _ = semaphore.wait(timeout: .now() + 0.5)
+            }
+        }
+        readHandle.readabilityHandler = nil
+        let remaining = (try? readHandle.readToEnd()) ?? Data()
+        if !remaining.isEmpty {
+            buffer.withLock { $0.append(remaining) }
+        }
+        let data = buffer.withLock { $0 }
         if timedOut { throw OllamaCommandError.timedOut }
         return OllamaCommandResult(
             exitCode: process.terminationStatus,
@@ -314,6 +329,8 @@ public actor HomebrewOllamaLifecycle: OllamaLifecycleControlling {
 
     private func waitForRunning(_ expected: Bool) async -> Bool {
         let deadline = Date().addingTimeInterval(max(waitTimeout, 0.1))
+        var backoff = min(statusPollInterval, .milliseconds(100))
+        let maxInterval = statusPollInterval
         while Date() < deadline {
             guard !Task.isCancelled else { return false }
             switch await serviceStatus() {
@@ -328,17 +345,21 @@ public actor HomebrewOllamaLifecycle: OllamaLifecycleControlling {
             case .running, .stopped:
                 break
             }
-            try? await Task.sleep(for: statusPollInterval)
+            try? await Task.sleep(for: backoff)
+            backoff = min(backoff * 2, maxInterval)
         }
         return false
     }
 
     private func waitForReady(_ url: URL) async -> Bool {
         let deadline = Date().addingTimeInterval(max(waitTimeout, 0.1))
+        var backoff = min(statusPollInterval, .milliseconds(100))
+        let maxInterval = statusPollInterval
         while Date() < deadline {
             guard !Task.isCancelled else { return false }
             if await readinessProbe(url) { return true }
-            try? await Task.sleep(for: statusPollInterval)
+            try? await Task.sleep(for: backoff)
+            backoff = min(backoff * 2, maxInterval)
         }
         return false
     }

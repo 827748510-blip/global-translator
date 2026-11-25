@@ -24,11 +24,14 @@ jobs:
       - name: Run Chrome extension unit tests
         run: node --test extension/*.test.js
 
+      - name: Validate shell scripts syntax
+        run: bash -n scripts/package-app.sh scripts/make-release.sh scripts/clean.sh
+
       - name: Validate relative Markdown links
         run: |
           python3 - <<'PY'
           import os, re, sys
-          docs = ["README.md", "README_EN.md", "CONTRIBUTING.md", "SECURITY.md", "CHANGELOG.md"]
+          docs = ["README.md", "README_EN.md", "CONTRIBUTING.md", "SECURITY.md", "CHANGELOG.md", "DESIGN.md"]
           for root_dir, _, files in os.walk("docs"):
               for fn in files:
                   if fn.endswith(".md"):

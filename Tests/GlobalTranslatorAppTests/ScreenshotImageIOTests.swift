@@ -37,6 +37,36 @@ struct ScreenshotImageIOTests {
         #expect(first.hasSuffix(".png"))
         #expect(first != second)
     }
+
+    @Test
+    func saveEnforcesRestrictedPosixPermissionsAndRejectsTraversalOrSymlink() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gt-shot-perm-\(UUID().uuidString)", isDirectory: true)
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gt-shot-outside-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        let image = try #require(makeSolidTestImage(width: 8, height: 8))
+        let saveDir = root.appendingPathComponent("shots", isDirectory: true)
+        let saved = try ScreenshotImageIO.save(image, to: saveDir, filename: "private.png")
+        let dirAttrs = try FileManager.default.attributesOfItem(atPath: saveDir.path)
+        let fileAttrs = try FileManager.default.attributesOfItem(atPath: saved.path)
+        #expect((dirAttrs[.posixPermissions] as? NSNumber)?.intValue == 0o700)
+        #expect((fileAttrs[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+
+        #expect(throws: ScreenshotImageIO.SaveError.unsafePath) {
+            _ = try ScreenshotImageIO.save(image, to: saveDir, filename: "../escape.png")
+        }
+
+        let symlinkDir = root.appendingPathComponent("symlink-dir", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: symlinkDir, withDestinationURL: outside)
+        #expect(throws: ScreenshotImageIO.SaveError.unsafePath) {
+            _ = try ScreenshotImageIO.save(image, to: symlinkDir, filename: "escaped.png")
+        }
+    }
 }
 
 struct ScreenshotConfigurationTests {

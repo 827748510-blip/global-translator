@@ -51,6 +51,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
     var screenshotDirectoryPicker: NSOpenPanel?
     var bridgeServer: ExtensionBridgeServer?
     var videoASR: VideoAudioASRController?
+    private var applicationDisplayNameCache: [String: String] = [:]
 
     public init(
         paths: RuntimePaths,
@@ -71,6 +72,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         _ = viewModel
         statusItem = components.statusItemFactory(viewModel)
         overlay = components.overlayFactory()
+        wireOverlayHoverSuppression()
         started = true
         configurationLoadFailed = false
         do {
@@ -170,9 +172,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         viewModel.localBaseURL = configuration.localBaseURL.absoluteString
         viewModel.localModel = configuration.localModel
         viewModel.translatedApplications = configuration.translatedBundleIDs.map { id in
-            let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id)
-            return TranslatedApplication(bundleIdentifier: id,
-                displayName: url.map { FileManager.default.displayName(atPath: $0.path) } ?? id)
+            TranslatedApplication(bundleIdentifier: id, displayName: resolvedDisplayName(for: id))
         }
         viewModel.isSelectionTranslateEnabled = configuration.selectionTranslateEnabled
         viewModel.isVideoTranslateEnabled = configuration.videoTranslateEnabled
@@ -281,13 +281,19 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             isCloudKeyConfigured: { [weak self] in
                 self?.configuration.deepSeekAPIKeyConfigured == true
             },
-            ownBundleIdentifiers: own
+            ownBundleIdentifiers: own,
+            shouldSuppressPointer: { [weak self] in
+                self?.screenshotTranslate?.isSelectingRegion == true
+            }
         )
         selectionTranslate = controller
         controller.setOptimizeMode(configuration.promptOptimizeMode)
         controller.setBackend(configuration.backend)
         controller.onOptimizeModeChange = { [weak self] mode in
             self?.setPromptOptimizeMode(mode)
+        }
+        controller.onOpenSettings = { [weak self] in
+            self?.openSettingsForRecovery(preferPermissions: false)
         }
         controller.setEnabled(configuration.selectionTranslateEnabled)
     }
@@ -318,6 +324,10 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         controller.setSaveImage(configuration.saveScreenshotImage)
         controller.setCopyImage(configuration.copyScreenshotImage)
         controller.setSaveDirectory(configuration.screenshotSaveDirectory)
+        controller.onOpenSettings = { [weak self] in
+            let missingPermission = !(self?.components.permissionController.snapshot.screenCaptureAuthorized ?? true)
+            self?.openSettingsForRecovery(preferPermissions: missingPermission)
+        }
         controller.startHotkey()
         if let message = controller.lastHotkeyError, !message.isEmpty {
             viewModel.screenshotHotkeyConflictMessage = message
@@ -347,7 +357,7 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
                     extraModelCandidates: support.models
                 )
             },
-            capturer: ScreenCaptureKitSystemAudioCapturer(),
+            capturer: ScreenCaptureKitSystemAudioCapturer(permissions: components.permissionController),
             transcriber: WhisperCppTranscriber(
                 locate: {
                     WhisperCppLocator.locate(
@@ -358,12 +368,19 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
                 scratchDirectory: scratch
             ),
             windowProvider: { [weak self] in
-                await MainActor.run { self?.session?.currentWindow }
+                await MainActor.run {
+                    guard let self,
+                          self.viewModel.isAutomaticTranslationEnabled,
+                          self.configuration.videoTranslateEnabled,
+                          let window = self.session?.currentWindow,
+                          ChromiumBrowserBundles.contains(window.bundleIdentifier) else {
+                        return nil
+                    }
+                    return window
+                }
             },
             onEvent: { [weak self] code, fields in
-                Task { @MainActor in
-                    self?.components.logger.event(code, fields: fields)
-                }
+                self?.components.logger.event(code, fields: fields)
             }
         )
         videoASR?.setVideoTranslateEnabled(configuration.videoTranslateEnabled)
@@ -374,7 +391,42 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
         session = nil
         callbackBox = nil
         overlay = components.overlayFactory()
+        wireOverlayHoverSuppression()
         makeSession()
+    }
+
+    private func wireOverlayHoverSuppression() {
+        (overlay as? OverlayPanelController)?.shouldSuppressHoverRaise = { [weak self] in
+            self?.shouldSuppressOverlayHoverRaise() ?? false
+        }
+    }
+
+    private func shouldSuppressOverlayHoverRaise() -> Bool {
+        if statusItem?.isDropdownVisible == true { return true }
+        if selectionTranslate?.isPopoverVisible == true { return true }
+        if screenshotTranslate?.isPopoverVisible == true { return true }
+        return false
+    }
+
+    private func openSettingsForRecovery(preferPermissions: Bool) {
+        if preferPermissions {
+            viewModel.selectedTab = .advanced
+        } else if !viewModel.canEnableAutomaticTranslation {
+            viewModel.selectedTab = .backend
+        } else {
+            viewModel.selectedTab = .advanced
+        }
+        showSettings()
+    }
+
+    private func resolvedDisplayName(for bundleID: String) -> String {
+        if let cached = applicationDisplayNameCache[bundleID] {
+            return cached
+        }
+        let name = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+            .map { FileManager.default.displayName(atPath: $0.path) } ?? bundleID
+        applicationDisplayNameCache[bundleID] = name
+        return name
     }
 
     /// Serves the browser-extension bridge for the whole lifetime of the
@@ -386,16 +438,35 @@ public final class ApplicationController: NSObject, ApplicationControlling, Sett
             videoTranslateEnabled: { [weak self] in
                 self?.configuration.videoTranslateEnabled == true
             },
+            setVideoTranslateEnabled: { [weak self] enabled in
+                guard let self else { return false }
+                self.setVideoTranslate(enabled)
+                return self.configuration.videoTranslateEnabled
+            },
+            autoTranslateEnabled: { [weak self] in
+                self?.viewModel.isAutomaticTranslationEnabled == true
+            },
+            backendReady: { [weak self] in
+                self?.viewModel.backendReady == true
+            },
+            blockedReason: { [weak self] in
+                guard let self else { return nil }
+                if !self.viewModel.isAutomaticTranslationEnabled {
+                    return self.viewModel.automaticEnableBlockedReason ?? "桌面端未开启“自动翻译”"
+                }
+                return nil
+            },
             videoASRSnapshot: { [weak self] in
                 self?.videoASR?.snapshot() ?? .idle
             },
             videoASRSetNeeded: { [weak self] needed in
                 self?.videoASR?.setCaptionsNeeded(needed)
+            },
+            scopedHandler: { [weak self] texts, sourceLanguage, pageOrigin in
+                guard let session = self?.session else { throw ExtensionBridgeError.translatorUnavailable }
+                return try await session.translateBridgeTexts(texts, sourceLanguage: sourceLanguage, pageOrigin: pageOrigin)
             }
-        ) { [weak self] texts, sourceLanguage in
-            guard let session = self?.session else { throw ExtensionBridgeError.translatorUnavailable }
-            return try await session.translateBridgeTexts(texts, sourceLanguage: sourceLanguage)
-        }
+        )
         server.start()
         bridgeServer = server
     }

@@ -144,6 +144,46 @@ enum TranslationParseMode {
 enum TranslationResponseParser {
     private struct ResponsesEnvelope: Decodable {
         let output: [ResponsesOutput]
+        let usage: RawUsage?
+    }
+
+    struct RawUsage: Decodable {
+        let inputTokens: Int
+        let cachedTokens: Int
+        let outputTokens: Int
+        let totalTokens: Int
+
+        private struct InputTokenDetails: Decodable {
+            let cachedTokens: Int?
+            private enum CodingKeys: String, CodingKey {
+                case cachedTokens = "cached_tokens"
+            }
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case inputTokens = "input_tokens"
+            case inputTokensDetails = "input_tokens_details"
+            case outputTokens = "output_tokens"
+            case totalTokens = "total_tokens"
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            inputTokens = try container.decode(Int.self, forKey: .inputTokens)
+            outputTokens = try container.decode(Int.self, forKey: .outputTokens)
+            let details = try container.decodeIfPresent(InputTokenDetails.self, forKey: .inputTokensDetails)
+            cachedTokens = details?.cachedTokens ?? 0
+            totalTokens = try container.decodeIfPresent(Int.self, forKey: .totalTokens) ?? (inputTokens + outputTokens)
+        }
+
+        var tokenUsage: DeepSeekTokenUsage {
+            DeepSeekTokenUsage(
+                inputTokens: inputTokens,
+                cachedInputTokens: cachedTokens,
+                outputTokens: outputTokens,
+                totalTokens: totalTokens
+            )
+        }
     }
 
     private struct ResponsesOutput: Decodable {
@@ -177,7 +217,8 @@ enum TranslationResponseParser {
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            guard Set(container.allKeys) == Set([.translations]) else {
+            let keys = container.allKeys
+            guard keys.count == 1, keys.first == .translations else {
                 throw TranslationError.invalidResponse("translation response contains unknown fields")
             }
             translations = try container.decode([ExternalTranslation].self, forKey: .translations)
@@ -195,7 +236,8 @@ enum TranslationResponseParser {
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            guard Set(container.allKeys) == Set([.segmentId, .text]) else {
+            let keys = container.allKeys
+            guard keys.count == 2, keys.contains(.segmentId), keys.contains(.text) else {
                 throw TranslationError.invalidResponse("translation item contains unknown fields")
             }
             segmentId = try container.decode(UUID.self, forKey: .segmentId)
@@ -209,6 +251,20 @@ enum TranslationResponseParser {
         windowRevision: UInt64 = 0,
         sourceCharacters: Int = 0
     ) throws -> TranslationResult {
+        try parseResponsesWithUsage(
+            data,
+            expectedIDs: expectedIDs,
+            windowRevision: windowRevision,
+            sourceCharacters: sourceCharacters
+        ).result
+    }
+
+    static func parseResponsesWithUsage(
+        _ data: Data,
+        expectedIDs: [UUID],
+        windowRevision: UInt64 = 0,
+        sourceCharacters: Int = 0
+    ) throws -> (result: TranslationResult, usage: DeepSeekTokenUsage?) {
         do {
             let envelope = try JSONDecoder().decode(ResponsesEnvelope.self, from: data)
             let messages = envelope.output.filter { $0.type == "message" }
@@ -219,12 +275,13 @@ enum TranslationResponseParser {
             guard output.content.count == 1, let content = output.content.first, content.type == "output_text" else {
                 throw TranslationError.invalidResponse("response output_text is missing or ambiguous")
             }
-            return try parseTranslationJSON(
+            let result = try parseTranslationJSON(
                 Data(content.text.utf8),
                 expectedIDs: expectedIDs,
                 windowRevision: windowRevision,
                 sourceCharacters: sourceCharacters
             )
+            return (result, envelope.usage?.tokenUsage)
         } catch let error as TranslationError {
             throw error
         } catch {
@@ -277,6 +334,10 @@ enum TranslationResponseParser {
     }
 
     static func parsePlainResponses(_ data: Data) throws -> String {
+        try parsePlainResponsesWithUsage(data).text
+    }
+
+    static func parsePlainResponsesWithUsage(_ data: Data) throws -> (text: String, usage: DeepSeekTokenUsage?) {
         do {
             let envelope = try JSONDecoder().decode(ResponsesEnvelope.self, from: data)
             let messages = envelope.output.filter { $0.type == "message" }
@@ -287,7 +348,7 @@ enum TranslationResponseParser {
             guard output.content.count == 1, let content = output.content.first, content.type == "output_text" else {
                 throw TranslationError.invalidResponse("response output_text is missing or ambiguous")
             }
-            return try parsePlainCompletionText(content.text)
+            return (try parsePlainCompletionText(content.text), envelope.usage?.tokenUsage)
         } catch let error as TranslationError {
             throw error
         } catch {
@@ -373,8 +434,14 @@ enum TranslationResponseParser {
         return nil
     }
 
+    private static let thinkTagsRegex = try! NSRegularExpression(pattern: #"<think>[\s\S]*?</think>"#)
+    private static let trailingCommaRegex = try! NSRegularExpression(pattern: #",(\s*[}\]])"#)
+    private static let compactIndexRegex = try! NSRegularExpression(pattern: #"^(\d+)(?:\s*[：:.]|[-_])"#)
+
     private static func stripThinkTags(_ raw: String) -> String {
-        raw.replacingOccurrences(of: #"<think>[\s\S]*?</think>"#, with: "", options: .regularExpression)
+        guard raw.contains("<think>") else { return raw }
+        let range = NSRange(raw.startIndex..<raw.endIndex, in: raw)
+        return thinkTagsRegex.stringByReplacingMatches(in: raw, options: [], range: range, withTemplate: "")
     }
 
     private static func unwrapJSONPayload(_ raw: String) -> Data {
@@ -400,7 +467,10 @@ enum TranslationResponseParser {
                   let end = text.lastIndex(of: "]") {
             text = String(text[arrayStart...end])
         }
-        text = text.replacingOccurrences(of: #",(\s*[}\]])"#, with: "$1", options: .regularExpression)
+        if text.contains(",") {
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            text = trailingCommaRegex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "$1")
+        }
         return Data(text.utf8)
     }
 
@@ -419,9 +489,26 @@ enum TranslationResponseParser {
                 sourceCharacters: sourceCharacters
             )
         }
-        let candidates = translationJSONCandidates(data)
         var recoverable: TranslationError?
-        for candidate in candidates {
+        do {
+            return try parseStrictTranslationJSON(
+                data,
+                expectedIDs: expectedIDs,
+                windowRevision: windowRevision,
+                sourceCharacters: sourceCharacters
+            )
+        } catch let error as TranslationError {
+            if isRecoverableTranslationJSONError(error) {
+                recoverable = error
+            } else {
+                throw error
+            }
+        } catch {
+            recoverable = TranslationError.invalidResponse("translation JSON is invalid")
+        }
+
+        let candidates = translationJSONCandidates(data)
+        for candidate in candidates where candidate != data {
             do {
                 return try parseStrictTranslationJSON(
                     candidate,
@@ -466,11 +553,14 @@ enum TranslationResponseParser {
                 throw TranslationError.invalidResponse("translation count does not match request")
             }
             let expected = Set(expectedIDs)
-            let actual = envelope.translations.map(\.segmentId)
-            guard Set(actual).count == actual.count else {
-                throw TranslationError.invalidResponse("translation IDs are duplicated")
+            var actualSet = Set<UUID>()
+            actualSet.reserveCapacity(envelope.translations.count)
+            for translation in envelope.translations {
+                guard actualSet.insert(translation.segmentId).inserted else {
+                    throw TranslationError.invalidResponse("translation IDs are duplicated")
+                }
             }
-            guard Set(actual) == expected else {
+            guard actualSet == expected else {
                 throw TranslationError.invalidResponse("translation IDs do not match request")
             }
             let characterLimit = TranslationRequestValidator.outputCharacterLimit(sourceCharacters: sourceCharacters)
@@ -584,7 +674,8 @@ enum TranslationResponseParser {
         } catch {
             let trimmed = String(decoding: data, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            if let texts = fallbackTexts(fromRaw: trimmed, count: expectedIDs.count) {
+            if let texts = recoverMalformedCompactJSON(trimmed, count: expectedIDs.count)
+                ?? fallbackTexts(fromRaw: trimmed, count: expectedIDs.count) {
                 return try localResult(
                     texts: texts,
                     expectedIDs: expectedIDs,
@@ -607,6 +698,39 @@ enum TranslationResponseParser {
         guard !trimmed.isEmpty, !trimmed.hasPrefix("{"), !trimmed.hasPrefix("[") else { return nil }
         if count == 1 { return [trimmed] }
         return LocalTranslationCleanup.splitNumberedBlob(trimmed, count: count)
+    }
+
+    private static let compactKeyValueRegex = try! NSRegularExpression(
+        pattern: #""([^"\\]+)"\s*:\s*"((?:[^"\\]|\\.)*)""#
+    )
+
+    /// Recovers complete key-value pairs when a local 4B model drops a closing
+    /// brace or leaves trailing garbage inside a `{"0":"..."}` object.
+    /// Truncated mid-string values are rejected so cut-off text never leaks out.
+    private static func recoverMalformedCompactJSON(_ trimmed: String, count: Int) -> [String]? {
+        guard count > 0, trimmed.hasPrefix("{") else { return nil }
+        if let data = (trimmed + "}").data(using: .utf8),
+           let repaired = try? JSONSerialization.jsonObject(with: data),
+           let texts = matchLocalTexts(repaired, count: count) {
+            return texts
+        }
+        let fullRange = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+        let matches = compactKeyValueRegex.matches(in: trimmed, range: fullRange)
+        guard !matches.isEmpty else { return nil }
+        var found: [Int: String] = [:]
+        for match in matches {
+            guard let keyRange = Range(match.range(at: 1), in: trimmed),
+                  let valueRange = Range(match.range(at: 2), in: trimmed) else { continue }
+            let rawKey = String(trimmed[keyRange])
+            guard let index = compactIndex(fromKey: rawKey) ?? letterIndex(fromKey: rawKey) else { continue }
+            let quoted = "\"\(trimmed[valueRange])\""
+            guard let decoded = try? JSONDecoder().decode(String.self, from: Data(quoted.utf8)) else { continue }
+            let value = decoded.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty, found[index] == nil {
+                found[index] = value
+            }
+        }
+        return LocalTranslationCleanup.alignedIndices(found, count: count)
     }
 
     private static func localResult(
@@ -720,8 +844,7 @@ enum TranslationResponseParser {
     private static func compactIndex(fromKey key: String) -> Int? {
         let t = key.trimmingCharacters(in: .whitespacesAndNewlines)
         if let n = Int(t), String(n) == t { return n }
-        guard let regex = try? NSRegularExpression(pattern: #"^(\d+)(?:\s*[：:.]|[-_])"#),
-              let match = regex.firstMatch(in: t, range: NSRange(t.startIndex..., in: t)),
+        guard let match = compactIndexRegex.firstMatch(in: t, range: NSRange(t.startIndex..., in: t)),
               let range = Range(match.range(at: 1), in: t) else {
             return nil
         }
@@ -818,9 +941,16 @@ enum LocalTranslationCleanup {
         return nil
     }
 
+    private static let numberedEntryRegex = try! NSRegularExpression(pattern: #"^(\d+)\s*[：:.、)]\s*(.+)$"#)
+    private static let inlineNumberedRegex = try! NSRegularExpression(pattern: #"(\d+)\s*[：:.、)]\s*"#)
+    private static let leadingNumericPrefixRegex = try! NSRegularExpression(pattern: #"^(\d+)\s*[：:.、)]\s*"#)
+    private static let leadingLetterPrefixRegex = try! NSRegularExpression(pattern: #"^([a-z])\s*[：:.、)]\s*"#, options: .caseInsensitive)
+    private static let leadingCJKNumericPrefixRegex = try! NSRegularExpression(pattern: #"^\d+\s*[：:]\s*"#)
+    private static let trailingIndexRegex = try! NSRegularExpression(pattern: #"^(.*?)\s+(\d+)\s*$"#)
+    private static let compactLetterChars = Array("abcdefghijklmnopqrstuvwxyz")
+
     private static func numberedEntry(_ line: String) -> (index: Int, text: String)? {
-        guard let regex = try? NSRegularExpression(pattern: #"^(\d+)\s*[：:.、)]\s*(.+)$"#),
-              let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+        guard let match = numberedEntryRegex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
               let indexRange = Range(match.range(at: 1), in: line),
               let textRange = Range(match.range(at: 2), in: line),
               let index = Int(line[indexRange]) else {
@@ -832,9 +962,8 @@ enum LocalTranslationCleanup {
     }
 
     private static func splitInlineNumbered(_ text: String, count: Int) -> [String]? {
-        guard let regex = try? NSRegularExpression(pattern: #"(\d+)\s*[：:.、)]\s*"#) else { return nil }
         let ns = text as NSString
-        let matches = regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+        let matches = inlineNumberedRegex.matches(in: text, range: NSRange(location: 0, length: ns.length))
         guard matches.count >= count else { return nil }
         var found: [Int: String] = [:]
         for (offset, match) in matches.enumerated() {
@@ -853,47 +982,46 @@ enum LocalTranslationCleanup {
     }
 
     private static func stripLeadingOnce(_ text: String, compactIndex: Int) -> String {
-        if let rest = stripPrefix(text, pattern: "^\(compactIndex)\\s*[：:.、)]\\s*") {
-            return rest
+        let fullRange = NSRange(text.startIndex..., in: text)
+        if let match = leadingNumericPrefixRegex.firstMatch(in: text, range: fullRange),
+           match.range.location == 0, match.range.length > 0,
+           let numRange = Range(match.range(at: 1), in: text),
+           Int(text[numRange]) == compactIndex,
+           let matchedRange = Range(match.range, in: text) {
+            return String(text[matchedRange.upperBound...])
         }
         if compactIndex < 26 {
-            let letter = String(Array("abcdefghijklmnopqrstuvwxyz")[compactIndex])
-            if let rest = stripPrefix(text, pattern: "^\(letter)\\s*[：:.、)]\\s*", options: .caseInsensitive) {
-                return rest
+            let expectedLetter = compactLetterChars[compactIndex]
+            if let match = leadingLetterPrefixRegex.firstMatch(in: text, range: fullRange),
+               match.range.location == 0, match.range.length > 0,
+               let letterRange = Range(match.range(at: 1), in: text),
+               text[letterRange].lowercased().first == expectedLetter,
+               let matchedRange = Range(match.range, in: text) {
+                return String(text[matchedRange.upperBound...])
             }
         }
-        if let rest = stripPrefix(text, pattern: #"^\d+\s*[：:]\s*"#), hasCJK(rest) {
-            return rest
+        if let match = leadingCJKNumericPrefixRegex.firstMatch(in: text, range: fullRange),
+           match.range.location == 0, match.range.length > 0,
+           let matchedRange = Range(match.range, in: text) {
+            let rest = String(text[matchedRange.upperBound...])
+            if hasCJK(rest) {
+                return rest
+            }
         }
         return text
     }
 
     private static func stripTrailingIndex(_ text: String, compactIndex: Int) -> String {
         guard hasCJK(text),
-              let rest = stripPrefix(text, pattern: "^(.*?)\\s+\(compactIndex)\\s*$") else {
+              let match = trailingIndexRegex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              match.range.location == 0, match.range.length > 0,
+              let numRange = Range(match.range(at: 2), in: text),
+              Int(text[numRange]) == compactIndex,
+              let bodyRange = Range(match.range(at: 1), in: text) else {
             return text
         }
-        let trimmed = rest.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = String(text[bodyRange]).trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? text : trimmed
-    }
-
-    private static func stripPrefix(
-        _ text: String,
-        pattern: String,
-        options: NSRegularExpression.Options = []
-    ) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: options),
-              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-              match.range.location == 0,
-              match.range.length > 0,
-              let range = Range(match.range, in: text) else {
-            return nil
-        }
-        if match.numberOfRanges > 1, match.range(at: 1).location != NSNotFound,
-           let captured = Range(match.range(at: 1), in: text) {
-            return String(text[captured])
-        }
-        return String(text[range.upperBound...])
     }
 
     private static func hasCJK(_ text: String) -> Bool {

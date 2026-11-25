@@ -15,12 +15,15 @@
 
   const CHUNK_SIZE = 3;
   const PROBE_MS = 4000;
-  const PREFETCH = 4;
+  const PREFETCH = 6;
+  const MAX_TRANSLATIONS = 500;
   const DESKTOP_SYNC_MS = 3000;
   const CUE_WAIT_MS = 8000;
   const ASR_POLL_MS = 1000;
+  const ASR_IDLE_SYNC_MS = 2000;
   const HOST_ATTR = "data-gt-video-translate";
   const PAINT_MS = 250;
+  const OBSERVER_DEBOUNCE_MS = 250;
 
   let enabled = false;
   let sidecarCues = [];
@@ -29,9 +32,19 @@
   let serviceError = false;
   let runningTranslate = false;
   let observer = null;
+  let scanTimer = null;
   let paintTimer = null;
+  let syncTimer = null;
+  let rafId = 0;
+  let resizeObserver = null;
   const translations = new Map();
+  let translationsObj = {};
   const originalTrackModes = new WeakMap();
+  const trackListeners = new WeakMap();
+  const cueChangeListeners = new WeakMap();
+  const cachedTrackCues = new WeakMap();
+  const pipListeners = new WeakMap();
+  const dismissedVideos = new WeakSet();
   const overlays = new Map();
   const boundVideos = new WeakSet();
   const boundList = [];
@@ -45,12 +58,28 @@
   let asrSeenSeq = {};
   let asrInFlight = false;
   let asrQueued = null;
+  let lastAsrSyncAt = 0;
+  let translateBackoffMs = 1000;
+  let nextTranslateRetryAt = 0;
+  let lastWrittenDesktopPref = null;
+  let cachedDebugFlag = null;
 
   function safe(fn) {
     try {
       fn();
     } catch (_error) {
       // Never interrupt the page or playback.
+    }
+  }
+
+  function isDebugEnabled() {
+    if (cachedDebugFlag !== null) return cachedDebugFlag;
+    try {
+      cachedDebugFlag = typeof localStorage !== "undefined" && localStorage.getItem("gtVtDebug") === "1";
+      return cachedDebugFlag;
+    } catch (_error) {
+      cachedDebugFlag = false;
+      return false;
     }
   }
 
@@ -63,12 +92,26 @@
   function listVideos() {
     const all = Array.prototype.slice.call(document.querySelectorAll("video"));
     const main = document.querySelector("video.html5-main-video");
-    if (main) {
+    if (main && isVisibleVideo(main)) {
       const rest = all.filter((video) => video !== main && isVisibleVideo(video));
       return [main].concat(rest);
     }
-    const visible = all.filter(isVisibleVideo);
-    return visible.length > 0 ? visible : all;
+    return all.filter(isVisibleVideo);
+  }
+
+  function isAudiblePlayingVideo(video) {
+    if (!video || !isVisibleVideo(video)) return false;
+    if (video.paused || video.ended || video.muted) return false;
+    if (typeof video.volume === "number" && video.volume <= 0) return false;
+    return true;
+  }
+
+  function primaryVideo(videos) {
+    const list = videos || listVideos();
+    for (let i = 0; i < list.length; i++) {
+      if (!list[i].paused && !list[i].ended) return list[i];
+    }
+    return list[0] || null;
   }
 
   function restoreTrackModes(video) {
@@ -83,10 +126,48 @@
     }
   }
 
+  function invalidateTrackCueCache(video) {
+    cachedTrackCues.delete(video);
+  }
+
+  function bindTrackCueChange(video, track) {
+    if (!track || typeof track.addEventListener !== "function") return;
+    let map = cueChangeListeners.get(video);
+    if (!map) {
+      map = new WeakMap();
+      cueChangeListeners.set(video, map);
+    }
+    if (map.has(track)) return;
+    const onCueChange = () => invalidateTrackCueCache(video);
+    map.set(track, onCueChange);
+    track.addEventListener("cuechange", onCueChange);
+  }
+
+  function unbindTrackCueChanges(video) {
+    const map = cueChangeListeners.get(video);
+    const tracks = video && video.textTracks;
+    if (map && tracks) {
+      for (let i = 0; i < tracks.length; i++) {
+        const track = tracks[i];
+        const fn = map.get(track);
+        if (fn && track && typeof track.removeEventListener === "function") {
+          track.removeEventListener("cuechange", fn);
+          map.delete(track);
+        }
+      }
+    }
+    cueChangeListeners.delete(video);
+    cachedTrackCues.delete(video);
+  }
+
   function collectTrackCues(video) {
-    const collected = [];
     const tracks = video.textTracks;
-    if (!tracks) return collected;
+    if (!tracks || tracks.length === 0) return [];
+    const cached = cachedTrackCues.get(video);
+    if (cached && cached.trackCount === tracks.length) {
+      return cached.cues;
+    }
+    const collected = [];
     for (let i = 0; i < tracks.length; i++) {
       const track = tracks[i];
       if (!track || track.kind === "metadata") continue;
@@ -96,6 +177,7 @@
       if (track.mode === "disabled") {
         try { track.mode = "hidden"; } catch (_error) {}
       }
+      bindTrackCueChange(video, track);
       const list = track.cues;
       if (!list) continue;
       for (let j = 0; j < list.length; j++) {
@@ -105,6 +187,7 @@
         collected.push({ start: cue.startTime, end: cue.endTime, text });
       }
     }
+    cachedTrackCues.set(video, { trackCount: tracks.length, cues: collected });
     return collected;
   }
 
@@ -131,10 +214,13 @@
     return captions;
   }
 
-  function youtubeNoForeignMessage() {
+  function noForeignOverlayMessage(video) {
     if (sidecarCues.length > 0) return "";
     if (Youtube && Youtube.isActivePage() && Youtube.MESSAGES) {
       return Youtube.MESSAGES.noYouTubeCaptions || "";
+    }
+    if (video && !video.paused && !video.ended && (video.muted || (typeof video.volume === "number" && video.volume <= 0))) {
+      return (Cues.MESSAGES && Cues.MESSAGES.mutedForAsr) || "";
     }
     return "";
   }
@@ -149,11 +235,26 @@
   }
 
   function translationObject() {
-    const object = {};
-    translations.forEach((value, key) => {
-      object[key] = value;
-    });
-    return object;
+    return translationsObj;
+  }
+
+  function setTranslation(source, zh) {
+    if (translations.has(source)) {
+      translations.delete(source);
+    } else if (translations.size >= MAX_TRANSLATIONS) {
+      const oldest = translations.keys().next().value;
+      if (oldest !== undefined) {
+        translations.delete(oldest);
+        delete translationsObj[oldest];
+      }
+    }
+    translations.set(source, zh);
+    translationsObj[source] = zh;
+  }
+
+  function clearTranslations() {
+    translations.clear();
+    translationsObj = {};
   }
 
   function ensureOverlay(video) {
@@ -168,50 +269,54 @@
     const host = document.createElement("div");
     host.setAttribute(HOST_ATTR, "");
     host.style.cssText = [
-      "display:block",
       "position:fixed",
       "left:0",
       "top:0",
       "overflow:visible",
-      "opacity:1",
-      "visibility:visible",
       "pointer-events:none",
       "z-index:2147483646",
-      "transform:none",
-      "contain:none"
+      "contain:layout style"
     ].join(";");
-    host.style.setProperty("display", "block", "important");
-    host.style.setProperty("position", "fixed", "important");
-    host.style.setProperty("opacity", "1", "important");
-    host.style.setProperty("visibility", "visible", "important");
-    host.style.setProperty("z-index", "2147483646", "important");
-    host.style.setProperty("pointer-events", "none", "important");
     const shadow = host.attachShadow({ mode: "closed" });
+    const style = document.createElement("style");
+    style.textContent = [
+      ".gt-box{display:none;width:100%;height:100%;box-sizing:border-box;pointer-events:none;align-items:flex-end;justify-content:center;text-align:center;font-family:-apple-system,'PingFang SC','Noto Sans CJK SC',sans-serif;font-size:clamp(13px,2.2vw,22px);line-height:1.38;color:#fff;}",
+      ".gt-pill{display:inline-flex;align-items:center;gap:8px;max-width:88%;padding:5px 12px;border-radius:6px;background:rgba(16,16,18,0.78);border:1px solid rgba(255,255,255,0.12);white-space:pre-wrap;word-break:break-word;transition:opacity 120ms ease-out;}",
+      ".gt-pill[data-kind='notice']{font-size:12px;background:rgba(16,16,18,0.68);color:#f0f0f3;pointer-events:auto;}",
+      ".gt-close{display:none;appearance:none;border:0;background:transparent;color:inherit;font-size:14px;line-height:1;padding:2px 4px;border-radius:4px;cursor:pointer;opacity:0.8;}",
+      ".gt-pill[data-kind='notice'] .gt-close{display:inline-flex;}",
+      ".gt-close:hover{opacity:1;background:rgba(255,255,255,0.16);}",
+      ".gt-close:focus-visible{outline:2px solid #fff;outline-offset:1px;}",
+      "@media (prefers-reduced-motion: reduce){.gt-pill{transition:none;}}",
+      "@media (forced-colors: active){.gt-pill{background:Canvas;color:CanvasText;border:1px solid ButtonText;}}"
+    ].join("");
     const box = document.createElement("div");
     box.setAttribute("part", "box");
-    box.style.cssText = [
-      "display:none",
-      "pointer-events:none",
-      "text-align:center",
-      "font-family:-apple-system,'PingFang SC','Noto Sans CJK SC',sans-serif",
-      "font-size:15px",
-      "line-height:1.35",
-      "color:#fff"
-    ].join(";");
+    box.className = "gt-box";
     const pill = document.createElement("div");
-    pill.style.cssText = [
-      "display:inline-block",
-      "max-width:90%",
-      "padding:4px 10px",
-      "border-radius:4px",
-      "background:rgba(0,0,0,0.72)",
-      "white-space:pre-wrap",
-      "word-break:break-word"
-    ].join(";");
+    pill.className = "gt-pill";
+    pill.setAttribute("role", "status");
+    pill.setAttribute("aria-live", "polite");
+    pill.setAttribute("aria-atomic", "true");
+    const label = document.createElement("span");
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "gt-close";
+    closeButton.textContent = "×";
+    closeButton.setAttribute("aria-label", "关闭提示");
+    closeButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      dismissedVideos.add(video);
+      box.style.display = "none";
+      label.textContent = "";
+    });
+    pill.appendChild(label);
+    pill.appendChild(closeButton);
     box.appendChild(pill);
+    shadow.appendChild(style);
     shadow.appendChild(box);
     (parent || document.body || document.documentElement).appendChild(host);
-    record = { host, box, pill };
+    record = { host, box, pill, label, lastLayoutKey: "", lastDisplay: "", lastKind: "", lastDebugAttr: null };
     overlays.set(video, record);
     return record;
   }
@@ -219,29 +324,52 @@
   function positionOverlay(record, video) {
     const rect = video.getBoundingClientRect();
     const host = record.host;
+    const isPip = typeof document.pictureInPictureElement !== "undefined" && document.pictureInPictureElement === video;
+    const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+    const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+    const offscreen = isPip || rect.width < 24 || rect.height < 24 ||
+      rect.bottom < 8 || rect.top > vh - 8 || rect.right < 8 || rect.left > vw - 8;
+
+    const visibleLeft = Math.max(0, rect.left);
+    const visibleRight = Math.min(vw > 0 ? vw : rect.right, rect.right);
+    const width = Math.max(0, Math.round(visibleRight - visibleLeft));
+    const controlInset = Math.min(84, Math.max(52, Math.round(rect.height * 0.14)));
+    const boxHeight = Math.min(120, Math.max(40, Math.round(rect.height * 0.28)));
+    const bottomY = Math.max(8, Math.round(rect.bottom - controlInset));
+    const topY = Math.max(0, bottomY - boxHeight);
+
     const parent = host.parentNode;
-    const height = 56;
-    const offscreen = rect.width < 24 || rect.height < 24 ||
-      rect.bottom < 8 || rect.top > window.innerHeight - 8;
-    host.style.display = offscreen ? "none" : "block";
-    host.style.setProperty("display", offscreen ? "none" : "block", "important");
-    host.style.pointerEvents = "none";
-    host.style.setProperty("z-index", "2147483646", "important");
-    host.style.setProperty("opacity", offscreen ? "0" : "1", "important");
-    host.style.setProperty("visibility", offscreen ? "hidden" : "visible", "important");
     const useAbsolute = parent && parent !== document.documentElement && parent !== document.body;
+    let x = Math.round(visibleLeft);
+    let y = topY;
+    let positionMode = "fixed";
     if (useAbsolute) {
       const parentRect = parent.getBoundingClientRect();
-      host.style.position = "absolute";
-      host.style.left = Math.max(0, rect.left - parentRect.left) + "px";
-      host.style.top = Math.max(0, rect.bottom - parentRect.top - height - 8) + "px";
-    } else {
-      host.style.position = "fixed";
-      host.style.left = Math.max(0, rect.left) + "px";
-      host.style.top = Math.max(0, rect.bottom - height - 8) + "px";
+      positionMode = "absolute";
+      x = Math.max(0, Math.round(visibleLeft - parentRect.left));
+      y = Math.max(0, Math.round(topY - parentRect.top));
     }
-    host.style.width = Math.max(0, rect.width) + "px";
-    host.style.height = height + "px";
+
+    const layoutKey = [offscreen ? 1 : 0, positionMode, x, y, width, boxHeight].join(":");
+    if (record.lastLayoutKey === layoutKey) return;
+    record.lastLayoutKey = layoutKey;
+
+    if (offscreen || width < 24) {
+      host.style.setProperty("display", "none", "important");
+      host.style.setProperty("opacity", "0", "important");
+      host.style.setProperty("visibility", "hidden", "important");
+      return;
+    }
+
+    host.style.setProperty("display", "block", "important");
+    host.style.setProperty("position", positionMode, "important");
+    host.style.setProperty("opacity", "1", "important");
+    host.style.setProperty("visibility", "visible", "important");
+    host.style.setProperty("left", "0px", "important");
+    host.style.setProperty("top", "0px", "important");
+    host.style.setProperty("width", width + "px", "important");
+    host.style.setProperty("height", boxHeight + "px", "important");
+    host.style.setProperty("transform", "translate3d(" + x + "px," + y + "px,0)", "important");
   }
 
   function cueWaitTimedOut(cues, time, translationsNow) {
@@ -261,7 +389,7 @@
     return cueWaitSince > 0 && (Date.now() - cueWaitSince) >= CUE_WAIT_MS;
   }
 
-  function renderVideo(video) {
+  function renderVideo(video, mainVideo) {
     if (!enabled || !video || !video.isConnected) return;
     const record = ensureOverlay(video);
     positionOverlay(record, video);
@@ -269,6 +397,7 @@
     const time = video.currentTime || 0;
     const translationsNow = translationObject();
     const waitTimedOut = cueWaitTimedOut(cues, time, translationsNow);
+    const isPrimary = !mainVideo || video === mainVideo;
     const state = Cues.overlayState({
       enabled: true,
       cues,
@@ -277,39 +406,77 @@
       serviceError,
       waitTimedOut,
       probed,
-      noForeignMessage: youtubeNoForeignMessage(),
-      asrStatus,
-      asrMessage
+      noForeignMessage: noForeignOverlayMessage(video),
+      asrStatus: isPrimary ? asrStatus : "",
+      asrMessage: isPrimary ? asrMessage : ""
     });
     const asrBit = Asr && Asr.overlayBits ? Asr.overlayBits(asrStatus) : "asr0";
-    if (Youtube && typeof Youtube.overlayDebugBits === "function") {
-      const bits = Youtube.overlayDebugBits({
-        cues,
-        time,
-        translations: translationsNow,
-        pageWorld: !!(Youtube.pageWorldAlive && Youtube.pageWorldAlive(document)),
-        dom: !!(Youtube.collectDomCaptionText && Youtube.collectDomCaptionText(document))
-      });
-      record.host.setAttribute("data-gt-vt", bits + " " + asrBit);
-      try {
-        if (typeof localStorage !== "undefined" && localStorage.getItem("gtVtDebug") === "1") {
-          console.debug("[gt-vt]", bits, asrBit);
+    if (isDebugEnabled()) {
+      let nextDebugAttr = asrBit;
+      if (Youtube && typeof Youtube.overlayDebugBits === "function") {
+        const bits = Youtube.overlayDebugBits({
+          cues,
+          time,
+          translations: translationsNow,
+          pageWorld: !!(Youtube.pageWorldAlive && Youtube.pageWorldAlive(document)),
+          dom: !!(Youtube.collectDomCaptionText && Youtube.collectDomCaptionText(document))
+        });
+        nextDebugAttr = bits + " " + asrBit;
+        if (record.lastDebugAttr !== nextDebugAttr) {
+          record.host.setAttribute("data-gt-vt", nextDebugAttr);
+          record.lastDebugAttr = nextDebugAttr;
+          try { console.debug("[gt-vt]", bits, asrBit); } catch (_error) {}
         }
-      } catch (_error) {}
-    } else {
-      record.host.setAttribute("data-gt-vt", asrBit);
+      } else if (record.lastDebugAttr !== nextDebugAttr) {
+        record.host.setAttribute("data-gt-vt", nextDebugAttr);
+        record.lastDebugAttr = nextDebugAttr;
+      }
+    } else if (record.lastDebugAttr !== null) {
+      record.host.removeAttribute("data-gt-vt");
+      record.lastDebugAttr = null;
     }
-    if (!state.show || (!state.cueText && !state.message)) {
-      record.box.style.display = "none";
-      record.pill.textContent = "";
+
+    const isNotice = !state.cueText && !!state.message;
+    const suppressNotice = isNotice && (dismissedVideos.has(video) || !isPrimary || (video.muted && video.paused));
+    if (!state.show || (!state.cueText && !state.message) || suppressNotice) {
+      if (record.lastDisplay !== "none") {
+        record.box.style.display = "none";
+        record.lastDisplay = "none";
+      }
+      if (record.label.textContent !== "") {
+        record.label.textContent = "";
+      }
       return;
     }
-    record.box.style.display = "block";
-    record.pill.textContent = state.cueText || state.message;
+    if (record.lastDisplay !== "flex") {
+      record.box.style.display = "flex";
+      record.lastDisplay = "flex";
+    }
+    const nextKind = state.cueText ? "cue" : "notice";
+    if (record.lastKind !== nextKind) {
+      record.pill.setAttribute("data-kind", nextKind);
+      record.lastKind = nextKind;
+    }
+    const nextText = state.cueText || state.message;
+    if (record.label.textContent !== nextText) {
+      record.label.textContent = nextText;
+    }
   }
 
   function renderAll() {
-    listVideos().forEach(renderVideo);
+    const videos = listVideos();
+    const main = primaryVideo(videos);
+    for (let i = 0; i < videos.length; i++) {
+      renderVideo(videos[i], main);
+    }
+  }
+
+  function scheduleRenderAll() {
+    if (rafId) return;
+    rafId = requestAnimationFrame(() => {
+      rafId = 0;
+      safe(renderAll);
+    });
   }
 
   function translateTexts(texts) {
@@ -351,6 +518,7 @@
 
   async function prefetch(video) {
     if (!enabled || runningTranslate) return;
+    if (Date.now() < nextTranslateRetryAt) return;
     const texts = pendingForeignTexts(video);
     if (texts.length === 0) return;
     runningTranslate = true;
@@ -361,16 +529,20 @@
         const result = await translateTexts(chunk);
         if (!result) {
           serviceError = true;
+          nextTranslateRetryAt = Date.now() + translateBackoffMs;
+          translateBackoffMs = Math.min(translateBackoffMs * 2, 16000);
           renderAll();
           return;
         }
         serviceError = false;
+        translateBackoffMs = 1000;
+        nextTranslateRetryAt = 0;
         const retry = new Set(result.retry || []);
         for (let i = 0; i < chunk.length; i++) {
           if (retry.has(i)) continue;
           const translated = result.translations[i];
           if (typeof translated === "string" && translated.trim()) {
-            translations.set(chunk[i], translated.trim());
+            setTranslation(chunk[i], translated.trim());
           }
         }
       }
@@ -383,8 +555,23 @@
   function onTimeUpdate(event) {
     safe(() => {
       const video = event.target;
-      renderVideo(video);
+      if (event.type === "emptied") {
+        invalidateTrackCueCache(video);
+      }
+      renderVideo(video, primaryVideo());
       prefetch(video);
+      if (!asrTimer && Date.now() - lastAsrSyncAt >= ASR_IDLE_SYNC_MS) {
+        lastAsrSyncAt = Date.now();
+        syncAsr();
+      }
+    });
+  }
+
+  function onVideoAudioOrPlaybackChange(event) {
+    safe(() => {
+      const video = event.target;
+      syncAsr();
+      renderVideo(video, primaryVideo());
     });
   }
 
@@ -396,13 +583,26 @@
     video.addEventListener("seeked", onTimeUpdate);
     video.addEventListener("loadedmetadata", onTimeUpdate);
     video.addEventListener("emptied", onTimeUpdate);
+    video.addEventListener("volumechange", onVideoAudioOrPlaybackChange);
+    video.addEventListener("play", onVideoAudioOrPlaybackChange);
+    video.addEventListener("pause", onVideoAudioOrPlaybackChange);
+    const onPipChange = () => safe(scheduleRenderAll);
+    pipListeners.set(video, onPipChange);
+    video.addEventListener("enterpictureinpicture", onPipChange);
+    video.addEventListener("leavepictureinpicture", onPipChange);
     if (video.textTracks && video.textTracks.addEventListener) {
-      video.textTracks.addEventListener("addtrack", () => safe(() => {
-        renderVideo(video);
+      const onAddTrack = () => safe(() => {
+        invalidateTrackCueCache(video);
+        renderVideo(video, primaryVideo());
         prefetch(video);
-      }));
+      });
+      trackListeners.set(video, onAddTrack);
+      video.textTracks.addEventListener("addtrack", onAddTrack);
     }
-    renderVideo(video);
+    if (resizeObserver) {
+      try { resizeObserver.observe(video); } catch (_error) {}
+    }
+    renderVideo(video, primaryVideo());
     prefetch(video);
   }
 
@@ -411,6 +611,24 @@
     video.removeEventListener("seeked", onTimeUpdate);
     video.removeEventListener("loadedmetadata", onTimeUpdate);
     video.removeEventListener("emptied", onTimeUpdate);
+    video.removeEventListener("volumechange", onVideoAudioOrPlaybackChange);
+    video.removeEventListener("play", onVideoAudioOrPlaybackChange);
+    video.removeEventListener("pause", onVideoAudioOrPlaybackChange);
+    const onPipChange = pipListeners.get(video);
+    if (onPipChange) {
+      video.removeEventListener("enterpictureinpicture", onPipChange);
+      video.removeEventListener("leavepictureinpicture", onPipChange);
+      pipListeners.delete(video);
+    }
+    const onAddTrack = trackListeners.get(video);
+    if (onAddTrack && video.textTracks && video.textTracks.removeEventListener) {
+      video.textTracks.removeEventListener("addtrack", onAddTrack);
+      trackListeners.delete(video);
+    }
+    unbindTrackCueChanges(video);
+    if (resizeObserver) {
+      try { resizeObserver.unobserve(video); } catch (_error) {}
+    }
     restoreTrackModes(video);
     boundVideos.delete(video);
     const index = boundList.indexOf(video);
@@ -432,9 +650,43 @@
     renderAll();
   }
 
+  function nodeHasVideo(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node.hasAttribute && node.hasAttribute(HOST_ATTR)) return false;
+    if (node.localName === "video" || node.tagName === "VIDEO") return true;
+    return !!(node.querySelector && node.querySelector("video"));
+  }
+
+  function mutationTouchesVideo(mutations) {
+    for (let i = 0; i < mutations.length; i++) {
+      const list = mutations[i].addedNodes;
+      for (let j = 0; j < list.length; j++) {
+        if (nodeHasVideo(list[j])) return true;
+      }
+      const removed = mutations[i].removedNodes;
+      for (let j = 0; j < removed.length; j++) {
+        if (nodeHasVideo(removed[j])) return true;
+      }
+    }
+    return false;
+  }
+
+  function scheduleScan() {
+    if (scanTimer || !enabled) return;
+    scanTimer = setTimeout(() => {
+      scanTimer = null;
+      safe(scan);
+    }, OBSERVER_DEBOUNCE_MS);
+  }
+
   function startObserver() {
     if (observer) return;
-    observer = new MutationObserver(() => safe(scan));
+    if (typeof ResizeObserver !== "undefined" && !resizeObserver) {
+      resizeObserver = new ResizeObserver(() => safe(scheduleRenderAll));
+    }
+    observer = new MutationObserver((mutations) => {
+      if (mutationTouchesVideo(mutations)) scheduleScan();
+    });
     observer.observe(document.documentElement || document.body, {
       childList: true,
       subtree: true
@@ -444,16 +696,37 @@
   function stopObserver() {
     if (observer) observer.disconnect();
     observer = null;
+    if (scanTimer) clearTimeout(scanTimer);
+    scanTimer = null;
+    if (resizeObserver) {
+      try { resizeObserver.disconnect(); } catch (_error) {}
+      resizeObserver = null;
+    }
+  }
+
+  function paintTick() {
+    if (!enabled || document.visibilityState !== "visible") return;
+    if (boundList.length === 0) return;
+    let hasPlaying = false;
+    for (let i = 0; i < boundList.length; i++) {
+      const video = boundList[i];
+      if (video && video.isConnected && !video.paused && !video.ended) {
+        hasPlaying = true;
+        break;
+      }
+    }
+    if (!hasPlaying) return;
+    const main = primaryVideo(boundList);
+    for (let i = 0; i < boundList.length; i++) {
+      renderVideo(boundList[i], main);
+    }
+    if (main) prefetch(main);
   }
 
   function startPaintLoop() {
     if (paintTimer) return;
     paintTimer = setInterval(() => {
-      safe(() => {
-        if (!enabled) return;
-        scan();
-        listVideos().forEach((video) => prefetch(video));
-      });
+      safe(paintTick);
     }, PAINT_MS);
   }
 
@@ -547,10 +820,13 @@
           return;
         }
         safe(() => {
-          applyAsrSnapshot(response, video || listVideos()[0]);
+          applyAsrSnapshot(response, video || primaryVideo());
           renderAll();
           if (video) prefetch(video);
-          else listVideos().forEach((item) => prefetch(item));
+          else {
+            const main = primaryVideo();
+            if (main) prefetch(main);
+          }
         });
         if (queued) postAsr(queued.needed, queued.video);
       });
@@ -561,11 +837,11 @@
 
   function syncAsr() {
     if (!enabled) return;
-    const videos = listVideos();
-    const video = videos[0];
+    const video = primaryVideo();
     const captions = video ? captionCues(video) : [];
     const foreign = Cues.hasForeignCues(captions);
-    const want = probed && Asr && Asr.shouldRequest ? Asr.shouldRequest(foreign) : (probed && !foreign);
+    const activeAudio = document.visibilityState === "visible" && isAudiblePlayingVideo(video);
+    const want = activeAudio && (probed && Asr && Asr.shouldRequest ? Asr.shouldRequest(foreign) : (probed && !foreign));
     if (!want) {
       if (asrWanted) postAsr(false, video);
       asrWanted = false;
@@ -582,7 +858,7 @@
     if (asrTimer) return;
     asrTimer = setInterval(() => {
       safe(() => {
-        if (!enabled || !asrWanted) return;
+        if (!enabled || !asrWanted || document.visibilityState !== "visible") return;
         syncAsr();
       });
     }, ASR_POLL_MS);
@@ -594,7 +870,7 @@
   }
 
   function onViewportChange() {
-    safe(renderAll);
+    safe(scheduleRenderAll);
   }
 
   function start() {
@@ -606,7 +882,8 @@
         if (!enabled) return;
         probed = true;
         scan();
-        listVideos().forEach((video) => prefetch(video));
+        const main = primaryVideo();
+        if (main) prefetch(main);
         renderAll();
       });
     }
@@ -619,8 +896,8 @@
     startPaintLoop();
     scan();
     markProbedSoon();
-    window.addEventListener("scroll", onViewportChange, true);
-    window.addEventListener("resize", onViewportChange);
+    window.addEventListener("scroll", onViewportChange, { capture: true, passive: true });
+    window.addEventListener("resize", onViewportChange, { passive: true });
     document.addEventListener("fullscreenchange", onViewportChange);
   }
 
@@ -630,18 +907,22 @@
     serviceError = false;
     if (probeTimer) clearTimeout(probeTimer);
     probeTimer = null;
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = 0;
     stopObserver();
     stopPaintLoop();
     stopAsrPoll();
     if (asrWanted) postAsr(false);
     asrWanted = false;
     clearAsrState();
-    window.removeEventListener("scroll", onViewportChange, true);
+    window.removeEventListener("scroll", onViewportChange, { capture: true });
     window.removeEventListener("resize", onViewportChange);
     document.removeEventListener("fullscreenchange", onViewportChange);
     if (Youtube && typeof Youtube.stop === "function") Youtube.stop();
     clearOverlays();
-    translations.clear();
+    clearTranslations();
+    translateBackoffMs = 1000;
+    nextTranslateRetryAt = 0;
     cueWaitText = "";
     cueWaitSince = 0;
   }
@@ -662,7 +943,8 @@
       if (sidecarCues.length > 0) {
         probed = true;
         scan();
-        listVideos().forEach((video) => prefetch(video));
+        const main = primaryVideo();
+        if (main) prefetch(main);
         renderAll();
       } else {
         markProbedSoon();
@@ -673,9 +955,12 @@
   }
 
   function applyDesktopVideoPref(on) {
-    try {
-      chrome.storage.local.set({ videoTranslateEnabled: on });
-    } catch (_error) {}
+    if (lastWrittenDesktopPref !== on) {
+      lastWrittenDesktopPref = on;
+      try {
+        chrome.storage.local.set({ videoTranslateEnabled: on });
+      } catch (_error) {}
+    }
     if (on) {
       if (!enabled) start();
     } else if (enabled) {
@@ -702,6 +987,7 @@
     try {
       chrome.storage.local.get({ videoTranslateEnabled: false }, (prefs) => {
         const on = prefs && prefs.videoTranslateEnabled === true;
+        lastWrittenDesktopPref = on;
         if (on) start();
         else stop();
       });
@@ -718,10 +1004,18 @@
     syncDesktopPref();
   }
 
+  chrome.runtime.onMessage.addListener((message) => {
+    if (!message || message.type !== "set-sidecar") return false;
+    safe(() => applySidecar(message.sidecar));
+    return false;
+  });
+
   chrome.storage.onChanged.addListener((changes, area) => {
     safe(() => {
       if (area === "local" && changes.videoTranslateEnabled) {
-        if (changes.videoTranslateEnabled.newValue === true) start();
+        const nextOn = changes.videoTranslateEnabled.newValue === true;
+        lastWrittenDesktopPref = nextOn;
+        if (nextOn) start();
         else stop();
       }
       if ((area === "session" || area === "local") && changes.videoSidecar) {
@@ -736,10 +1030,16 @@
     readPrefs();
   }
 
-  setInterval(() => {
+  syncTimer = setInterval(() => {
     safe(() => {
       if (document.visibilityState !== "visible") return;
       if (enabled || document.querySelector("video")) syncDesktopPref();
     });
   }, DESKTOP_SYNC_MS);
+
+  window.addEventListener("pagehide", () => {
+    if (syncTimer) clearInterval(syncTimer);
+    syncTimer = null;
+    stop();
+  });
 })();

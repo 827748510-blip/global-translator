@@ -174,6 +174,18 @@ struct ScreenshotTranslateCoreTests {
     }
 
     @Test
+    func wideShortBannerFullDisplayFallbackTriggersOnHeightMismatch() {
+        let screen = CGRect(x: 0, y: 0, width: 1_000, height: 800)
+        let wideBanner = CGRect(x: 50, y: 100, width: 800, height: 80)
+        #expect(RegionCaptureGeometry.looksLikeFullDisplayBuffer(
+            imageSize: CGSize(width: 2_000, height: 1_600),
+            selection: wideBanner,
+            screenFrame: screen,
+            scale: 2
+        ))
+    }
+
+    @Test
     func imageCropRectMapsSelectionOntoRetinaFullBuffer() {
         let screen = CGRect(x: 0, y: 0, width: 1_000, height: 800)
         let selection = CGRect(x: 100, y: 200, width: 80, height: 40)
@@ -197,11 +209,11 @@ struct ScreenshotTranslateCoreTests {
                 == ScreenshotTranslateSupport.ocrFailedCopy)
         #expect(ScreenshotTranslateSupport.missingDeepSeekKeyCopy
                 == SelectionTranslateSupport.missingDeepSeekKeyCopy)
-        #expect(ScreenshotTranslateSupport.recognitionLanguages.isEmpty)
+        #expect(ScreenshotTranslateSupport.recognitionLanguages == ["zh-Hans", "en-US", "zh-Hant", "ja-JP", "ko-KR"])
     }
 
     @Test
-    func screenshotPopoverHidesPromptOptimize() {
+    func screenshotPopoverHidesPromptOptimizeAndAllowsCopyOriginal() {
         let content = SelectionPopoverContent.translated(
             original: "Hello",
             translation: "你好",
@@ -209,13 +221,42 @@ struct ScreenshotTranslateCoreTests {
         ).asScreenshotResult()
         #expect(!content.showsOptimizeAction)
         #expect(!content.showsTranslateAction)
+        #expect(content.allowsCopyOriginal)
+        #expect(content.originalCopyText == "Hello")
         #expect(content.allowsCopy)
         #expect(content.copyText == "你好")
+
+        let noTranslation = SelectionPopoverContent.noTranslationNeeded(
+            original: "https://example.com",
+            screenFrame: .zero,
+            message: ScreenshotTranslateSupport.notTranslatableCopy
+        ).asScreenshotResult()
+        #expect(!noTranslation.allowsCopyOriginal)
+        #expect(noTranslation.allowsCopy)
+        #expect(noTranslation.copyText == "https://example.com")
+
+        let emptyOriginal = SelectionPopoverContent.noTranslationNeeded(
+            original: "   ",
+            screenFrame: .zero,
+            message: ScreenshotTranslateSupport.ocrEmptyCopy
+        ).asScreenshotResult()
+        #expect(!emptyOriginal.allowsCopyOriginal)
+        #expect(!emptyOriginal.allowsCopy)
+
+        let failedWithOCR = SelectionPopoverContent.failed(
+            original: "Detected OCR source",
+            message: "翻译失败",
+            screenFrame: .zero
+        ).asScreenshotResult()
+        #expect(failedWithOCR.allowsCopyOriginal)
+        #expect(failedWithOCR.originalCopyText == "Detected OCR source")
+
         let withOptimize = SelectionPopoverContent.translated(
             original: "Hello",
             translation: "你好",
             screenFrame: .zero
         )
         #expect(withOptimize.showsOptimizeAction)
+        #expect(!withOptimize.allowsCopyOriginal)
     }
 }

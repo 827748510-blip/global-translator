@@ -15,14 +15,15 @@ public enum GTSpacing {
 public enum GTRadius {
     public static let row: CGFloat = 6
     public static let card: CGFloat = 10
+    /// 划词与截图结果浮窗的外框圆角；窗口覆盖贴片圆角请用 `GTOverlayMetrics.patchCornerRadius`。
     public static let overlay: CGFloat = 8
 }
 
 /// System text styles (SF Pro / PingFang fallback chain). Dynamic Type safe.
 public enum GTType {
     public static let stateLine = Font.headline
-    public static let cardTitle = Font.system(size: 12, weight: .semibold)
-    public static let sectionTitle = Font.system(size: 12, weight: .semibold)
+    public static let cardTitle = Font.subheadline.weight(.semibold)
+    public static let sectionTitle = Font.subheadline.weight(.semibold)
     public static let body = Font.body
     public static let secondary = Font.footnote
     public static let caption = Font.caption
@@ -31,13 +32,16 @@ public enum GTType {
 
 /// Semantic colors only — no raw hex (see DESIGN.md §3).
 public enum GTColor {
-    public static let primaryText = Color.primary
-    public static let secondaryText = Color.secondary
+    public static let primaryText = Color(nsColor: .labelColor)
+    public static let secondaryText = Color(nsColor: .secondaryLabelColor)
     public static let accent = Color.accentColor
     public static let destructive = Color(nsColor: .systemRed)
     public static let sectionFill = Color(nsColor: .controlBackgroundColor)
+    /// 单层外框玻璃内部的纯色调分组卡片底色（非玻璃，避免多重折射混浊）。
+    public static let cardSurface = Color(nsColor: .controlBackgroundColor).opacity(0.72)
+    public static let hoverFill = Color.primary.opacity(0.06)
     public static let fieldFill = Color(nsColor: .textBackgroundColor)
-    public static let hairline = Color.primary.opacity(0.12)
+    public static let hairline = Color(nsColor: .separatorColor)
     /// Solid popup fill: pure white in light mode, system window background in dark.
     public static let panelBackground = Color(nsColor: NSColor(name: "GTPanelBackground", dynamicProvider: { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
@@ -46,8 +50,8 @@ public enum GTColor {
     }))
     /// Track behind equal-width segmented controls; readable on white and dark panels.
     public static let segmentTrack = Color.primary.opacity(0.08)
-    /// Selected segment label sits on `accent`; keep it light in both appearances.
-    public static let selectedSegmentText = Color.white
+    /// Selected segment label sits on `accent`; follow system contrast for light/dark accent colors.
+    public static let selectedSegmentText = Color(nsColor: .alternateSelectedControlTextColor)
     /// Solid fallback for overlay backgrounds when Reduce Transparency is enabled.
     public static let overlaySolidFallback = panelBackground
 }
@@ -109,7 +113,7 @@ public enum GTSelectionMetrics {
     public static let width: CGFloat = 312
     public static let maxOriginalLines = 2
     public static let modePickerHeight: CGFloat = 32
-    public static let actionRowHeight: CGFloat = 28
+    public static let actionRowHeight: CGFloat = 32
     public static let horizontalPadding: CGFloat = 14
     public static let verticalPadding: CGFloat = 12
     /// Original ↔ result. Tighter than the section gap so the pair reads as one block.

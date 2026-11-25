@@ -312,6 +312,12 @@ public struct SelectionPopoverContent: Equatable, Sendable {
     /// 「复制截图」已经把图片放进剪贴板、因此跳过了自动复制译文时的提示。
     /// 没有它，用户刚拿到的截图会被译文无声覆盖。
     public var clipboardHint: String?
+    /// Custom loading copy (e.g. OCR step before translation).
+    public var loadingMessage: String?
+    /// Whether an inline "打开设置" recovery action should appear on error.
+    public var showsOpenSettingsAction: Bool
+    /// Whether this popover represents a screenshot OCR translation result.
+    public var isScreenshotResult: Bool
     /// Frozen at content creation so a long code selection is not re-detected
     /// on every SwiftUI body pass.
     public let isCodeSnippet: Bool
@@ -327,6 +333,9 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         allowsRetranslate: Bool = true,
         savedImagePath: String? = nil,
         clipboardHint: String? = nil,
+        loadingMessage: String? = nil,
+        showsOpenSettingsAction: Bool = false,
+        isScreenshotResult: Bool = false,
         isCodeSnippet: Bool? = nil
     ) {
         self.original = original
@@ -339,12 +348,16 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         self.allowsRetranslate = allowsRetranslate
         self.savedImagePath = savedImagePath
         self.clipboardHint = clipboardHint
+        self.loadingMessage = loadingMessage
+        self.showsOpenSettingsAction = showsOpenSettingsAction
+        self.isScreenshotResult = isScreenshotResult
         self.isCodeSnippet = isCodeSnippet ?? CodeSnippetDetector.isCode(original)
     }
 
     public var displayTranslation: String {
         switch status {
         case .loading:
+            if let loadingMessage, !loadingMessage.isEmpty { return loadingMessage }
             return "翻译中…"
         case .optimizing:
             return SelectionTranslateSupport.optimizingCopy
@@ -387,15 +400,32 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         allowsPromptOptimize && !isCodeSnippet && !original.isEmpty && status != .unavailable
     }
 
+    public var originalCopyText: String {
+        original.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 截图翻译识别出原文后，允许一键复制完整 OCR 原文（非截断预览）。
+    /// 当状态为「无需翻译 / 已是中文」时，主按钮 `copyText` 本身就是原文，不重复显示两个按钮。
+    public var allowsCopyOriginal: Bool {
+        guard isScreenshotResult, !originalCopyText.isEmpty else { return false }
+        switch status {
+        case .translated, .loading, .failed:
+            return true
+        case .alreadyChinese, .noTranslationNeeded, .optimizing, .optimized, .unavailable:
+            return false
+        }
+    }
+
     public func asScreenshotResult() -> SelectionPopoverContent {
         var copy = self
         copy.allowsPromptOptimize = false
         copy.allowsRetranslate = false
+        copy.isScreenshotResult = true
         return copy
     }
 
     public var showsActionButtons: Bool {
-        showsTranslateAction || showsOptimizeAction || allowsCopy
+        showsTranslateAction || showsOptimizeAction || allowsCopyOriginal || allowsCopy || showsOpenSettingsAction
     }
 
     public var copyText: String {
@@ -417,13 +447,18 @@ public struct SelectionPopoverContent: Equatable, Sendable {
             .filter { !$0.isEmpty }
     }
 
-    public static func loading(original: String, screenFrame: CGRect) -> SelectionPopoverContent {
+    public static func loading(
+        original: String,
+        screenFrame: CGRect,
+        message: String? = nil
+    ) -> SelectionPopoverContent {
         SelectionPopoverContent(
             original: original,
             originalPreview: SelectionTranslateSupport.truncatedOriginal(original),
             translation: "",
             status: .loading,
-            screenFrame: screenFrame
+            screenFrame: screenFrame,
+            loadingMessage: message
         )
     }
 
@@ -499,13 +534,19 @@ public struct SelectionPopoverContent: Equatable, Sendable {
         )
     }
 
-    public static func failed(original: String, message: String, screenFrame: CGRect) -> SelectionPopoverContent {
+    public static func failed(
+        original: String,
+        message: String,
+        screenFrame: CGRect,
+        showsOpenSettingsAction: Bool = false
+    ) -> SelectionPopoverContent {
         SelectionPopoverContent(
             original: original,
             originalPreview: SelectionTranslateSupport.truncatedOriginal(original),
             translation: message,
             status: .failed,
-            screenFrame: screenFrame
+            screenFrame: screenFrame,
+            showsOpenSettingsAction: showsOpenSettingsAction
         )
     }
 }
@@ -513,7 +554,7 @@ public struct SelectionPopoverContent: Equatable, Sendable {
 public enum SelectionTranslateSupport {
     public static let settleDelayMilliseconds = 150
     public static let alreadyChineseDismissMilliseconds = 1_500
-    public static let unavailableDismissMilliseconds = 1_500
+    public static let unavailableDismissMilliseconds = 3_500
     /// Overlay / page-text per-item limit. Selection translate chunks instead of silently cutting here.
     public static let maxSourceCharacters = 4_000
     /// Paragraph/sentence-aware selection chunks. Fits local context plus scaled `max_tokens`.
@@ -668,14 +709,13 @@ public enum SelectionTranslateSupport {
                 start = text.index(after: start)
             }
             guard start < text.endIndex else { break }
-            let remaining = text[start...]
-            if remaining.count <= target {
-                let piece = String(remaining).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let targetIndex = text.index(start, offsetBy: target, limitedBy: text.endIndex),
+                  targetIndex < text.endIndex else {
+                let piece = String(text[start...]).trimmingCharacters(in: .whitespacesAndNewlines)
                 if !piece.isEmpty { chunks.append(piece) }
                 break
             }
-            let targetIndex = text.index(start, offsetBy: target)
-            let breakIndex = preferredBreakIndex(in: text, start: start, target: targetIndex)
+            let breakIndex = preferredBreakIndex(in: text, start: start, target: targetIndex, windowCount: target)
             let end = breakIndex > start ? breakIndex : targetIndex
             let piece = String(text[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
             if !piece.isEmpty {
@@ -706,10 +746,11 @@ public enum SelectionTranslateSupport {
     private static func preferredBreakIndex(
         in text: String,
         start: String.Index,
-        target: String.Index
+        target: String.Index,
+        windowCount: Int
     ) -> String.Index {
         let window = text[start..<target]
-        let minOffset = max(1, window.count / 2)
+        let minOffset = max(1, windowCount / 2)
         if let paragraph = lastMatch("\n\n", in: window, minOffset: minOffset) {
             return paragraph
         }
@@ -733,44 +774,43 @@ public enum SelectionTranslateSupport {
     }
 
     private static func lastSentenceBreak(in window: Substring, minOffset: Int) -> String.Index? {
-        var match: String.Index?
-        var offset = 0
-        var index = window.startIndex
-        while index < window.endIndex {
-            let character = window[index]
-            let next = window.index(after: index)
+        guard let minIndex = window.index(window.startIndex, offsetBy: minOffset, limitedBy: window.endIndex) else {
+            return nil
+        }
+        var index = window.endIndex
+        while index > minIndex {
+            let previous = window.index(before: index)
+            let character = window[previous]
             if Self.sentenceTerminators.contains(character) {
                 let boundaryOK: Bool
-                if next == window.endIndex {
+                if index == window.endIndex {
                     boundaryOK = true
                 } else {
-                    let following = window[next]
+                    let following = window[index]
                     boundaryOK = following.isWhitespace || following.isNewline
                 }
-                if boundaryOK, offset >= minOffset {
-                    match = next
+                if boundaryOK {
+                    return index
                 }
             }
-            index = next
-            offset += 1
+            index = previous
         }
-        return match
+        return nil
     }
 
     private static func lastWhitespaceBreak(in window: Substring, minOffset: Int) -> String.Index? {
-        var match: String.Index?
-        var offset = 0
-        var index = window.startIndex
-        while index < window.endIndex {
-            let character = window[index]
-            let next = window.index(after: index)
-            if character.isWhitespace, offset >= minOffset {
-                match = next
-            }
-            index = next
-            offset += 1
+        guard let minIndex = window.index(window.startIndex, offsetBy: minOffset, limitedBy: window.endIndex) else {
+            return nil
         }
-        return match
+        var index = window.endIndex
+        while index > minIndex {
+            let previous = window.index(before: index)
+            if window[previous].isWhitespace {
+                return index
+            }
+            index = previous
+        }
+        return nil
     }
 
     private static let sentenceTerminators: Set<Character> = [".", "!", "?", "。", "！", "？"]

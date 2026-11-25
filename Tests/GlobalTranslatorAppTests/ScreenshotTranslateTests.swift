@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import os
 import Testing
 @testable import GlobalTranslatorApp
 import GlobalTranslatorCapture
@@ -705,6 +706,144 @@ struct ScreenshotTranslateControllerTests {
         )
         controller.startHotkey()
         #expect(controller.lastHotkeyError == KeyboardShortcutSupport.alreadyInUseCopy)
+    }
+
+    @Test
+    func secureInputAndSessionLockBlockScreenshotCapture() async {
+        let state = OSAllocatedUnfairLock(initialState: (secure: true, locked: false))
+        let perms = SystemPermissionController(snapshotProvider: {
+            let current = state.withLock { $0 }
+            return PermissionSnapshot(
+                accessibilityTrusted: true,
+                screenCaptureAuthorized: true,
+                secureInputEnabled: current.secure,
+                sessionLocked: current.locked
+            )
+        })
+        let selector = FakeRegionSelector()
+        let capturer = FakeRegionCapturer()
+        let popover = FakeSelectionPopover()
+        let controller = ScreenshotTranslateController(
+            selector: selector,
+            capturer: capturer,
+            ocr: FakeRegionOCR(),
+            popover: popover,
+            permissions: perms,
+            logger: RecordingLogger(),
+            registrar: RecordingHotkeyRegistrar(),
+            translator: { nil },
+            backendReadiness: { .ready }
+        )
+        controller.handleHotkey()
+        try? await Task.sleep(for: .milliseconds(40))
+        #expect(!selector.isSelecting)
+        #expect(!popover.isVisible)
+
+        state.withLock { $0 = (secure: false, locked: true) }
+        await controller.completeSelectionForTesting(.completed(CGRect(x: 0, y: 0, width: 100, height: 100)))
+        #expect(!popover.isVisible)
+    }
+
+    @Test
+    func artifactSaveOverlapsWithOCRAndCompletesBeforeTranslatedHints() async throws {
+        let directory = FileManager.default.temporaryDirectory
+        let saver = GatedImageSaver()
+        defer { saver.release() }
+        let ocr = FakeRegionOCR()
+        ocr.text = "Parallel screenshot text"
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "并行结果"
+        let controller = ScreenshotTranslateController(
+            selector: FakeRegionSelector(),
+            capturer: FakeRegionCapturer(),
+            ocr: ocr,
+            popover: popover,
+            permissions: FakePermissionController(snapshot: .allGranted),
+            logger: RecordingLogger(),
+            registrar: RecordingHotkeyRegistrar(),
+            translator: { translator },
+            backendReadiness: { .ready },
+            imageSaver: { _, dir in saver.save(in: dir) },
+            imageCopier: { _ in }
+        )
+        controller.setSaveImage(true)
+        controller.setSaveDirectory(directory.path)
+        controller.handleHotkey()
+
+        // OCR and loading state progress immediately without waiting for slow disk save.
+        try await waitUntil { saver.saveCount == 1 && popover.currentContent?.status == .loading && popover.currentContent?.original == "Parallel screenshot text" }
+        saver.release()
+        try await waitUntil { popover.currentContent?.status == .translated }
+        #expect(popover.currentContent?.savedImagePath == directory.path + "/shot-1.png")
+    }
+
+    @Test
+    func copyImageWithoutSaveOrAutoCopyCompletesAndLogsTiming() async throws {
+        let recorder = ImageArtifactRecorder()
+        let logger = RecordingLogger()
+        let ocr = FakeRegionOCR()
+        ocr.text = "Fast stream source"
+        let popover = FakeSelectionPopover()
+        let streamingTranslator = StreamingStubSelectionTranslator(
+            partials: ["快速", "快速流式结果"],
+            finalResult: "快速流式结果"
+        )
+        let controller = ScreenshotTranslateController(
+            selector: FakeRegionSelector(),
+            capturer: FakeRegionCapturer(),
+            ocr: ocr,
+            popover: popover,
+            permissions: FakePermissionController(snapshot: .allGranted),
+            logger: logger,
+            registrar: RecordingHotkeyRegistrar(),
+            translator: { streamingTranslator },
+            backendReadiness: { .ready },
+            imageCopier: { _ in recorder.recordCopy() }
+        )
+        controller.setCopyImage(true)
+        controller.handleHotkey()
+
+        try await waitUntil { popover.currentContent?.status == .translated }
+        try await waitUntil { recorder.copiedCount == 1 }
+        #expect(popover.currentContent?.displayTranslation == "快速流式结果")
+        #expect(popover.currentContent?.allowsCopyOriginal == true)
+        #expect(popover.shown.contains { $0.status == .loading && $0.displayTranslation == "快速" })
+        let timing = try #require(logger.records.first { $0.0 == "screenshot_timing" })
+        #expect(Int(timing.1["capture_ms"] ?? "") != nil)
+        #expect(Int(timing.1["ocr_ms"] ?? "") != nil)
+        #expect(Int(timing.1["translate_ms"] ?? "") != nil)
+        #expect(Int(timing.1["total_ms"] ?? "") != nil)
+    }
+}
+
+@MainActor
+private final class StreamingStubSelectionTranslator: SelectionTranslating {
+    private let partials: [String]
+    private let finalResult: String
+
+    init(partials: [String], finalResult: String) {
+        self.partials = partials
+        self.finalResult = finalResult
+    }
+
+    func translateSelection(_: String) async throws -> SelectionTranslationOutcome {
+        SelectionTranslationOutcome(text: finalResult)
+    }
+
+    func translateSelectionStreaming(
+        _: String,
+        onPartial: @escaping @MainActor @Sendable (String) -> Void
+    ) async throws -> SelectionTranslationOutcome {
+        for partial in partials {
+            onPartial(partial)
+            await Task.yield()
+        }
+        return SelectionTranslationOutcome(text: finalResult)
+    }
+
+    func optimizePrompt(_ text: String, mode _: PromptOptimizeMode) async throws -> String {
+        text
     }
 }
 

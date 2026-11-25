@@ -74,24 +74,32 @@ public struct NullSelectedTextReader: SelectedTextReading {
 @MainActor
 public protocol ClipboardSelectionFallingBack: Sendable {
     func copySelectedTextRestoringClipboard() async -> String?
+    func copySelectedTextRestoringClipboard(expectedPID: Int32?) async -> String?
+}
+
+@MainActor
+public extension ClipboardSelectionFallingBack {
+    func copySelectedTextRestoringClipboard(expectedPID _: Int32?) async -> String? {
+        await copySelectedTextRestoringClipboard()
+    }
 }
 
 /// Reads AX `selectedText` / selected range on the focused element.
 ///
-/// Clipboard ⌘C is used when the pasteboard can be fully snapshotted and:
-/// - AX reports a non-empty range but no string (legacy path), or
-/// - the caller allows it after a real mouse-drag selection (Electron / Feishu
-///   often expose empty `selectedText` and a zero range).
+/// Clipboard ⌘C is used when the pasteboard can be fully snapshotted and
+/// `allowClipboardFallback` is enabled after a real drag selection.
 @MainActor
 public struct AXSelectedTextReader: SelectedTextReading, @unchecked Sendable {
     public let attributeReader: any AXAttributeReading
     public let clipboard: (any ClipboardSelectionFallingBack)?
+    private let permissions: any PermissionControlling
     private let frontmostApplication: () -> FrontmostApplicationInfo?
     private let primaryDisplayFrame: () -> CGRect?
 
     public init(
         attributeReader: any AXAttributeReading = SystemAXAttributeReader(),
         clipboard: (any ClipboardSelectionFallingBack)? = RestoringClipboardSelectionFallback(),
+        permissions: any PermissionControlling = SystemPermissionController(),
         frontmostApplication: @escaping () -> FrontmostApplicationInfo? = {
             AXSelectedTextReader.systemFrontmostApplication()
         },
@@ -101,40 +109,73 @@ public struct AXSelectedTextReader: SelectedTextReading, @unchecked Sendable {
     ) {
         self.attributeReader = attributeReader
         self.clipboard = clipboard
+        self.permissions = permissions
         self.frontmostApplication = frontmostApplication
         self.primaryDisplayFrame = primaryDisplayFrame
     }
 
     public func readSelection(mouseLocation: CGPoint, allowClipboardFallback: Bool) async -> SelectedTextReadResult {
+        let initialPermissions = permissions.snapshot
+        if initialPermissions.secureInputEnabled || initialPermissions.sessionLocked {
+            return .empty
+        }
         guard let app = frontmostApplication() else { return .unavailable }
         let focused = attributeReader.focusedElement(for: app.pid)
         let window = attributeReader.focusedWindow(for: app.pid)
 
-        if let focused, isSecure(focused) { return .empty }
+        var secureCache: [Int: Bool] = [:]
+        func cachedIsSecure(_ element: AXElement) -> Bool {
+            if let cached = secureCache[element.identifier] { return cached }
+            let result = isSecure(element)
+            secureCache[element.identifier] = result
+            return result
+        }
+
+        if let focused, cachedIsSecure(focused) { return .empty }
+
+        var rangeCache: [Int: (location: Int, length: Int)?] = [:]
+        func cachedRange(of element: AXElement) -> (location: Int, length: Int)? {
+            if let cached = rangeCache[element.identifier] { return cached }
+            let result = attributeReader.selectedTextRange(of: element)
+            rangeCache[element.identifier] = result
+            return result
+        }
 
         let candidates = [focused, window].compactMap { $0 }
         for element in candidates {
-            if isSecure(element) { continue }
-            if let snapshot = accessibilitySnapshot(from: element, app: app, mouseLocation: mouseLocation) {
+            if cachedIsSecure(element) { continue }
+            if let snapshot = accessibilitySnapshot(
+                from: element,
+                app: app,
+                mouseLocation: mouseLocation,
+                rangeProvider: cachedRange
+            ) {
                 return .snapshot(snapshot)
             }
         }
 
-        let hasPositiveRange = candidates.contains { element in
-            (attributeReader.selectedTextRange(of: element)?.length ?? 0) > 0
+        let positiveAnchor = candidates.first { element in
+            (cachedRange(of: element)?.length ?? 0) > 0
         }
-        if (allowClipboardFallback || hasPositiveRange),
-           let copied = await clipboard?.copySelectedTextRestoringClipboard() {
+        let hasPositiveRange = positiveAnchor != nil
+        if allowClipboardFallback,
+           let copied = await clipboard?.copySelectedTextRestoringClipboard(expectedPID: app.pid) {
+            let postPermissions = permissions.snapshot
+            if postPermissions.secureInputEnabled || postPermissions.sessionLocked {
+                return .empty
+            }
+            if frontmostApplication()?.pid != app.pid {
+                return .empty
+            }
             let resolved = copied.trimmingCharacters(in: .whitespacesAndNewlines)
             if !resolved.isEmpty {
-                let anchor = candidates.first { element in
-                    (attributeReader.selectedTextRange(of: element)?.length ?? 0) > 0
-                } ?? candidates.first
+                let anchor = positiveAnchor ?? candidates.first
                 return .snapshot(clipboardSnapshot(
                     text: resolved,
                     from: anchor,
                     app: app,
-                    mouseLocation: mouseLocation
+                    mouseLocation: mouseLocation,
+                    rangeProvider: cachedRange
                 ))
             }
         }
@@ -152,7 +193,8 @@ public struct AXSelectedTextReader: SelectedTextReading, @unchecked Sendable {
     private func accessibilitySnapshot(
         from element: AXElement,
         app: FrontmostApplicationInfo,
-        mouseLocation: CGPoint
+        mouseLocation: CGPoint,
+        rangeProvider: (AXElement) -> (location: Int, length: Int)?
     ) -> SelectedTextSnapshot? {
         let resolved = attributeReader.selectedText(of: element)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -160,7 +202,7 @@ public struct AXSelectedTextReader: SelectedTextReading, @unchecked Sendable {
         let limited = SelectionTranslateSupport.limitSelectionSource(resolved)
         return SelectedTextSnapshot(
             text: limited.text,
-            screenFrame: resolvedFrame(of: element, mouseLocation: mouseLocation),
+            screenFrame: resolvedFrame(of: element, mouseLocation: mouseLocation, rangeProvider: rangeProvider),
             source: .accessibility,
             bundleIdentifier: app.bundleIdentifier,
             sourceWasCapped: limited.didTruncate
@@ -171,12 +213,13 @@ public struct AXSelectedTextReader: SelectedTextReading, @unchecked Sendable {
         text: String,
         from element: AXElement?,
         app: FrontmostApplicationInfo,
-        mouseLocation: CGPoint
+        mouseLocation: CGPoint,
+        rangeProvider: (AXElement) -> (location: Int, length: Int)?
     ) -> SelectedTextSnapshot {
         let limited = SelectionTranslateSupport.limitSelectionSource(text)
         return SelectedTextSnapshot(
             text: limited.text,
-            screenFrame: clipboardAnchorFrame(of: element, mouseLocation: mouseLocation),
+            screenFrame: clipboardAnchorFrame(of: element, mouseLocation: mouseLocation, rangeProvider: rangeProvider),
             source: .clipboardFallback,
             bundleIdentifier: app.bundleIdentifier,
             sourceWasCapped: limited.didTruncate
@@ -186,9 +229,13 @@ public struct AXSelectedTextReader: SelectedTextReading, @unchecked Sendable {
     /// Feishu / Electron often expose a zero range on a large webview. Using that
     /// element's full AX frame would pin the popover to a window edge. Anchor to
     /// the mouse unless AX has a real selected-range rect.
-    private func clipboardAnchorFrame(of element: AXElement?, mouseLocation: CGPoint) -> CGRect {
+    private func clipboardAnchorFrame(
+        of element: AXElement?,
+        mouseLocation: CGPoint,
+        rangeProvider: (AXElement) -> (location: Int, length: Int)?
+    ) -> CGRect {
         if let element,
-           let range = attributeReader.selectedTextRange(of: element),
+           let range = rangeProvider(element),
            range.length > 0,
            let bounds = attributeReader.boundsForRange(
             of: element,
@@ -201,8 +248,12 @@ public struct AXSelectedTextReader: SelectedTextReading, @unchecked Sendable {
         return SelectionTranslateSupport.fallbackFrame(at: mouseLocation)
     }
 
-    private func resolvedFrame(of element: AXElement, mouseLocation: CGPoint) -> CGRect {
-        let range = attributeReader.selectedTextRange(of: element)
+    private func resolvedFrame(
+        of element: AXElement,
+        mouseLocation: CGPoint,
+        rangeProvider: (AXElement) -> (location: Int, length: Int)?
+    ) -> CGRect {
+        let range = rangeProvider(element)
         let axBounds: CGRect?
         if let range, range.length > 0 {
             axBounds = attributeReader.boundsForRange(of: element, location: range.location, length: range.length)

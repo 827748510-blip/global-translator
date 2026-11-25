@@ -101,4 +101,20 @@ struct CLIExitAuditTests {
         #expect(object["managedByLaunchd"] as? Bool == false)
         #expect(object["xpcServiceName"] == nil)
     }
+
+    @Test
+    func auditEnforces0600PermissionsOnCreateAndExistingFile() throws {
+        let home = try makeHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let auditURL = CLIExitAudit.auditURL(homeDirectory: home)
+
+        CLIExitAudit.recordExit(0, arguments: ["status"], homeDirectory: home)
+        let createdAttrs = try FileManager.default.attributesOfItem(atPath: auditURL.path)
+        #expect((createdAttrs[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+
+        try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: 0o644)], ofItemAtPath: auditURL.path)
+        CLIExitAudit.recordExit(0, arguments: ["status"], homeDirectory: home)
+        let tightenedAttrs = try FileManager.default.attributesOfItem(atPath: auditURL.path)
+        #expect((tightenedAttrs[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+    }
 }
