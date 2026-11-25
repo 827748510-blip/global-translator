@@ -109,11 +109,17 @@ pickSidecar.addEventListener("click", () => {
   sidecarFile.click();
 });
 
+const MAX_SIDECAR_BYTES = 5 * 1024 * 1024;
+
 sidecarFile.addEventListener("change", () => {
   const file = sidecarFile.files && sidecarFile.files[0];
   sidecarFile.value = "";
   setSidecarError("");
   if (!file) return;
+  if (typeof file.size === "number" && file.size > MAX_SIDECAR_BYTES) {
+    setSidecarError("字幕文件过大（最大支持 5MB）");
+    return;
+  }
   const reader = new FileReader();
   reader.onload = () => {
     const text = typeof reader.result === "string" ? reader.result : "";

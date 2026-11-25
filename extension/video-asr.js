@@ -57,6 +57,15 @@
     }
     const cutoff = time - 12;
     const kept = next.filter((cue) => cue && cue.end > cutoff);
+    const MAX_SEEN_SEQ = 256;
+    const seenKeys = Object.keys(seen);
+    if (seenKeys.length > MAX_SEEN_SEQ) {
+      seenKeys.sort((a, b) => Number(a) - Number(b));
+      const removeCount = seenKeys.length - MAX_SEEN_SEQ;
+      for (let i = 0; i < removeCount; i++) {
+        delete seen[seenKeys[i]];
+      }
+    }
     return { cues: kept.slice(-8), seenSeq: seen };
   }
 

@@ -78,4 +78,18 @@ const live = cues.overlayState({
 });
 assertEqual(live.cueText, "来自扬声器的问候", "asr cue uses existing overlay");
 
+let cappedSeen = {};
+for (let startSeq = 1; startSeq <= 300; startSeq += 50) {
+  const batch = [];
+  for (let s = startSeq; s < startSeq + 50; s++) {
+    batch.push({ seq: s, text: "Caption line " + s, durationMs: 2000 });
+  }
+  const mapped = asr.mapNewCues([], batch, 10, cappedSeen);
+  cappedSeen = mapped.seenSeq;
+}
+const seenKeys = Object.keys(cappedSeen);
+assert(seenKeys.length <= 256, "seenSeq is bounded to at most 256 entries");
+assertEqual(cappedSeen[300], true, "most recent seq stays in seenSeq");
+assertEqual(cappedSeen[1], undefined, "oldest seq is evicted once past cap");
+
 console.log("extension/video-asr.test.js ok");

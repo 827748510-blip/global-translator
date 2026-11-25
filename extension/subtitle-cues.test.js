@@ -225,4 +225,25 @@ assertDeep(cues.desktopVideoPrefFromPing({ ok: true, videoTranslateEnabled: true
 assertDeep(cues.desktopVideoPrefFromPing(undefined, null),
   { write: false, enabled: false }, "missing response does not write");
 
+const sortedCues = [];
+for (let i = 0; i < 40; i++) {
+  sortedCues.push({ start: i * 3, end: i * 3 + 2, text: "Cue " + i });
+}
+assertEqual(cues.activeCue(sortedCues, 0).text, "Cue 0", "binary search hits first cue");
+assertEqual(cues.activeCue(sortedCues, 76).text, "Cue 25", "binary search hits middle cue");
+assertEqual(cues.activeCue(sortedCues, 117.5).text, "Cue 39", "binary search hits last cue");
+assertEqual(cues.activeCue(sortedCues, 77.5), null, "binary search returns null in gap");
+
+const overlappingSorted = [];
+for (let i = 0; i < 20; i++) {
+  overlappingSorted.push({ start: i * 2, end: i * 2 + 5, text: "Overlap " + i });
+}
+assertEqual(cues.activeCue(overlappingSorted, 5).text, "Overlap 2", "binary search returns latest overlapping cue");
+
+const unsortedCues = [];
+for (let i = 19; i >= 0; i--) {
+  unsortedCues.push({ start: i * 2, end: i * 2 + 1.5, text: "Unsorted " + i });
+}
+assertEqual(cues.activeCue(unsortedCues, 10.5).text, "Unsorted 5", "unsorted cue list falls back to linear scan");
+
 console.log("extension/subtitle-cues.test.js ok");

@@ -156,16 +156,34 @@
     return value.toLowerCase();
   }
 
+  const MAX_CJK_PAGE_CACHE = 64;
+  const foreignCJKPageCache = new Map();
+
   function isForeignCJKPage(pageLanguage) {
+    const key = typeof pageLanguage === "string" ? pageLanguage : "";
+    if (foreignCJKPageCache.has(key)) {
+      return foreignCJKPageCache.get(key);
+    }
     const tag = normalizeSourceLanguage(pageLanguage);
-    if (!tag) return false;
-    const parts = tag.split("-");
-    if (parts[0] === "ja" || parts[0] === "ko") return true;
-    if (parts[0] !== "zh" || parts.length < 2) return false;
-    const script = parts[1].length === 4 ? parts[1] : null;
-    if (script === "hans") return false;
-    if (script === "hant") return true;
-    return ["tw", "hk", "mo"].includes(parts[script ? 2 : 1]);
+    let result = false;
+    if (tag) {
+      const parts = tag.split("-");
+      if (parts[0] === "ja" || parts[0] === "ko") {
+        result = true;
+      } else if (parts[0] === "zh" && parts.length >= 2) {
+        const script = parts[1].length === 4 ? parts[1] : null;
+        if (script === "hant") {
+          result = true;
+        } else if (script !== "hans") {
+          result = ["tw", "hk", "mo"].includes(parts[script ? 2 : 1]);
+        }
+      }
+    }
+    if (foreignCJKPageCache.size >= MAX_CJK_PAGE_CACHE) {
+      foreignCJKPageCache.clear();
+    }
+    foreignCJKPageCache.set(key, result);
+    return result;
   }
 
   // Simplified-Chinese detection for the page bridge. Kana/hangul always mean
