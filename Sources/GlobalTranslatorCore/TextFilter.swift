@@ -1,5 +1,22 @@
 import Foundation
 import NaturalLanguage
+import os
+
+enum SharedLanguageRecognizer {
+    private struct Box: @unchecked Sendable {
+        let instance = NLLanguageRecognizer()
+    }
+
+    private static let recognizer = OSAllocatedUnfairLock(initialState: Box())
+
+    static func dominantLanguage(for text: String) -> NLLanguage? {
+        recognizer.withLock { box in
+            box.instance.reset()
+            box.instance.processString(text)
+            return box.instance.dominantLanguage
+        }
+    }
+}
 
 /// Detects a translation that is byte-for-byte the Latin source. Local models
 /// echo brand / product words ("Figma", "Python", "npm") instead of translating
@@ -15,11 +32,11 @@ public enum CopiedSourceDetector {
         if translation == original, original.unicodeScalars.contains(where: Self.isCJK) {
             return true
         }
-        guard TextFilter.shouldTranslate(original) else { return false }
+        guard translation.caseInsensitiveCompare(original) == .orderedSame else { return false }
         guard original.unicodeScalars.contains(where: {
             CharacterSet.letters.contains($0) && $0.isASCII
         }) else { return false }
-        return translation.caseInsensitiveCompare(original) == .orderedSame
+        return TextFilter.shouldTranslate(original)
     }
 
     private static func isCJK(_ scalar: Unicode.Scalar) -> Bool {
@@ -154,6 +171,46 @@ public enum TextFilter {
     /// tech token (Vision + OCR). Title-case + a number (`Sentence 0`) and
     /// UI labels (`File / Edit`, `Copy + Paste`) still translate. `+`/`/`
     /// joiners are not a strong signal by themselves.
+    private static let tokenSeparators = CharacterSet.whitespacesAndNewlines
+        .union(CharacterSet(charactersIn: "+/|&,"))
+    private static let nonAlphanumericASCIIInverted = CharacterSet(
+        charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    ).inverted
+    private static let shortcutSymbols: Set<Character> = Set("⌘⌃⌥⇧⇪")
+
+    private static let versionTokenRegex = try! NSRegularExpression(pattern: #"^v?\d+(?:\.\d+)*[A-Za-z]?$"#)
+    private static let capitalizedProductWordRegex = try! NSRegularExpression(pattern: #"^[A-Z][a-zA-Z0-9]*$"#)
+    private static let domainURLRegex = try! NSRegularExpression(
+        pattern: #"^(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[/:?#].*)?$"#,
+        options: .caseInsensitive
+    )
+    private static let emailRegex = try! NSRegularExpression(pattern: #"^[^\s@]+@[^\s@]+\.[^\s@]+$"#)
+    private static let nestedPathRegex = try! NSRegularExpression(
+        pattern: #"[/\\][^/\\]+(?:[/\\]|\.[a-z0-9]+$)"#,
+        options: .caseInsensitive
+    )
+    private static let identifierUnitRegexes: [NSRegularExpression] = [
+        #"^\.[A-Za-z][A-Za-z0-9_.-]*$"#,
+        #"^[A-Za-z_][A-Za-z0-9_]*_[A-Za-z0-9_]+$"#,
+        #"^[a-z]+(?:[A-Z][A-Za-z0-9]*)+$"#,
+        #"^[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+$"#,
+        #"(?i)^\.?[A-Za-z0-9_.-]+\.(?:swift|tsx?|jsx?|json|ya?ml|toml|md|plist|lock|sh|css|html)(?:\s+[AMUDR?]|\s+\d+)?$"#,
+        #"(?i)^0x[0-9a-f]+$"#,
+        #"(?i)^v?\d+(?:\.\d+){2,}(?:[-+][a-z0-9.-]+)?$"#,
+        #"(?i)^\d+(?:\.\d+)?\s*(?:[kmgt]i?b|bytes?|fps|hz|khz|mhz|ghz|px|dpi|ms|s|sec|min|%)$"#,
+        #"(?i)^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"#,
+        #"^[A-Za-z_][A-Za-z0-9_.]*\(\)$"#
+    ].map { try! NSRegularExpression(pattern: $0) }
+    private static let shortcutKeyRegex = try! NSRegularExpression(
+        pattern: #"^(?:[a-z0-9]|f[0-9]{1,2}|tab|enter|return|space|escape|esc|delete|backspace)$"#,
+        options: .caseInsensitive
+    )
+
+    private static func matches(_ regex: NSRegularExpression, in value: String) -> Bool {
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        return regex.firstMatch(in: value, options: [], range: range) != nil
+    }
+
     private static func isTechnicalTokenPhrase(_ value: String) -> Bool {
         if value.contains(where: { $0 == "?" || $0 == "!" || $0 == "。" || $0 == "？" }) {
             return false
@@ -164,9 +221,7 @@ public enum TextFilter {
                 || (0x1100...0x11FF).contains(scalar.value) || (0xAC00...0xD7AF).contains(scalar.value)
         }
         guard !hasCJK else { return false }
-        let separators = CharacterSet.whitespacesAndNewlines
-            .union(CharacterSet(charactersIn: "+/|&,"))
-        let tokens = value.components(separatedBy: separators).filter { !$0.isEmpty }
+        let tokens = value.components(separatedBy: tokenSeparators).filter { !$0.isEmpty }
         guard (2...8).contains(tokens.count) else { return false }
         guard tokens.allSatisfy({ isTechnicalToken($0) || glueWords.contains($0.lowercased()) }) else {
             return false
@@ -203,11 +258,11 @@ public enum TextFilter {
     }
 
     private static func isVersionToken(_ token: String) -> Bool {
-        token.range(of: #"^v?\d+(?:\.\d+)*[A-Za-z]?$"#, options: .regularExpression) != nil
+        matches(versionTokenRegex, in: token)
     }
 
     private static func isCapitalizedProductWord(_ token: String) -> Bool {
-        token.range(of: #"^[A-Z][a-zA-Z0-9]*$"#, options: .regularExpression) != nil
+        matches(capitalizedProductWordRegex, in: token)
     }
 
     private static func isAllCapsAbbreviation(_ token: String) -> Bool {
@@ -225,33 +280,36 @@ public enum TextFilter {
     }
 
     private static func isAlreadySimplifiedChinese(_ value: String) -> Bool {
-        let hasCJK = value.unicodeScalars.contains { scalar in
-            (0x3400...0x4DBF).contains(scalar.value) || (0x4E00...0x9FFF).contains(scalar.value)
+        var hasCJK = false
+        var hasForeignLetter = false
+        var allForeignAreASCII = true
+        for scalar in value.unicodeScalars {
+            let v = scalar.value
+            if (0x3400...0x4DBF).contains(v) || (0x4E00...0x9FFF).contains(v) {
+                hasCJK = true
+            } else if (0x3040...0x30FF).contains(v)
+                || (0x1100...0x11FF).contains(v)
+                || (0xAC00...0xD7AF).contains(v) {
+                return false
+            } else if CharacterSet.letters.contains(scalar) {
+                hasForeignLetter = true
+                if !scalar.isASCII {
+                    allForeignAreASCII = false
+                }
+            }
         }
-        let foreignLetters = value.unicodeScalars.filter { scalar in
-            CharacterSet.letters.contains(scalar) &&
-                !(0x3400...0x4DBF).contains(scalar.value) && !(0x4E00...0x9FFF).contains(scalar.value)
-        }
-        let hasKana = value.unicodeScalars.contains { scalar in
-            (0x3040...0x30FF).contains(scalar.value)
-        }
-        let hasHangul = value.unicodeScalars.contains { scalar in
-            (0x1100...0x11FF).contains(scalar.value) || (0xAC00...0xD7AF).contains(scalar.value)
-        }
-        guard hasCJK, !hasKana, !hasHangul,
-              let converted = value.applyingTransform(traditionalToSimplified, reverse: false) else {
+        guard hasCJK,
+              let converted = value.applyingTransform(traditionalToSimplified, reverse: false),
+              converted == value else {
             return false
         }
-        guard converted == value else { return false }
-        guard !foreignLetters.isEmpty else { return true }
-        if foreignLetters.allSatisfy(\.isASCII) {
-            let words = value.components(separatedBy: CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789").inverted)
+        guard hasForeignLetter else { return true }
+        if allForeignAreASCII {
+            let words = value.components(separatedBy: nonAlphanumericASCIIInverted)
                 .filter { $0.unicodeScalars.contains(where: { CharacterSet.letters.contains($0) }) }
             if !words.isEmpty, words.allSatisfy({ technicalAbbreviations.contains($0.uppercased()) }) { return true }
         }
-        let recognizer = NLLanguageRecognizer()
-        recognizer.processString(value)
-        return recognizer.dominantLanguage == .simplifiedChinese
+        return SharedLanguageRecognizer.dominantLanguage(for: value) == .simplifiedChinese
     }
 
     private static func isURL(_ value: String) -> Bool {
@@ -261,49 +319,40 @@ public enum TextFilter {
             lowercased.hasPrefix("https://") ||
             lowercased.hasPrefix("ftp://") ||
             lowercased.hasPrefix("www.") ||
-            lowercased.range(of: #"(?i)^(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[/:?#].*)?$"#, options: .regularExpression) != nil
+            matches(domainURLRegex, in: lowercased)
     }
 
     private static func isEmail(_ value: String) -> Bool {
-        value.range(of: #"^[^\s@]+@[^\s@]+\.[^\s@]+$"#, options: .regularExpression) != nil
+        guard value.contains("@") else { return false }
+        return matches(emailRegex, in: value)
     }
 
     private static func isFilePath(_ value: String) -> Bool {
         let prefixPath = value.hasPrefix("/") || value.hasPrefix("~/") || value.hasPrefix("./") ||
             value.hasPrefix("../") || value.hasPrefix(".\\") || value.hasPrefix("..\\")
-        let scalars = Array(value.unicodeScalars)
-        let windowsPath = scalars.count >= 3 && CharacterSet.letters.contains(scalars[0]) && scalars[1] == ":" &&
-            (scalars[2] == "/" || scalars[2] == "\\")
-        let nestedPath = !value.contains(where: \.isWhitespace) && (value.contains("/") || value.contains("\\")) &&
-            value.range(of: #"[/\\][^/\\]+(?:[/\\]|\.[a-z0-9]+$)"#, options: [.regularExpression, .caseInsensitive]) != nil
-        return prefixPath || windowsPath || nestedPath
+        if prefixPath { return true }
+
+        var scalarIter = value.unicodeScalars.makeIterator()
+        if let first = scalarIter.next(), let second = scalarIter.next(), let third = scalarIter.next(),
+           CharacterSet.letters.contains(first), second == ":", (third == "/" || third == "\\") {
+            return true
+        }
+        return !value.contains(where: \.isWhitespace) && (value.contains("/") || value.contains("\\")) &&
+            matches(nestedPathRegex, in: value)
     }
 
     private static func isIdentifierOrUnit(_ value: String) -> Bool {
         if value.count == 1, value.unicodeScalars.allSatisfy({ $0.isASCII }) { return true }
-        let patterns = [
-            #"^\.[A-Za-z][A-Za-z0-9_.-]*$"#,
-            #"^[A-Za-z_][A-Za-z0-9_]*_[A-Za-z0-9_]+$"#,
-            #"^[a-z]+(?:[A-Z][A-Za-z0-9]*)+$"#,
-            #"^[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+$"#,
-            #"(?i)^\.?[A-Za-z0-9_.-]+\.(?:swift|tsx?|jsx?|json|ya?ml|toml|md|plist|lock|sh|css|html)(?:\s+[AMUDR?]|\s+\d+)?$"#,
-            #"(?i)^0x[0-9a-f]+$"#,
-            #"(?i)^v?\d+(?:\.\d+){2,}(?:[-+][a-z0-9.-]+)?$"#,
-            #"(?i)^\d+(?:\.\d+)?\s*(?:[kmgt]i?b|bytes?|fps|hz|khz|mhz|ghz|px|dpi|ms|s|sec|min|%)$"#,
-            #"(?i)^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"#,
-            #"^[A-Za-z_][A-Za-z0-9_.]*\(\)$"#
-        ]
-        return patterns.contains { value.range(of: $0, options: .regularExpression) != nil }
+        return identifierUnitRegexes.contains { matches($0, in: value) }
     }
 
     private static func isShortcutOnly(_ value: String) -> Bool {
-        let symbols = Set("⌘⌃⌥⇧⇪")
         let compact = value.replacingOccurrences(of: " ", with: "").lowercased()
         if modifierWords.contains(compact) {
             return true
         }
-        let symbolScalars = compact.filter { symbols.contains($0) }
-        let nonSymbols = compact.filter { !symbols.contains($0) && $0 != "+" && $0 != "-" }
+        let symbolScalars = compact.filter { shortcutSymbols.contains($0) }
+        let nonSymbols = compact.filter { !shortcutSymbols.contains($0) && $0 != "+" && $0 != "-" }
         if !symbolScalars.isEmpty && nonSymbols.count <= 1 {
             return true
         }
@@ -312,6 +361,6 @@ public enum TextFilter {
         guard pieces.count >= 2, pieces.count <= 5 else { return false }
         guard pieces.dropLast().allSatisfy({ modifierWords.contains($0) }) else { return false }
         let key = pieces[pieces.count - 1]
-        return key.range(of: #"(?i)^(?:[a-z0-9]|f[0-9]{1,2}|tab|enter|return|space|escape|esc|delete|backspace)$"#, options: .regularExpression) != nil
+        return matches(shortcutKeyRegex, in: key)
     }
 }

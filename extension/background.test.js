@@ -29,6 +29,7 @@ const path = require("node:path");
     assert.equal(url, "http://127.0.0.1:9233/translate");
     assert.equal(options.method, "POST");
   }
+  const translateListener = listener;
 
   const healthContext = vm.createContext({
     chrome: { runtime: { onMessage: { addListener(fn) { listener = fn; } } } },
@@ -80,5 +81,37 @@ const path = require("node:path");
   assert.equal(blockedAsr.needed, false);
   assert.equal(blockedAsr.running, false);
   assert.equal(requests.length, preCount + 1);
+
+  const sendCached = (message, sender) =>
+    new Promise(resolve => assert.equal(translateListener(message, sender, resolve), true));
+  const cacheStart = requests.length;
+  const firstSiteRes = await sendCached(
+    { type: "translate", texts: ["CacheMe"], sourceLanguage: "en" },
+    { tab: { url: "https://site-a.example/one" } }
+  );
+  assert.deepEqual(Array.from(firstSiteRes.translations), ["邮票"]);
+  assert.equal(requests.length, cacheStart + 1);
+
+  const cachedSameOrigin = await sendCached(
+    { type: "translate", texts: ["CacheMe"], sourceLanguage: "en" },
+    { tab: { url: "https://site-a.example/two" } }
+  );
+  assert.deepEqual(Array.from(cachedSameOrigin.translations), ["邮票"]);
+  assert.equal(requests.length, cacheStart + 1, "same pageOrigin hits background LRU cache");
+
+  const otherOriginRes = await sendCached(
+    { type: "translate", texts: ["CacheMe"], sourceLanguage: "en" },
+    { tab: { url: "https://site-b.example/one" } }
+  );
+  assert.deepEqual(Array.from(otherOriginRes.translations), ["邮票"]);
+  assert.equal(requests.length, cacheStart + 2, "different pageOrigin bypasses cache for origin isolation");
+
+  const dedupRes = await sendCached(
+    { type: "translate", texts: ["BatchDup", "BatchDup"], sourceLanguage: "en" },
+    { tab: { url: "https://site-b.example/one" } }
+  );
+  assert.deepEqual(Array.from(dedupRes.translations), ["邮票", "邮票"]);
+  assert.deepEqual(JSON.parse(requests[cacheStart + 2].options.body).texts, ["BatchDup"]);
+
   console.log("extension/background.test.js ok");
 })().catch(error => { console.error(error); process.exitCode = 1; });

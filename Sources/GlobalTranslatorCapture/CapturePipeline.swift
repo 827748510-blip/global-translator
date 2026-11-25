@@ -15,6 +15,8 @@ public final class CapturePipeline: @unchecked Sendable {
     private let lock = NSLock()
     private var previousSnapshots: [FingerprintKey: CaptureSnapshot] = [:]
     private var previousOrder: [FingerprintKey] = []
+    private var axCooldownUntil: [FingerprintKey: TimeInterval] = [:]
+    private let axFailureCooldownSeconds: TimeInterval = 8.0
 
     public convenience init(
         ownBundleIdentifier: String? = Bundle.main.bundleIdentifier,
@@ -59,14 +61,27 @@ public final class CapturePipeline: @unchecked Sendable {
         try permission.validateCapture()
 
         try Task.checkCancellation()
-        let accessibilityResult = permission.accessibilityTrusted
-            ? await accessibility.collectResult(from: descriptor)
-            : .unavailable(.permissionRequired(.accessibility))
+        let key = FingerprintKey(pid: descriptor.pid, windowID: descriptor.windowID)
+        let now = ProcessInfo.processInfo.systemUptime
+        let axInCooldown = lock.withLock { () -> Bool in
+            guard let until = axCooldownUntil[key] else { return false }
+            if now < until { return true }
+            axCooldownUntil.removeValue(forKey: key)
+            return false
+        }
+        let accessibilityResult: AccessibilityCollectionResult
+        if !permission.accessibilityTrusted {
+            accessibilityResult = .unavailable(.permissionRequired(.accessibility))
+        } else if axInCooldown {
+            accessibilityResult = .unavailable(.accessibilityUnavailable)
+        } else {
+            accessibilityResult = await accessibility.collectResult(from: descriptor)
+        }
         try Task.checkCancellation()
-        try permissions.snapshot.validateCapture()
         switch accessibilityResult {
         case .regions(let regions) where !regions.isEmpty:
             try permissions.snapshot.validateCapture(source: .accessibility)
+            lock.withLock { _ = axCooldownUntil.removeValue(forKey: key) }
             if regions.contains(where: { TextFilter.shouldTranslate($0.sourceText) && $0.sourceText.count > 4_000 }) {
                 break
             }
@@ -77,6 +92,10 @@ public final class CapturePipeline: @unchecked Sendable {
             ))
         case .unavailable(let error) where isTerminalAccessibilityError(error):
             throw error
+        case .unavailable(.accessibilityUnavailable):
+            lock.withLock {
+                axCooldownUntil[key] = ProcessInfo.processInfo.systemUptime + axFailureCooldownSeconds
+            }
         case .regions, .empty, .unavailable:
             break
         }
@@ -96,7 +115,6 @@ public final class CapturePipeline: @unchecked Sendable {
             throw CaptureError.captureFailed
         }
         let fingerprint = CGImageUtilities.fingerprint(image)
-        let key = FingerprintKey(pid: descriptor.pid, windowID: descriptor.windowID)
         if fingerprintStore.isUnchanged(fingerprint, for: key), let previous = previousSnapshot(for: key) {
             let window = CapturedWindow(
                 descriptor: descriptor,
@@ -193,12 +211,24 @@ public final class CapturePipeline: @unchecked Sendable {
     }
 
     private func remember(_ snapshot: CaptureSnapshot, for key: FingerprintKey) {
+        let lightweight = CaptureSnapshot(
+            window: CapturedWindow(
+                descriptor: snapshot.descriptor,
+                regions: snapshot.regions,
+                source: snapshot.source,
+                fingerprint: snapshot.window.fingerprint,
+                capturedImage: nil
+            ),
+            ocrSkipped: snapshot.ocrSkipped,
+            sourceLanguage: snapshot.sourceLanguage,
+            cacheScope: snapshot.cacheScope
+        )
         lock.lock()
         guard maximumPreviousSnapshots > 0 else {
             lock.unlock()
             return
         }
-        previousSnapshots[key] = snapshot
+        previousSnapshots[key] = lightweight
         previousOrder.removeAll { $0 == key }
         previousOrder.append(key)
         while previousOrder.count > maximumPreviousSnapshots {

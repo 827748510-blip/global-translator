@@ -70,35 +70,49 @@ public struct TranslationBatcher: Sendable {
 
     public func plan(regions: [TextRegion], requireTranslatable: Bool = true, sourceLanguage: TranslationSourceLanguage? = nil) -> TranslationBatchPlan {
         let sorted = regions.sorted(by: Self.readingOrder)
-        var groups: [String: TranslationBatchEntry] = [:]
+        var groupedRegions: [String: [TextRegion]] = [:]
+        groupedRegions.reserveCapacity(sorted.count)
         var order: [String] = []
+        order.reserveCapacity(sorted.count)
         var filteredCount = 0
 
         for region in sorted {
             let source = region.sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
-            let translatable = !requireTranslatable || TextFilter.shouldTranslate(source, sourceLanguage: sourceLanguage)
-            guard translatable, source.count <= maximumSourceCharacters else {
+            guard !source.isEmpty else {
                 filteredCount += 1
                 continue
             }
-            if var group = groups[source] {
-                group = TranslationBatchEntry(item: group.item, sourceText: source, regions: group.regions + [region])
-                groups[source] = group
+            if groupedRegions[source] != nil {
+                groupedRegions[source]?.append(region)
             } else {
-                // Stable per-source IDs keep repeated cloud batches byte-identical
-                // so DeepSeek can fully reuse its prefix cache. Region IDs stay
-                // unchanged in `orderedRegions` and are mapped back downstream.
-                groups[source] = TranslationBatchEntry(
-                    item: TranslationItem(id: PromptStableIdentifier.id(for: source), sourceText: source),
-                    sourceText: source,
-                    regions: [region]
-                )
+                groupedRegions[source] = [region]
                 order.append(source)
             }
         }
 
-        let entries = order.compactMap { groups[$0] }
-        let orderedRegions = entries.flatMap(\.regions)
+        var entries: [TranslationBatchEntry] = []
+        entries.reserveCapacity(order.count)
+        var orderedRegions: [TextRegion] = []
+        orderedRegions.reserveCapacity(sorted.count)
+
+        for source in order {
+            guard let group = groupedRegions[source] else { continue }
+            let translatable = !requireTranslatable || TextFilter.shouldTranslate(source, sourceLanguage: sourceLanguage)
+            guard translatable, source.count <= maximumSourceCharacters else {
+                filteredCount += group.count
+                continue
+            }
+            // Stable per-source IDs keep repeated cloud batches byte-identical
+            // so DeepSeek can fully reuse its prefix cache. Region IDs stay
+            // unchanged in `orderedRegions` and are mapped back downstream.
+            entries.append(TranslationBatchEntry(
+                item: TranslationItem(id: PromptStableIdentifier.id(for: source), sourceText: source),
+                sourceText: source,
+                regions: group
+            ))
+            orderedRegions.append(contentsOf: group)
+        }
+
         return TranslationBatchPlan(
             entries: entries,
             orderedRegions: orderedRegions,
@@ -118,8 +132,9 @@ public struct TranslationBatcher: Sendable {
         var currentCharacters = 0
 
         for entry in entries {
+            let entryCount = entry.sourceText.count
             let wouldExceedCount = current.count >= maximumItems
-            let wouldExceedCharacters = currentCharacters + entry.sourceText.count > maximumSourceCharacters
+            let wouldExceedCharacters = currentCharacters + entryCount > maximumSourceCharacters
             if !current.isEmpty && (wouldExceedCount || wouldExceedCharacters) {
                 batches.append(TranslationBatch(
                     entries: current,
@@ -132,7 +147,7 @@ public struct TranslationBatcher: Sendable {
                 currentCharacters = 0
             }
             current.append(entry)
-            currentCharacters += entry.sourceText.count
+            currentCharacters += entryCount
         }
         if !current.isEmpty {
             batches.append(TranslationBatch(
@@ -178,6 +193,25 @@ public struct TranslationBatcher: Sendable {
         if leftFrame.width != rightFrame.width {
             return leftFrame.width < rightFrame.width
         }
-        return lhs.id.uuidString < rhs.id.uuidString
+        return uuidLessThan(lhs.id.uuid, rhs.id.uuid)
+    }
+
+    private static func uuidLessThan(_ a: uuid_t, _ b: uuid_t) -> Bool {
+        if a.0 != b.0 { return a.0 < b.0 }
+        if a.1 != b.1 { return a.1 < b.1 }
+        if a.2 != b.2 { return a.2 < b.2 }
+        if a.3 != b.3 { return a.3 < b.3 }
+        if a.4 != b.4 { return a.4 < b.4 }
+        if a.5 != b.5 { return a.5 < b.5 }
+        if a.6 != b.6 { return a.6 < b.6 }
+        if a.7 != b.7 { return a.7 < b.7 }
+        if a.8 != b.8 { return a.8 < b.8 }
+        if a.9 != b.9 { return a.9 < b.9 }
+        if a.10 != b.10 { return a.10 < b.10 }
+        if a.11 != b.11 { return a.11 < b.11 }
+        if a.12 != b.12 { return a.12 < b.12 }
+        if a.13 != b.13 { return a.13 < b.13 }
+        if a.14 != b.14 { return a.14 < b.14 }
+        return a.15 < b.15
     }
 }

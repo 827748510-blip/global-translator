@@ -250,9 +250,7 @@ public enum PromptOptimizationSupport {
             (0x3400...0x4DBF).contains(scalar.value) || (0x4E00...0x9FFF).contains(scalar.value)
         }
         guard !hasCJK else { return false }
-        let recognizer = NLLanguageRecognizer()
-        recognizer.processString(value)
-        return recognizer.dominantLanguage == .english
+        return SharedLanguageRecognizer.dominantLanguage(for: value) == .english
     }
 }
 

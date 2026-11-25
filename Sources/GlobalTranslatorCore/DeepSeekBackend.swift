@@ -92,23 +92,26 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
             throw AdapterHTTPMapping.error(for: error)
         }
         if let error = AdapterHTTPMapping.error(for: response) {
+            if case .unauthorized = error {
+                credentialStore.invalidateCache()
+            }
             throw error
         }
         guard (200..<300).contains(response.statusCode) else {
             throw TranslationError.invalidResponse("unexpected DeepSeek HTTP status")
         }
-        recordUsage(from: response.body, startedAt: startedAt, requestedAt: requestedAt)
-        let result = try TranslationResponseParser.parseResponses(
+        let parsed = try TranslationResponseParser.parseResponsesWithUsage(
             response.body,
             expectedIDs: request.items.map { $0.id },
             windowRevision: request.windowRevision,
             sourceCharacters: request.items.reduce(0) { $0 + $1.sourceText.count }
         )
+        recordUsage(parsed.usage, startedAt: startedAt, requestedAt: requestedAt)
         // 云端同样会把「本来要翻的原文」原样回传（品牌密集段落、目标语言判断
         // 错时尤其明显）。用与本地后端同一个回声策略收口：.reject 抛
         // invalidResponse 交给上层回退/提示，.keep 保留原文当成功。
         return try LocalTranslationQuality.applyCopiedSourcePolicy(
-            result,
+            parsed.result,
             items: request.items,
             policy: request.copiedSourcePolicy
         )
@@ -145,13 +148,17 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
             throw AdapterHTTPMapping.error(for: error)
         }
         if let error = AdapterHTTPMapping.error(for: response) {
+            if case .unauthorized = error {
+                credentialStore.invalidateCache()
+            }
             throw error
         }
         guard (200..<300).contains(response.statusCode) else {
             throw TranslationError.invalidResponse("unexpected DeepSeek HTTP status")
         }
-        recordUsage(from: response.body, startedAt: startedAt, requestedAt: requestedAt)
-        return try TranslationResponseParser.parsePlainResponses(response.body)
+        let parsed = try TranslationResponseParser.parsePlainResponsesWithUsage(response.body)
+        recordUsage(parsed.usage, startedAt: startedAt, requestedAt: requestedAt)
+        return parsed.text
     }
 
     public func translate(
@@ -185,23 +192,26 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
             throw AdapterHTTPMapping.error(for: error)
         }
         if let error = AdapterHTTPMapping.error(for: response) {
+            if case .unauthorized = error {
+                credentialStore.invalidateCache()
+            }
             throw error
         }
         guard (200..<300).contains(response.statusCode) else {
             throw TranslationError.invalidResponse("unexpected DeepSeek HTTP status")
         }
-        recordUsage(from: response.body, startedAt: startedAt, requestedAt: requestedAt)
-        let result = try TranslationResponseParser.parseResponses(
+        let parsed = try TranslationResponseParser.parseResponsesWithUsage(
             response.body,
             expectedIDs: request.items.map { $0.id },
             windowRevision: request.windowRevision,
             sourceCharacters: request.items.reduce(0) { $0 + $1.sourceText.count }
         )
+        recordUsage(parsed.usage, startedAt: startedAt, requestedAt: requestedAt)
         // 云端同样会把「本来要翻的原文」原样回传（品牌密集段落、目标语言判断
         // 错时尤其明显）。用与本地后端同一个回声策略收口：.reject 抛
         // invalidResponse 交给上层回退/提示，.keep 保留原文当成功。
         return try LocalTranslationQuality.applyCopiedSourcePolicy(
-            result,
+            parsed.result,
             items: request.items,
             policy: request.copiedSourcePolicy
         )
@@ -219,6 +229,9 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
             throw AdapterHTTPMapping.error(for: error)
         }
         if let error = AdapterHTTPMapping.error(for: response) {
+            if case .unauthorized = error {
+                credentialStore.invalidateCache()
+            }
             throw error
         }
         guard (200..<300).contains(response.statusCode) else {
@@ -269,6 +282,8 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         }
     }
 
+    private static let pngMagic: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+
     private func validate(images: [VisionTranslationImage], request: TranslationRequest) throws {
         guard images.count <= Self.maximumVisionImages else {
             throw TranslationError.invalidRequest("vision request has too many images")
@@ -284,7 +299,7 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
                 throw TranslationError.invalidRequest("vision image segment ID is invalid")
             }
             guard image.pngData.count >= 8,
-                  Array(image.pngData.prefix(8)) == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] else {
+                  image.pngData.starts(with: Self.pngMagic) else {
                 throw TranslationError.invalidRequest("vision image is not PNG")
             }
             guard image.pngData.count <= Self.maximumVisionImageBytes else {
@@ -334,8 +349,8 @@ public struct DeepSeekBackend: VisionTranslationBackend, Sendable {
         items.sorted { $0.id.uuidString < $1.id.uuidString }
     }
 
-    private func recordUsage(from body: Data, startedAt: TimeInterval, requestedAt: Date) {
-        guard let usage = DeepSeekUsageParser.parse(body) else { return }
+    private func recordUsage(_ usage: DeepSeekTokenUsage?, startedAt: TimeInterval, requestedAt: Date) {
+        guard let usage else { return }
         usageStore.record(
             usage: usage,
             model: model,

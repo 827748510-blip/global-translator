@@ -397,4 +397,19 @@ struct StatusItemTests {
         controller.stop()
         #expect(!viewModel.isRecordingScreenshotHotkey)
     }
+
+    @Test @MainActor
+    func statusItemDefersDropdownPanelAllocationAndDeduplicatesStatusUpdates() {
+        let viewModel = SettingsViewModel(actions: StatusItemTestActions())
+        let controller = StatusItemController(viewModel: viewModel)
+
+        #expect(!controller.hasAllocatedDropdownPanelForTesting)
+        #expect(!controller.isDropdownVisible)
+        controller.applyStatus(.off)
+        controller.applyStatus(.listening)
+        controller.applyStatus(.listening)
+        #expect(!controller.hasAllocatedDropdownPanelForTesting)
+
+        controller.stop()
+    }
 }

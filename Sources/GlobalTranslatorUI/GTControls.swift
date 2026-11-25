@@ -448,7 +448,6 @@ struct GTEqualWidthSegmentedPicker<Value: Hashable>: View {
                 .strokeBorder(GTColor.hairline, lineWidth: GTControlMetrics.fieldStrokeWidth)
         )
         .segmentPickerSurfaceMarker(accessibilityLabelText)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: selection)
         .onKeyPress(.leftArrow) {
             stepSelection(by: -1)
         }

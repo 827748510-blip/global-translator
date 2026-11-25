@@ -725,7 +725,7 @@ struct TranslatedApplicationsSection: View {
     }
 
     private var applicationRows: some View {
-        VStack(spacing: 0) {
+        LazyVStack(spacing: 0) {
             ForEach(Array(viewModel.translatedApplications.enumerated()), id: \.element.id) { index, app in
                 if index > 0 {
                     Divider()

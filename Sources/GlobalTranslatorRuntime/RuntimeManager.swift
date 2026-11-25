@@ -38,11 +38,13 @@ public final class RuntimeManager: @unchecked Sendable {
     public func showSettings() throws -> ControlResponse {
         let client = controlClientFactory(0.2)
         let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(readinessTimeout * 1_000_000_000)
+        var attempt = 0
         repeat {
             if let response = try? client.request(.showSettings), response.running, response.state == .running {
                 return response
             }
-            usleep(25_000)
+            sleepBackoff(attempt: attempt)
+            attempt += 1
         } while DispatchTime.now().uptimeNanoseconds < deadline
         throw RuntimeError.notReady
     }
@@ -79,11 +81,13 @@ public final class RuntimeManager: @unchecked Sendable {
         }
 
         let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(readinessTimeout * 1_000_000_000)
+        var attempt = 0
         while DispatchTime.now().uptimeNanoseconds < deadline {
             if let response = try? client.request(.status), response.running {
                 return .started(pid: response.pid > 0 ? response.pid : process.processIdentifier)
             }
-            usleep(25_000)
+            sleepBackoff(attempt: attempt)
+            attempt += 1
         }
         if process.isRunning {
             process.terminate()
@@ -124,6 +128,7 @@ public final class RuntimeManager: @unchecked Sendable {
             }
             let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(stopTimeout * 1_000_000_000)
             var absentObservations = 0
+            var attempt = 0
             while DispatchTime.now().uptimeNanoseconds < deadline {
                 do {
                     let current = try client.request(.status)
@@ -141,7 +146,8 @@ public final class RuntimeManager: @unchecked Sendable {
                         }
                     }
                 }
-                usleep(25_000)
+                sleepBackoff(attempt: attempt)
+                attempt += 1
             }
             do {
                 let final = try client.request(.status)
@@ -162,6 +168,17 @@ public final class RuntimeManager: @unchecked Sendable {
         } catch {
             throw error
         }
+    }
+
+    private func sleepBackoff(attempt: Int) {
+        let microseconds: useconds_t
+        switch attempt {
+        case 0: microseconds = 2_000
+        case 1: microseconds = 5_000
+        case 2: microseconds = 10_000
+        default: microseconds = 25_000
+        }
+        usleep(microseconds)
     }
 
     public func logs(limit: Int = 200) throws -> [String] {

@@ -39,6 +39,13 @@ struct AudioPCMTests {
         let loud = [Int16](repeating: 8000, count: 1600)
         #expect(!AudioPCM.isSilent(loud))
     }
+
+    @Test
+    func wavDataFromRawPCMDataMatchesInt16Overload() {
+        let samples: [Int16] = [0, 123, -456, 32767, -32768]
+        let raw = AudioPCM.data(from: samples)
+        #expect(AudioPCM.wavData(pcm16MonoData: raw) == AudioPCM.wavData(pcm16Mono: samples))
+    }
 }
 
 struct WhisperCppTranscriberTests {

@@ -44,7 +44,8 @@
 
   function isTimedTextUrl(url) {
     const value = String(url || "");
-    if (!value || /timedtext_video/i.test(value)) return false;
+    if (!value || value.toLowerCase().indexOf("timedtext") === -1) return false;
+    if (/timedtext_video/i.test(value)) return false;
     if (/\/api\/timedtext(?:\?|$|#)/i.test(value)) return true;
     return /\/timedtext(?:\?|$|#)/i.test(value);
   }
@@ -379,6 +380,7 @@
   let domTimer = null;
   let messageListener = null;
   let navigateListener = null;
+  let lastDomCaptionText = "";
 
   function notify() {
     if (typeof changeHandler === "function") {
@@ -389,6 +391,7 @@
   function resetCues() {
     timedtextCues = [];
     liveCues = [];
+    lastDomCaptionText = "";
   }
 
   function onNavigate() {
@@ -411,6 +414,8 @@
     if (typeof document === "undefined") return;
     const player = primaryVideo(document);
     const text = collectDomCaptionText(document);
+    if (text === lastDomCaptionText && !text && liveCues.length === 0) return;
+    lastDomCaptionText = text;
     const time = player && Number.isFinite(Number(player.currentTime)) ? Number(player.currentTime) : 0;
     liveCues = adoptLiveCaption(liveCues, text, time);
     if (liveCues.length > 0 || text) notify();
@@ -427,7 +432,9 @@
   function startDomWatch() {
     if (domObserver || typeof document === "undefined" || typeof MutationObserver === "undefined") return;
     domObserver = new MutationObserver(scheduleDomRead);
-    const root = document.documentElement || document.body;
+    const root = (document.querySelector && document.querySelector(".ytp-caption-window-container, .html5-video-player, ytd-player")) ||
+      document.body ||
+      document.documentElement;
     if (!root) return;
     domObserver.observe(root, { childList: true, subtree: true, characterData: true });
   }

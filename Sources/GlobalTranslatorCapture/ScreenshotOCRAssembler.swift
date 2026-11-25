@@ -13,14 +13,54 @@ public enum ScreenshotOCRAssembler {
     }
 
     public static func readingOrder(_ observations: [VisionTextObservation]) -> [VisionTextObservation] {
-        observations.sorted { left, right in
-            let leftBox = left.boundingBox.standardized
-            let rightBox = right.boundingBox.standardized
-            if abs(leftBox.midY - rightBox.midY) > lineTolerance {
-                return leftBox.midY > rightBox.midY
+        guard observations.count > 1 else { return observations }
+        let items = observations.map { (observation: $0, box: $0.boundingBox.standardized) }
+        let byVertical = items.sorted { lhs, rhs in
+            if lhs.box.midY != rhs.box.midY {
+                return lhs.box.midY > rhs.box.midY
             }
-            return leftBox.minX < rightBox.minX
+            return lhs.box.minX < rhs.box.minX
         }
+
+        var ordered: [VisionTextObservation] = []
+        ordered.reserveCapacity(items.count)
+        var currentLine: [(observation: VisionTextObservation, box: CGRect)] = []
+        var anchorY: CGFloat = 0
+
+        for item in byVertical {
+            if currentLine.isEmpty {
+                currentLine.append(item)
+                anchorY = item.box.midY
+            } else if abs(anchorY - item.box.midY) <= lineTolerance {
+                currentLine.append(item)
+            } else {
+                appendSortedLine(&currentLine, into: &ordered)
+                currentLine.append(item)
+                anchorY = item.box.midY
+            }
+        }
+        if !currentLine.isEmpty {
+            appendSortedLine(&currentLine, into: &ordered)
+        }
+        return ordered
+    }
+
+    private static func appendSortedLine(
+        _ line: inout [(observation: VisionTextObservation, box: CGRect)],
+        into ordered: inout [VisionTextObservation]
+    ) {
+        if line.count > 1 {
+            line.sort { lhs, rhs in
+                if lhs.box.minX != rhs.box.minX {
+                    return lhs.box.minX < rhs.box.minX
+                }
+                return lhs.box.midY > rhs.box.midY
+            }
+        }
+        for item in line {
+            ordered.append(item.observation)
+        }
+        line.removeAll(keepingCapacity: true)
     }
 
     public static func groupedLines(_ observations: [VisionTextObservation]) -> [String] {
@@ -71,10 +111,11 @@ public final class RegionVisionOCRService: RegionTextRecognizing, @unchecked Sen
     }
 
     public func recognizeJoinedText(image: CGImage) async throws -> String {
-        let fast = try await recognizer.recognize(image: image, level: .fast)
+        let ocrImage = CGImageUtilities.downsample(image, maximumDimension: 2_048) ?? image
+        let fast = try await recognizer.recognize(image: ocrImage, level: .fast)
         let selected: [VisionTextObservation]
         if fast.isEmpty || fast.contains(where: { $0.confidence < lowConfidenceThreshold }) {
-            selected = try await recognizer.recognize(image: image, level: .accurate)
+            selected = try await recognizer.recognize(image: ocrImage, level: .accurate)
         } else {
             selected = fast
         }

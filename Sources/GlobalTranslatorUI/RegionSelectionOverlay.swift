@@ -56,82 +56,135 @@ public final class RegionSelectionPanel: NSPanel {
 }
 
 final class RegionSelectionCanvas: NSView {
+    private let dimLayer = CAShapeLayer()
+    private let outerBorderLayer = CAShapeLayer()
+    private let innerBorderLayer = CAShapeLayer()
+    private let badgeBackgroundLayer = CALayer()
+    private let badgeTextLayer = CATextLayer()
+    private var lastRenderedSelectionInLocal: CGRect?
+    private var lastRenderedBounds: CGRect = .zero
+
     var selectionRectInScreen: CGRect = .zero {
         didSet {
             guard oldValue != selectionRectInScreen else { return }
-            guard let window else {
-                needsDisplay = true
-                return
-            }
-            let oldLocal = oldValue.isEmpty ? .zero : window.convertFromScreen(oldValue)
-            let newLocal = selectionRectInScreen.isEmpty ? .zero : window.convertFromScreen(selectionRectInScreen)
-            let dirty: CGRect
-            if oldLocal.isEmpty {
-                dirty = newLocal
-            } else if newLocal.isEmpty {
-                dirty = oldLocal
-            } else {
-                dirty = oldLocal.union(newLocal)
-            }
-            if dirty.isEmpty {
-                needsDisplay = true
-            } else {
-                setNeedsDisplay(dirty.insetBy(dx: -80, dy: -36))
-            }
+            updateLayers()
         }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        guard let rootLayer = layer else { return }
+
+        dimLayer.fillRule = .evenOdd
+        dimLayer.fillColor = NSColor.black.withAlphaComponent(0.4).cgColor
+        rootLayer.addSublayer(dimLayer)
+
+        outerBorderLayer.fillColor = nil
+        outerBorderLayer.lineWidth = 1
+        outerBorderLayer.strokeColor = NSColor.black.withAlphaComponent(0.65).cgColor
+        rootLayer.addSublayer(outerBorderLayer)
+
+        innerBorderLayer.fillColor = nil
+        innerBorderLayer.lineWidth = 1
+        innerBorderLayer.strokeColor = NSColor.white.cgColor
+        rootLayer.addSublayer(innerBorderLayer)
+
+        badgeBackgroundLayer.cornerRadius = 4
+        badgeBackgroundLayer.backgroundColor = NSColor.black.withAlphaComponent(0.72).cgColor
+        badgeBackgroundLayer.isHidden = true
+
+        badgeTextLayer.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        badgeTextLayer.fontSize = 11
+        badgeTextLayer.foregroundColor = NSColor.white.cgColor
+        badgeTextLayer.alignmentMode = .center
+        badgeTextLayer.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        badgeBackgroundLayer.addSublayer(badgeTextLayer)
+        rootLayer.addSublayer(badgeBackgroundLayer)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
     }
 
     override var isFlipped: Bool { false }
 
-    override func draw(_ dirtyRect: NSRect) {
-        let dim = NSBezierPath(rect: bounds)
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        badgeTextLayer.contentsScale = scale
+        updateLayers()
+    }
+
+    override func layout() {
+        super.layout()
+        updateLayers()
+    }
+
+    private func updateLayers() {
+        let local: CGRect
         if let window, selectionRectInScreen.width > 0, selectionRectInScreen.height > 0 {
-            let local = window.convertFromScreen(selectionRectInScreen)
-            dim.append(NSBezierPath(rect: local))
-            dim.windingRule = .evenOdd
-            NSColor.black.withAlphaComponent(0.4).setFill()
-            dim.fill()
-
-            // Outer dark halo + inner white border ensures high contrast on both
-            // bright white pages and dark video frames.
-            let outer = NSBezierPath(rect: local.insetBy(dx: -0.5, dy: -0.5))
-            outer.lineWidth = 1
-            NSColor.black.withAlphaComponent(0.65).setStroke()
-            outer.stroke()
-
-            let inner = NSBezierPath(rect: local)
-            inner.lineWidth = 1
-            NSColor.white.setStroke()
-            inner.stroke()
-
-            drawSizeBadge(for: local)
+            local = window.convertFromScreen(selectionRectInScreen)
         } else {
-            NSColor.black.withAlphaComponent(0.4).setFill()
-            dim.fill()
+            local = .zero
+        }
+        guard lastRenderedSelectionInLocal != local || lastRenderedBounds != bounds else { return }
+        lastRenderedSelectionInLocal = local
+        lastRenderedBounds = bounds
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+
+        dimLayer.frame = bounds
+        let dimPath = CGMutablePath()
+        dimPath.addRect(bounds)
+        if local.width > 0, local.height > 0 {
+            dimPath.addRect(local)
+            dimLayer.path = dimPath
+
+            outerBorderLayer.frame = bounds
+            outerBorderLayer.path = CGPath(rect: local.insetBy(dx: -0.5, dy: -0.5), transform: nil)
+            outerBorderLayer.isHidden = false
+
+            innerBorderLayer.frame = bounds
+            innerBorderLayer.path = CGPath(rect: local, transform: nil)
+            innerBorderLayer.isHidden = false
+
+            updateSizeBadge(for: local)
+        } else {
+            dimLayer.path = dimPath
+            outerBorderLayer.isHidden = true
+            outerBorderLayer.path = nil
+            innerBorderLayer.isHidden = true
+            innerBorderLayer.path = nil
+            badgeBackgroundLayer.isHidden = true
         }
     }
 
-    private func drawSizeBadge(for local: CGRect) {
+    private func updateSizeBadge(for local: CGRect) {
         let width = Int(local.width.rounded())
         let height = Int(local.height.rounded())
-        guard width > 0, height > 0 else { return }
-        let label = "\(width) × \(height)" as NSString
+        guard width > 0, height > 0 else {
+            badgeBackgroundLayer.isHidden = true
+            return
+        }
+        let text = "\(width) × \(height)"
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium),
-            .foregroundColor: NSColor.white
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
         ]
-        let textSize = label.size(withAttributes: attributes)
+        let textSize = (text as NSString).size(withAttributes: attributes)
         let padX: CGFloat = 6
         let padY: CGFloat = 3
         let badgeSize = CGSize(width: ceil(textSize.width) + padX * 2, height: ceil(textSize.height) + padY * 2)
         let preferredY = local.minY - badgeSize.height - 6
         let badgeY = preferredY >= bounds.minY + 4 ? preferredY : min(local.maxY + 6, bounds.maxY - badgeSize.height - 4)
         let badgeX = min(max(local.minX, bounds.minX + 4), max(bounds.minX + 4, bounds.maxX - badgeSize.width - 4))
-        let badgeRect = CGRect(origin: CGPoint(x: badgeX, y: badgeY), size: badgeSize)
-        let pill = NSBezierPath(roundedRect: badgeRect, xRadius: 4, yRadius: 4)
-        NSColor.black.withAlphaComponent(0.72).setFill()
-        pill.fill()
-        label.draw(at: CGPoint(x: badgeRect.minX + padX, y: badgeRect.minY + padY), withAttributes: attributes)
+        badgeBackgroundLayer.frame = CGRect(origin: CGPoint(x: badgeX, y: badgeY), size: badgeSize)
+        badgeTextLayer.frame = CGRect(x: padX, y: padY, width: ceil(textSize.width), height: ceil(textSize.height))
+        badgeTextLayer.string = text
+        badgeBackgroundLayer.isHidden = false
     }
 }
 
@@ -140,6 +193,7 @@ public final class RegionSelectionOverlayController: RegionSelectionPresenting {
     private var panels: [RegionSelectionPanel] = []
     private var canvases: [RegionSelectionCanvas] = []
     private var hintViews: [NSView] = []
+    private var cachedScreenFrames: [CGRect] = []
     nonisolated(unsafe) private var eventMonitors: [Any] = []
     private var drag = ScreenshotRegionDrag()
     private var activeScreenFrame: CGRect?
@@ -183,44 +237,64 @@ public final class RegionSelectionOverlayController: RegionSelectionPresenting {
         drag.cancel()
         activeScreenFrame = nil
         let screens = screensProvider()
+        let screenFrames = screens.map(\.frame)
         let mouseLocation = NSEvent.mouseLocation
-        var panels: [RegionSelectionPanel] = []
-        var canvases: [RegionSelectionCanvas] = []
-        var hintViews: [NSView] = []
-        var keyPanel: RegionSelectionPanel?
-        for screen in screens {
-            let panel = RegionSelectionPanel(contentRect: screen.frame)
-            panel.onEscape = { [weak self] in self?.finish(.cancelled) }
-            let canvas = RegionSelectionCanvas(frame: CGRect(origin: .zero, size: screen.frame.size))
-            canvas.autoresizingMask = [.width, .height]
-            let hosting = NSHostingView(rootView: RegionSelectionHintView(onCancel: { [weak self] in
-                self?.finish(.cancelled)
-            }))
-            hosting.translatesAutoresizingMaskIntoConstraints = false
-            canvas.addSubview(hosting)
-            let notchInset = max(CGFloat(0), screen.frame.maxY - screen.visibleFrame.maxY)
-            let topOffset = max(CGFloat(16), notchInset + 16)
-            NSLayoutConstraint.activate([
-                hosting.centerXAnchor.constraint(equalTo: canvas.centerXAnchor),
-                hosting.topAnchor.constraint(equalTo: canvas.topAnchor, constant: topOffset)
-            ])
-            panel.contentView = canvas
-            if screen.frame.contains(mouseLocation), keyPanel == nil {
-                keyPanel = panel
-                panel.makeKeyAndOrderFront(nil)
-            } else {
-                panel.orderFrontRegardless()
+        if screenFrames == cachedScreenFrames, panels.count == screens.count, !panels.isEmpty {
+            var keyPanel: RegionSelectionPanel?
+            for (index, panel) in panels.enumerated() {
+                canvases[index].selectionRectInScreen = .zero
+                hintViews[index].isHidden = false
+                if screenFrames[index].contains(mouseLocation), keyPanel == nil {
+                    keyPanel = panel
+                    panel.makeKeyAndOrderFront(nil)
+                } else {
+                    panel.orderFrontRegardless()
+                }
             }
-            panels.append(panel)
-            canvases.append(canvas)
-            hintViews.append(hosting)
+            if keyPanel == nil, let first = panels.first {
+                first.makeKeyAndOrderFront(nil)
+            }
+        } else {
+            for panel in panels { panel.orderOut(nil) }
+            var newPanels: [RegionSelectionPanel] = []
+            var newCanvases: [RegionSelectionCanvas] = []
+            var newHintViews: [NSView] = []
+            var keyPanel: RegionSelectionPanel?
+            for screen in screens {
+                let panel = RegionSelectionPanel(contentRect: screen.frame)
+                panel.onEscape = { [weak self] in self?.finish(.cancelled) }
+                let canvas = RegionSelectionCanvas(frame: CGRect(origin: .zero, size: screen.frame.size))
+                canvas.autoresizingMask = [.width, .height]
+                let hosting = NSHostingView(rootView: RegionSelectionHintView(onCancel: { [weak self] in
+                    self?.finish(.cancelled)
+                }))
+                hosting.translatesAutoresizingMaskIntoConstraints = false
+                canvas.addSubview(hosting)
+                let notchInset = max(CGFloat(0), screen.frame.maxY - screen.visibleFrame.maxY)
+                let topOffset = max(CGFloat(16), notchInset + 16)
+                NSLayoutConstraint.activate([
+                    hosting.centerXAnchor.constraint(equalTo: canvas.centerXAnchor),
+                    hosting.topAnchor.constraint(equalTo: canvas.topAnchor, constant: topOffset)
+                ])
+                panel.contentView = canvas
+                if screen.frame.contains(mouseLocation), keyPanel == nil {
+                    keyPanel = panel
+                    panel.makeKeyAndOrderFront(nil)
+                } else {
+                    panel.orderFrontRegardless()
+                }
+                newPanels.append(panel)
+                newCanvases.append(canvas)
+                newHintViews.append(hosting)
+            }
+            if keyPanel == nil, let first = newPanels.first {
+                first.makeKeyAndOrderFront(nil)
+            }
+            self.panels = newPanels
+            self.canvases = newCanvases
+            self.hintViews = newHintViews
+            self.cachedScreenFrames = screenFrames
         }
-        if keyPanel == nil, let first = panels.first {
-            first.makeKeyAndOrderFront(nil)
-        }
-        self.panels = panels
-        self.canvases = canvases
-        self.hintViews = hintViews
         NSCursor.crosshair.push()
         didPushCursor = true
         startMonitors()
@@ -319,11 +393,14 @@ public final class RegionSelectionOverlayController: RegionSelectionPresenting {
     private func updateCanvases() {
         let rect = clampedPreviewRect()
         let hideHints = drag.isDragging
-        for hint in hintViews {
+        for hint in hintViews where hint.isHidden != hideHints {
             hint.isHidden = hideHints
         }
-        for canvas in canvases {
-            canvas.selectionRectInScreen = rect
+        for (index, canvas) in canvases.enumerated() {
+            let screenFrame = panels[index].frame
+            if screenFrame.intersects(rect) || canvas.selectionRectInScreen != .zero {
+                canvas.selectionRectInScreen = rect
+            }
         }
     }
 
@@ -342,12 +419,15 @@ public final class RegionSelectionOverlayController: RegionSelectionPresenting {
         stopMonitors()
         drag.cancel()
         activeScreenFrame = nil
+        for canvas in canvases {
+            canvas.selectionRectInScreen = .zero
+        }
+        for hint in hintViews {
+            hint.isHidden = false
+        }
         for panel in panels {
             panel.orderOut(nil)
         }
-        panels = []
-        canvases = []
-        hintViews = []
         if didPushCursor {
             NSCursor.pop()
             didPushCursor = false

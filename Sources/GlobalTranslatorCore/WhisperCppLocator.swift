@@ -6,12 +6,14 @@ import Foundation
 public struct WhisperCppLocator: Equatable, Sendable {
     public let binaryURL: URL?
     public let modelURL: URL?
+    public let serverBinaryURL: URL?
 
     public var isAvailable: Bool { binaryURL != nil && modelURL != nil }
 
-    public init(binaryURL: URL?, modelURL: URL?) {
+    public init(binaryURL: URL?, modelURL: URL?, serverBinaryURL: URL? = nil) {
         self.binaryURL = binaryURL
         self.modelURL = modelURL
+        self.serverBinaryURL = serverBinaryURL
     }
 
     public static let binaryEnvironmentKey = "GLOBAL_TRANSLATOR_WHISPER_BIN"
@@ -65,6 +67,10 @@ public struct WhisperCppLocator: Equatable, Sendable {
             binaryCandidates(environment: environment, extra: extraBinaryCandidates)
         ).first { fileExists($0) && isExecutable($0) && trustCheck($0, true) }
 
+        let serverBinary = uniqued(
+            serverCandidates(near: binary, extra: extraBinaryCandidates)
+        ).first { fileExists($0) && isExecutable($0) && trustCheck($0, true) }
+
         var models: [URL] = []
         if let raw = validatedEnvironmentPath(environment[modelEnvironmentKey]) {
             models.append(URL(fileURLWithPath: raw))
@@ -75,7 +81,7 @@ public struct WhisperCppLocator: Equatable, Sendable {
             models.append(contentsOf: wellKnownModelNames.map { folder.appendingPathComponent($0) })
         }
         let model = uniqued(models).first { fileExists($0) && trustCheck($0, false) }
-        return WhisperCppLocator(binaryURL: binary, modelURL: model)
+        return WhisperCppLocator(binaryURL: binary, modelURL: model, serverBinaryURL: serverBinary)
     }
 
     public static func isTrustedLocalFile(_ url: URL, requireExecutable: Bool) -> Bool {
@@ -144,6 +150,20 @@ public struct WhisperCppLocator: Equatable, Sendable {
         urls.append(contentsOf: extra)
         for directory in wellKnownBinaryDirectories() {
             urls.append(contentsOf: wellKnownBinaryNames.map { directory.appendingPathComponent($0) })
+        }
+        return urls
+    }
+
+    private static func serverCandidates(near binary: URL?, extra: [URL]) -> [URL] {
+        var urls: [URL] = []
+        if let binary {
+            urls.append(binary.deletingLastPathComponent().appendingPathComponent("whisper-server"))
+        }
+        for candidate in extra {
+            urls.append(candidate.deletingLastPathComponent().appendingPathComponent("whisper-server"))
+        }
+        for directory in wellKnownBinaryDirectories() {
+            urls.append(directory.appendingPathComponent("whisper-server"))
         }
         return urls
     }

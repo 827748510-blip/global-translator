@@ -29,6 +29,7 @@ public final class ScreenshotTranslateController {
     private var backend: BackendKind = .deepSeekCloud
     private var hotkeyEnabled = false
     private var runTask: Task<Void, Never>?
+    private var translateTask: Task<Void, Never>?
     private var presentationGeneration: UInt64 = 0
     /// 每次截图（含选区流程）自增的身份。后台编码/写盘返回后据此丢弃过期结果，
     /// 避免上一轮截图覆盖新一轮的保存路径与剪贴板。
@@ -210,7 +211,9 @@ public final class ScreenshotTranslateController {
         }
         guard let original = popover.currentContent?.original, !original.isEmpty,
               let frame = popover.currentContent?.screenFrame else { return }
-        presentTranslation(original: original, screenFrame: frame)
+        runTask = Task { @MainActor [weak self] in
+            await self?.presentTranslation(original: original, screenFrame: frame)
+        }
     }
 
     private func runCaptureTranslate() async {
@@ -310,12 +313,10 @@ public final class ScreenshotTranslateController {
             popover.dismiss()
             return
         }
-        // 保存 / 复制截图发生在 OCR 之前：即使识别不到文字，用户要的截图也已保留。
-        await handleImageArtifacts(image, capture: capture)
-        guard isCurrent(capture) else { return }
-        guard !isCaptureProtected() else {
-            popover.dismiss()
-            return
+        // 并发启动截图编码/保存/复制与 OCR 识别，缩短从框选完成到首屏结果的总耗时。
+        let artifactTask = Task<Void, Never> { @MainActor [weak self] in
+            guard let self else { return }
+            await self.handleImageArtifacts(image, capture: capture)
         }
         let recognized: String
         do {
@@ -324,6 +325,8 @@ public final class ScreenshotTranslateController {
         } catch is CancellationError {
             return
         } catch {
+            await artifactTask.value
+            guard isCurrent(capture) else { return }
             logger.event("screenshot_ocr_failed", fields: ["status": "error"])
             presentFailure(
                 original: "",
@@ -339,6 +342,8 @@ public final class ScreenshotTranslateController {
         }
         let text = recognized.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
+            await artifactTask.value
+            guard isCurrent(capture) else { return }
             // 图里没有文字 = 没什么可翻的，不是失败：不弹红色，也不调模型。
             logger.event("screenshot_ocr_empty", fields: [:])
             presentNoTranslationNeeded(
@@ -350,6 +355,8 @@ public final class ScreenshotTranslateController {
         }
         switch TextFilter.selectionDecision(text) {
         case .skip:
+            await artifactTask.value
+            guard isCurrent(capture) else { return }
             // 只识别到 URL / 版本号 / 快捷键这类不可译内容：同样属于「无需翻译」。
             logger.event("screenshot_not_translatable", fields: [:])
             presentNoTranslationNeeded(
@@ -359,11 +366,13 @@ public final class ScreenshotTranslateController {
             )
         case .alreadyTargetLanguage:
             // 双向互译：截图识别出的简体中文也翻译成英文，不再只提示「已是中文」。
-            presentTranslation(original: text, screenFrame: rect)
+            await presentTranslation(original: text, screenFrame: rect, artifactTask: artifactTask)
         case .noTranslationNeeded:
+            await artifactTask.value
+            guard isCurrent(capture) else { return }
             presentNoTranslationNeeded(original: text, screenFrame: rect)
         case .translate:
-            presentTranslation(original: text, screenFrame: rect)
+            await presentTranslation(original: text, screenFrame: rect, artifactTask: artifactTask)
         }
     }
 
@@ -382,7 +391,11 @@ public final class ScreenshotTranslateController {
         ))
     }
 
-    private func presentTranslation(original: String, screenFrame: CGRect) {
+    private func presentTranslation(
+        original: String,
+        screenFrame: CGRect,
+        artifactTask: Task<Void, Never>? = nil
+    ) async {
         cancelPresentation()
         guard !isCaptureProtected() else {
             logger.event("screenshot_protected_blocked", fields: [:])
@@ -392,6 +405,8 @@ public final class ScreenshotTranslateController {
         let generation = presentationGeneration
         switch backendReadiness() {
         case .missingCloudKey:
+            await artifactTask?.value
+            guard !Task.isCancelled, presentationGeneration == generation else { return }
             presentFailure(
                 original: original,
                 message: ScreenshotTranslateSupport.missingDeepSeekKeyCopy,
@@ -400,6 +415,8 @@ public final class ScreenshotTranslateController {
             )
             return
         case .localNotReady:
+            await artifactTask?.value
+            guard !Task.isCancelled, presentationGeneration == generation else { return }
             presentFailure(
                 original: original,
                 message: ScreenshotTranslateSupport.localBackendNotReadyCopy,
@@ -415,6 +432,8 @@ public final class ScreenshotTranslateController {
                 .asScreenshotResult()
         ))
         guard let translator = translator() else {
+            await artifactTask?.value
+            guard !Task.isCancelled, presentationGeneration == generation else { return }
             presentFailure(
                 original: original,
                 message: ScreenshotTranslateSupport.translatorUnavailableCopy,
@@ -423,9 +442,10 @@ public final class ScreenshotTranslateController {
             )
             return
         }
-        runTask = Task { @MainActor [weak self] in
+        translateTask = Task { @MainActor [weak self] in
             do {
                 let outcome = try await translator.translateSelection(original)
+                await artifactTask?.value
                 guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
                 guard !self.isCaptureProtected() else {
                     self.popover.dismiss()
@@ -462,6 +482,7 @@ public final class ScreenshotTranslateController {
                 guard let self, self.presentationGeneration == generation else { return }
                 self.popover.dismiss()
             } catch {
+                await artifactTask?.value
                 guard let self, !Task.isCancelled, self.presentationGeneration == generation else { return }
                 // 模型原样回传唯一要翻的原文 = 专有名词，属于「无需翻译」而不是
                 // 失败：滑词早就这么处理，截图此前会弹红色「翻译失败」。
@@ -573,8 +594,8 @@ public final class ScreenshotTranslateController {
 
     private func cancelPresentation() {
         presentationGeneration &+= 1
-        runTask?.cancel()
-        runTask = nil
+        translateTask?.cancel()
+        translateTask = nil
     }
 
     private func describe(_ error: Error) -> String {

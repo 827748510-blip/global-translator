@@ -18,6 +18,8 @@
   let lastVideoId = "";
   let relay = false;
   let liveTimer = null;
+  let lastEmittedLiveText = "";
+  let lastEmittedLiveTime = -1;
 
   function post(kind, payload) {
     try {
@@ -34,7 +36,8 @@
 
   function isTimedTextUrl(url) {
     const value = String(url || "");
-    if (!value || /timedtext_video/i.test(value)) return false;
+    if (!value || value.toLowerCase().indexOf("timedtext") === -1) return false;
+    if (/timedtext_video/i.test(value)) return false;
     if (/\/api\/timedtext(?:\?|$|#)/i.test(value)) return true;
     return /\/timedtext(?:\?|$|#)/i.test(value);
   }
@@ -127,7 +130,13 @@
     if (!relay) return;
     const text = collectCaptionText(document);
     const video = primaryVideo();
-    post("live", { body: text, time: video ? video.currentTime : 0 });
+    const time = video ? video.currentTime : 0;
+    if (text === lastEmittedLiveText && (!text || Math.abs(time - lastEmittedLiveTime) < 0.8)) {
+      return;
+    }
+    lastEmittedLiveText = text;
+    lastEmittedLiveTime = time;
+    post("live", { body: text, time });
   }
 
   function scheduleLive() {
@@ -207,6 +216,8 @@
     if (videoId === lastVideoId) return;
     const previous = lastVideoId;
     lastVideoId = videoId;
+    lastEmittedLiveText = "";
+    lastEmittedLiveTime = -1;
     if (previous) lastTimedText = null;
     post("navigate", { videoId });
   }
@@ -243,6 +254,8 @@
       relay = false;
       stopDomObserver();
       lastTimedText = null;
+      lastEmittedLiveText = "";
+      lastEmittedLiveTime = -1;
       if (liveTimer) {
         clearTimeout(liveTimer);
         liveTimer = null;

@@ -197,9 +197,7 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
             responseFormat: ChatResponseFormat()
         )
         do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.sortedKeys]
-            return try encoder.encode(payload)
+            return try JSONEncoder().encode(payload)
         } catch {
             throw TranslationError.invalidRequest("unable to encode translation request")
         }
@@ -215,9 +213,7 @@ public struct LocalOpenAIBackend: TranslationBackend, Sendable {
             maxTokens: Self.plainCompletionMaxTokens
         )
         do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.sortedKeys]
-            return try encoder.encode(payload)
+            return try JSONEncoder().encode(payload)
         } catch {
             throw TranslationError.invalidRequest("unable to encode plain completion")
         }

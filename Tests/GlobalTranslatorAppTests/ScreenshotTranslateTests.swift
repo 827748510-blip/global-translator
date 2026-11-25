@@ -743,6 +743,40 @@ struct ScreenshotTranslateControllerTests {
         await controller.completeSelectionForTesting(.completed(CGRect(x: 0, y: 0, width: 100, height: 100)))
         #expect(!popover.isVisible)
     }
+
+    @Test
+    func artifactSaveOverlapsWithOCRAndCompletesBeforeTranslatedHints() async throws {
+        let directory = FileManager.default.temporaryDirectory
+        let saver = GatedImageSaver()
+        defer { saver.release() }
+        let ocr = FakeRegionOCR()
+        ocr.text = "Parallel screenshot text"
+        let popover = FakeSelectionPopover()
+        let translator = StubSelectionTranslator()
+        translator.result = "并行结果"
+        let controller = ScreenshotTranslateController(
+            selector: FakeRegionSelector(),
+            capturer: FakeRegionCapturer(),
+            ocr: ocr,
+            popover: popover,
+            permissions: FakePermissionController(snapshot: .allGranted),
+            logger: RecordingLogger(),
+            registrar: RecordingHotkeyRegistrar(),
+            translator: { translator },
+            backendReadiness: { .ready },
+            imageSaver: { _, dir in saver.save(in: dir) },
+            imageCopier: { _ in }
+        )
+        controller.setSaveImage(true)
+        controller.setSaveDirectory(directory.path)
+        controller.handleHotkey()
+
+        // OCR and loading state progress immediately without waiting for slow disk save.
+        try await waitUntil { saver.saveCount == 1 && popover.currentContent?.status == .loading && popover.currentContent?.original == "Parallel screenshot text" }
+        saver.release()
+        try await waitUntil { popover.currentContent?.status == .translated }
+        #expect(popover.currentContent?.savedImagePath == directory.path + "/shot-1.png")
+    }
 }
 
 extension ApplicationControllerTests {

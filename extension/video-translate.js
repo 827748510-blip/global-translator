@@ -15,10 +15,12 @@
 
   const CHUNK_SIZE = 3;
   const PROBE_MS = 4000;
-  const PREFETCH = 4;
+  const PREFETCH = 6;
+  const MAX_TRANSLATIONS = 500;
   const DESKTOP_SYNC_MS = 3000;
   const CUE_WAIT_MS = 8000;
   const ASR_POLL_MS = 1000;
+  const ASR_IDLE_SYNC_MS = 2000;
   const HOST_ATTR = "data-gt-video-translate";
   const PAINT_MS = 250;
   const OBSERVER_DEBOUNCE_MS = 250;
@@ -36,8 +38,11 @@
   let rafId = 0;
   let resizeObserver = null;
   const translations = new Map();
+  let translationsObj = {};
   const originalTrackModes = new WeakMap();
   const trackListeners = new WeakMap();
+  const cueChangeListeners = new WeakMap();
+  const cachedTrackCues = new WeakMap();
   const pipListeners = new WeakMap();
   const dismissedVideos = new WeakSet();
   const overlays = new Map();
@@ -53,6 +58,11 @@
   let asrSeenSeq = {};
   let asrInFlight = false;
   let asrQueued = null;
+  let lastAsrSyncAt = 0;
+  let translateBackoffMs = 1000;
+  let nextTranslateRetryAt = 0;
+  let lastWrittenDesktopPref = null;
+  let cachedDebugFlag = null;
 
   function safe(fn) {
     try {
@@ -63,9 +73,12 @@
   }
 
   function isDebugEnabled() {
+    if (cachedDebugFlag !== null) return cachedDebugFlag;
     try {
-      return typeof localStorage !== "undefined" && localStorage.getItem("gtVtDebug") === "1";
+      cachedDebugFlag = typeof localStorage !== "undefined" && localStorage.getItem("gtVtDebug") === "1";
+      return cachedDebugFlag;
     } catch (_error) {
+      cachedDebugFlag = false;
       return false;
     }
   }
@@ -113,10 +126,48 @@
     }
   }
 
+  function invalidateTrackCueCache(video) {
+    cachedTrackCues.delete(video);
+  }
+
+  function bindTrackCueChange(video, track) {
+    if (!track || typeof track.addEventListener !== "function") return;
+    let map = cueChangeListeners.get(video);
+    if (!map) {
+      map = new WeakMap();
+      cueChangeListeners.set(video, map);
+    }
+    if (map.has(track)) return;
+    const onCueChange = () => invalidateTrackCueCache(video);
+    map.set(track, onCueChange);
+    track.addEventListener("cuechange", onCueChange);
+  }
+
+  function unbindTrackCueChanges(video) {
+    const map = cueChangeListeners.get(video);
+    const tracks = video && video.textTracks;
+    if (map && tracks) {
+      for (let i = 0; i < tracks.length; i++) {
+        const track = tracks[i];
+        const fn = map.get(track);
+        if (fn && track && typeof track.removeEventListener === "function") {
+          track.removeEventListener("cuechange", fn);
+          map.delete(track);
+        }
+      }
+    }
+    cueChangeListeners.delete(video);
+    cachedTrackCues.delete(video);
+  }
+
   function collectTrackCues(video) {
-    const collected = [];
     const tracks = video.textTracks;
-    if (!tracks) return collected;
+    if (!tracks || tracks.length === 0) return [];
+    const cached = cachedTrackCues.get(video);
+    if (cached && cached.trackCount === tracks.length) {
+      return cached.cues;
+    }
+    const collected = [];
     for (let i = 0; i < tracks.length; i++) {
       const track = tracks[i];
       if (!track || track.kind === "metadata") continue;
@@ -126,6 +177,7 @@
       if (track.mode === "disabled") {
         try { track.mode = "hidden"; } catch (_error) {}
       }
+      bindTrackCueChange(video, track);
       const list = track.cues;
       if (!list) continue;
       for (let j = 0; j < list.length; j++) {
@@ -135,6 +187,7 @@
         collected.push({ start: cue.startTime, end: cue.endTime, text });
       }
     }
+    cachedTrackCues.set(video, { trackCount: tracks.length, cues: collected });
     return collected;
   }
 
@@ -179,11 +232,26 @@
   }
 
   function translationObject() {
-    const object = {};
-    translations.forEach((value, key) => {
-      object[key] = value;
-    });
-    return object;
+    return translationsObj;
+  }
+
+  function setTranslation(source, zh) {
+    if (translations.has(source)) {
+      translations.delete(source);
+    } else if (translations.size >= MAX_TRANSLATIONS) {
+      const oldest = translations.keys().next().value;
+      if (oldest !== undefined) {
+        translations.delete(oldest);
+        delete translationsObj[oldest];
+      }
+    }
+    translations.set(source, zh);
+    translationsObj[source] = zh;
+  }
+
+  function clearTranslations() {
+    translations.clear();
+    translationsObj = {};
   }
 
   function ensureOverlay(video) {
@@ -204,7 +272,6 @@
       "overflow:visible",
       "pointer-events:none",
       "z-index:2147483646",
-      "will-change:transform",
       "contain:layout style"
     ].join(";");
     const shadow = host.attachShadow({ mode: "closed" });
@@ -246,7 +313,7 @@
     shadow.appendChild(style);
     shadow.appendChild(box);
     (parent || document.body || document.documentElement).appendChild(host);
-    record = { host, box, pill, label, lastLayoutKey: "" };
+    record = { host, box, pill, label, lastLayoutKey: "", lastDisplay: "", lastKind: "", lastDebugAttr: null };
     overlays.set(video, record);
     return record;
   }
@@ -342,6 +409,7 @@
     });
     const asrBit = Asr && Asr.overlayBits ? Asr.overlayBits(asrStatus) : "asr0";
     if (isDebugEnabled()) {
+      let nextDebugAttr = asrBit;
       if (Youtube && typeof Youtube.overlayDebugBits === "function") {
         const bits = Youtube.overlayDebugBits({
           cues,
@@ -350,24 +418,42 @@
           pageWorld: !!(Youtube.pageWorldAlive && Youtube.pageWorldAlive(document)),
           dom: !!(Youtube.collectDomCaptionText && Youtube.collectDomCaptionText(document))
         });
-        record.host.setAttribute("data-gt-vt", bits + " " + asrBit);
-        try { console.debug("[gt-vt]", bits, asrBit); } catch (_error) {}
-      } else {
-        record.host.setAttribute("data-gt-vt", asrBit);
+        nextDebugAttr = bits + " " + asrBit;
+        if (record.lastDebugAttr !== nextDebugAttr) {
+          record.host.setAttribute("data-gt-vt", nextDebugAttr);
+          record.lastDebugAttr = nextDebugAttr;
+          try { console.debug("[gt-vt]", bits, asrBit); } catch (_error) {}
+        }
+      } else if (record.lastDebugAttr !== nextDebugAttr) {
+        record.host.setAttribute("data-gt-vt", nextDebugAttr);
+        record.lastDebugAttr = nextDebugAttr;
       }
-    } else {
+    } else if (record.lastDebugAttr !== null) {
       record.host.removeAttribute("data-gt-vt");
+      record.lastDebugAttr = null;
     }
 
     const isNotice = !state.cueText && !!state.message;
     const suppressNotice = isNotice && (dismissedVideos.has(video) || !isPrimary || (video.muted && video.paused));
     if (!state.show || (!state.cueText && !state.message) || suppressNotice) {
-      record.box.style.display = "none";
-      record.label.textContent = "";
+      if (record.lastDisplay !== "none") {
+        record.box.style.display = "none";
+        record.lastDisplay = "none";
+      }
+      if (record.label.textContent !== "") {
+        record.label.textContent = "";
+      }
       return;
     }
-    record.box.style.display = "flex";
-    record.pill.setAttribute("data-kind", state.cueText ? "cue" : "notice");
+    if (record.lastDisplay !== "flex") {
+      record.box.style.display = "flex";
+      record.lastDisplay = "flex";
+    }
+    const nextKind = state.cueText ? "cue" : "notice";
+    if (record.lastKind !== nextKind) {
+      record.pill.setAttribute("data-kind", nextKind);
+      record.lastKind = nextKind;
+    }
     const nextText = state.cueText || state.message;
     if (record.label.textContent !== nextText) {
       record.label.textContent = nextText;
@@ -429,6 +515,7 @@
 
   async function prefetch(video) {
     if (!enabled || runningTranslate) return;
+    if (Date.now() < nextTranslateRetryAt) return;
     const texts = pendingForeignTexts(video);
     if (texts.length === 0) return;
     runningTranslate = true;
@@ -439,16 +526,20 @@
         const result = await translateTexts(chunk);
         if (!result) {
           serviceError = true;
+          nextTranslateRetryAt = Date.now() + translateBackoffMs;
+          translateBackoffMs = Math.min(translateBackoffMs * 2, 16000);
           renderAll();
           return;
         }
         serviceError = false;
+        translateBackoffMs = 1000;
+        nextTranslateRetryAt = 0;
         const retry = new Set(result.retry || []);
         for (let i = 0; i < chunk.length; i++) {
           if (retry.has(i)) continue;
           const translated = result.translations[i];
           if (typeof translated === "string" && translated.trim()) {
-            translations.set(chunk[i], translated.trim());
+            setTranslation(chunk[i], translated.trim());
           }
         }
       }
@@ -461,8 +552,15 @@
   function onTimeUpdate(event) {
     safe(() => {
       const video = event.target;
+      if (event.type === "emptied") {
+        invalidateTrackCueCache(video);
+      }
       renderVideo(video, primaryVideo());
       prefetch(video);
+      if (!asrTimer && Date.now() - lastAsrSyncAt >= ASR_IDLE_SYNC_MS) {
+        lastAsrSyncAt = Date.now();
+        syncAsr();
+      }
     });
   }
 
@@ -480,6 +578,7 @@
     video.addEventListener("leavepictureinpicture", onPipChange);
     if (video.textTracks && video.textTracks.addEventListener) {
       const onAddTrack = () => safe(() => {
+        invalidateTrackCueCache(video);
         renderVideo(video, primaryVideo());
         prefetch(video);
       });
@@ -509,6 +608,7 @@
       video.textTracks.removeEventListener("addtrack", onAddTrack);
       trackListeners.delete(video);
     }
+    unbindTrackCueChanges(video);
     if (resizeObserver) {
       try { resizeObserver.unobserve(video); } catch (_error) {}
     }
@@ -533,19 +633,22 @@
     renderAll();
   }
 
+  function nodeHasVideo(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node.hasAttribute && node.hasAttribute(HOST_ATTR)) return false;
+    if (node.localName === "video" || node.tagName === "VIDEO") return true;
+    return !!(node.querySelector && node.querySelector("video"));
+  }
+
   function mutationTouchesVideo(mutations) {
     for (let i = 0; i < mutations.length; i++) {
       const list = mutations[i].addedNodes;
       for (let j = 0; j < list.length; j++) {
-        const node = list[j];
-        if (!node || node.nodeType !== 1) continue;
-        if (node.tagName === "VIDEO" || (node.querySelector && node.querySelector("video"))) return true;
+        if (nodeHasVideo(list[j])) return true;
       }
       const removed = mutations[i].removedNodes;
       for (let j = 0; j < removed.length; j++) {
-        const node = removed[j];
-        if (!node || node.nodeType !== 1) continue;
-        if (node.tagName === "VIDEO" || (node.querySelector && node.querySelector("video"))) return true;
+        if (nodeHasVideo(removed[j])) return true;
       }
     }
     return false;
@@ -584,17 +687,29 @@
     }
   }
 
+  function paintTick() {
+    if (!enabled || document.visibilityState !== "visible") return;
+    if (boundList.length === 0) return;
+    let hasPlaying = false;
+    for (let i = 0; i < boundList.length; i++) {
+      const video = boundList[i];
+      if (video && video.isConnected && !video.paused && !video.ended) {
+        hasPlaying = true;
+        break;
+      }
+    }
+    if (!hasPlaying) return;
+    const main = primaryVideo(boundList);
+    for (let i = 0; i < boundList.length; i++) {
+      renderVideo(boundList[i], main);
+    }
+    if (main) prefetch(main);
+  }
+
   function startPaintLoop() {
     if (paintTimer) return;
     paintTimer = setInterval(() => {
-      safe(() => {
-        if (!enabled || document.visibilityState !== "visible") return;
-        const videos = listVideos();
-        if (!videos.some((video) => !video.paused && !video.ended)) return;
-        scan();
-        const main = primaryVideo(videos);
-        if (main) prefetch(main);
-      });
+      safe(paintTick);
     }, PAINT_MS);
   }
 
@@ -788,7 +903,9 @@
     document.removeEventListener("fullscreenchange", onViewportChange);
     if (Youtube && typeof Youtube.stop === "function") Youtube.stop();
     clearOverlays();
-    translations.clear();
+    clearTranslations();
+    translateBackoffMs = 1000;
+    nextTranslateRetryAt = 0;
     cueWaitText = "";
     cueWaitSince = 0;
   }
@@ -821,9 +938,12 @@
   }
 
   function applyDesktopVideoPref(on) {
-    try {
-      chrome.storage.local.set({ videoTranslateEnabled: on });
-    } catch (_error) {}
+    if (lastWrittenDesktopPref !== on) {
+      lastWrittenDesktopPref = on;
+      try {
+        chrome.storage.local.set({ videoTranslateEnabled: on });
+      } catch (_error) {}
+    }
     if (on) {
       if (!enabled) start();
     } else if (enabled) {
@@ -850,6 +970,7 @@
     try {
       chrome.storage.local.get({ videoTranslateEnabled: false }, (prefs) => {
         const on = prefs && prefs.videoTranslateEnabled === true;
+        lastWrittenDesktopPref = on;
         if (on) start();
         else stop();
       });
@@ -875,7 +996,9 @@
   chrome.storage.onChanged.addListener((changes, area) => {
     safe(() => {
       if (area === "local" && changes.videoTranslateEnabled) {
-        if (changes.videoTranslateEnabled.newValue === true) start();
+        const nextOn = changes.videoTranslateEnabled.newValue === true;
+        lastWrittenDesktopPref = nextOn;
+        if (nextOn) start();
         else stop();
       }
       if ((area === "session" || area === "local") && changes.videoSidecar) {

@@ -49,26 +49,69 @@ public enum CodeSnippetDetector {
               value.unicodeScalars.contains(where: { CharacterSet.letters.contains($0) })
         else { return nil }
         let scan = value.count > scanCharacterLimit ? String(value.prefix(scanCharacterLimit)) : value
+        guard mightBeCode(scan) else { return nil }
 
-        for rule in rules where rule.patterns.contains(where: {
-            matches($0, in: scan, caseSensitive: rule.caseSensitive)
-        }) {
+        for rule in rules where rule.patterns.contains(where: { $0.matches(scan) }) {
             return CodeSnippetDetection(language: rule.language)
         }
         guard hasGenericCodeStructure(scan) else { return nil }
         return CodeSnippetDetection(language: languageByKeyword(in: scan) ?? .generic)
     }
 
-    /// A selection over the 48k hard cap would otherwise run every regex many
-    /// times on the main actor. Syntax that decides the language is expected
-    /// near the beginning of a snippet; the model still receives every chunk.
     private static let scanCharacterLimit = 8_000
+
+    /// Zero-allocation lexical prefilter so plain natural-language prose exits
+    /// before scanning 85 regex rules. Only skips when there are no common code
+    /// delimiters/operators AND no bare-word statement prefixes (e.g. `SELECT `,
+    /// `import `, `def `, `git `).
+    private static func mightBeCode(_ text: String) -> Bool {
+        for byte in text.utf8 {
+            switch byte {
+            case 0x7B, 0x7D, 0x3B, 0x3D, 0x28, 0x29, 0x3C, 0x3E, 0x23, 0x24, 0x3A, 0x2F, 0x5F:
+                // { } ; = ( ) < > # $ : / _
+                return true
+            default:
+                break
+            }
+        }
+        let lower = text.lowercased()
+        for prefix in bareCodePrefixes {
+            if lower.hasPrefix(prefix) || lower.contains("\n" + prefix) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static let bareCodePrefixes: [String] = [
+        "import ", "from ", "package ", "class ", "def ", "puts ", "require_relative ",
+        "select ", "insert ", "update ", "delete ", "create ", "alter ",
+        "git ", "npm ", "pnpm ", "sudo ", "chmod ", "mkdir ", "rm ", "cp ", "mv ",
+        "curl ", "wget ", "docker ", "kubectl ", "brew ", "echo ", "printf ",
+        "export ", "source ", "set ", "await "
+    ]
+
+    private struct CompiledRegex: @unchecked Sendable {
+        let regex: NSRegularExpression
+
+        init(_ pattern: String, caseSensitive: Bool = false) {
+            var options: NSRegularExpression.Options = []
+            if !caseSensitive {
+                options.insert(.caseInsensitive)
+            }
+            self.regex = try! NSRegularExpression(pattern: pattern, options: options)
+        }
+
+        func matches(_ text: String) -> Bool {
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            return regex.firstMatch(in: text, options: [], range: range) != nil
+        }
+    }
 
     private struct LanguageRule: Sendable {
         let language: CodeSnippetLanguage
-        let patterns: [String]
+        let patterns: [CompiledRegex]
         let keywords: Set<String>
-        let caseSensitive: Bool
 
         init(
             _ language: CodeSnippetLanguage,
@@ -77,9 +120,8 @@ public enum CodeSnippetDetector {
             caseSensitive: Bool = false
         ) {
             self.language = language
-            self.patterns = patterns
+            self.patterns = patterns.map { CompiledRegex($0, caseSensitive: caseSensitive) }
             self.keywords = Set(keywords)
-            self.caseSensitive = caseSensitive
         }
     }
 
@@ -233,42 +275,35 @@ public enum CodeSnippetDetector {
         ], caseSensitive: true)
     ]
 
-    private static func matches(
-        _ pattern: String,
-        in text: String,
-        caseSensitive: Bool = false
-    ) -> Bool {
-        var options: String.CompareOptions = [.regularExpression]
-        if !caseSensitive { options.insert(.caseInsensitive) }
-        return text.range(of: pattern, options: options) != nil
-    }
+    private static let strongShapeRegexes: [CompiledRegex] = [
+        #"^(?:await\s+)?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\([^\n]*\)\s*;?$"#,
+        #"^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\s*=\s*[^=\s].*;?$"#,
+        #"(?m)^\s*(?:if|for|while|switch|return|throw|try|catch|else|do)\b[^\n]*[{};]\s*$"#,
+        #"(?m)^\s*(?:public|private|protected|static|final|class|struct|enum|interface|func|def|function|fn|package|import|using|namespace)\b[^\n]*(?:[{(]|=|;)\s*$"#,
+        #"(?m)^\s*(?:int|long|short|char|float|double|bool|boolean|auto|size_t|unsigned)\s+\w+\s*(?::|=(?!=)|;)"#,
+        #"(?m)^\s*(?:let|var|val|const)\s+\w+\s*:\s*[^=\n]+\s*="#,
+        #"(?m)^\s*(?:private|public|protected|static|final)\s+(?:let|var|val|const)\s+\w+\s*:"#
+    ].map { CompiledRegex($0) }
+
+    private static let assignmentRegex = CompiledRegex(#"(?m)^\s*[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\s*(?:=|\+=|-=|\*=|/=|:=)\s*[^=]"#)
+    private static let functionCallRegex = CompiledRegex(#"(?m)^\s*(?:await\s+)?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\([^\n]*\)\s*;?\s*$"#)
+    private static let controlLineRegex = CompiledRegex(#"(?m)^\s*(?:if|for|while|switch|return|throw|try|catch|else|do|case|break|continue)\b"#)
+    private static let declarationLineRegex = CompiledRegex(#"(?m)^\s*(?:public|private|protected|static|final|class|struct|enum|interface|func|def|function|fn|package|import|using|namespace)\b"#)
+    private static let commentLineRegex = CompiledRegex(#"(?m)^\s*(?://|/\*|\*|#\s*[A-Za-z_])"#)
+    private static let indentationRegex = CompiledRegex(#"(?m)^\s{2,}\S"#)
 
     /// Generic shapes are deliberately strict. A sentence that happens to
     /// contain "if" or parentheses must not become a code explanation.
     private static func hasGenericCodeStructure(_ text: String) -> Bool {
         let whole = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let strongShapes = [
-            #"^(?:await\s+)?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\([^\n]*\)\s*;?$"#,
-            #"^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\s*=\s*[^=\s].*;?$"#,
-            #"(?m)^\s*(?:if|for|while|switch|return|throw|try|catch|else|do)\b[^\n]*[{};]\s*$"#,
-            #"(?m)^\s*(?:public|private|protected|static|final|class|struct|enum|interface|func|def|function|fn|package|import|using|namespace)\b[^\n]*(?:[{(]|=|;)\s*$"#,
-            #"(?m)^\s*(?:int|long|short|char|float|double|bool|boolean|auto|size_t|unsigned)\s+\w+\s*(?::|=(?!=)|;)"#,
-            #"(?m)^\s*(?:let|var|val|const)\s+\w+\s*:\s*[^=\n]+\s*="#,
-            #"(?m)^\s*(?:private|public|protected|static|final)\s+(?:let|var|val|const)\s+\w+\s*:"#
-        ]
-        if strongShapes.contains(where: { matches($0, in: whole) }) {
+        if strongShapeRegexes.contains(where: { $0.matches(whole) }) {
             return true
         }
 
-        let assignment = #"(?m)^\s*[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\s*(?:=|\+=|-=|\*=|/=|:=)\s*[^=]"#
-        let functionCall = #"(?m)^\s*(?:await\s+)?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\([^\n]*\)\s*;?\s*$"#
-        let controlLine = #"(?m)^\s*(?:if|for|while|switch|return|throw|try|catch|else|do|case|break|continue)\b"#
-        let declarationLine = #"(?m)^\s*(?:public|private|protected|static|final|class|struct|enum|interface|func|def|function|fn|package|import|using|namespace)\b"#
-
-        let hasAssignment = matches(assignment, in: whole)
-        let hasFunctionCall = matches(functionCall, in: whole)
-        let hasControl = matches(controlLine, in: whole)
-        let hasDeclaration = matches(declarationLine, in: whole)
+        let hasAssignment = assignmentRegex.matches(whole)
+        let hasFunctionCall = functionCallRegex.matches(whole)
+        let hasControl = controlLineRegex.matches(whole)
+        let hasDeclaration = declarationLineRegex.matches(whole)
         guard hasAssignment || hasFunctionCall || hasControl || hasDeclaration else {
             return false
         }
@@ -277,12 +312,12 @@ public enum CodeSnippetDetector {
         if whole.contains("{"), whole.contains("}") { score += 2 }
         if whole.contains(";") { score += 2 }
         if hasAssignment { score += 2 }
-        if matches(#"(?m)^\s*(?://|/\*|\*|#\s*[A-Za-z_])"#, in: whole) { score += 2 }
+        if commentLineRegex.matches(whole) { score += 2 }
         if hasFunctionCall { score += 2 }
         if hasControl { score += 1 }
         if hasDeclaration { score += 2 }
         if whole.contains("=>") || whole.contains("->") { score += 2 }
-        if matches(#"(?m)^\s{2,}\S"#, in: whole) { score += 1 }
+        if indentationRegex.matches(whole) { score += 1 }
         return score >= 4
     }
 

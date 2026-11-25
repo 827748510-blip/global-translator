@@ -264,8 +264,13 @@ public final class NoopTranslationScheduler: TranslationScheduling {
 @MainActor
 public protocol ApplicationRuntimeWorker: AnyObject {
     var isRunning: Bool { get }
+    var notifiesOnStop: Bool { get }
     func start() throws
     func stop()
+}
+
+public extension ApplicationRuntimeWorker {
+    var notifiesOnStop: Bool { false }
 }
 
 @MainActor
@@ -277,6 +282,7 @@ public final class RuntimeWorkerAdapter: ApplicationRuntimeWorker {
     }
 
     public var isRunning: Bool { worker.isRunning }
+    public var notifiesOnStop: Bool { true }
     public func start() throws { try worker.start() }
     public func stop() { worker.stop() }
 }

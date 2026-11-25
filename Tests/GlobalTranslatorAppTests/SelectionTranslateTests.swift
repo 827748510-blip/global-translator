@@ -1573,6 +1573,58 @@ extension ApplicationControllerTests {
         await controller.stop()
     }
 
+    @Test
+    func cloudMultiChunkSelectionRunsBoundedConcurrencyAndPreservesOrder() async throws {
+        actor ReversingOrderBackend: TranslationBackend {
+            let kind: BackendKind = .deepSeekCloud
+            private var inFlight = 0
+            private(set) var maxInFlight = 0
+
+            func healthCheck() async -> BackendHealth {
+                BackendHealth(status: .healthy, message: "ok")
+            }
+
+            func translate(_ request: TranslationRequest) async throws -> TranslationResult {
+                inFlight += 1
+                if inFlight > maxInFlight { maxInFlight = inFlight }
+                // Earlier chunks sleep slightly longer so naive completion-order joining would scramble order.
+                let lengthDelay = UInt64(max(1, 20 - (request.items.first?.sourceText.count ?? 0) % 15))
+                try? await Task.sleep(for: .milliseconds(Int(lengthDelay)))
+                inFlight -= 1
+                let items = request.items.map {
+                    Translation(segmentId: $0.id, simplifiedChineseText: "译:\($0.sourceText)")
+                }
+                return TranslationResult(windowRevision: request.windowRevision, translations: items)
+            }
+        }
+
+        let cloudBackend = ReversingOrderBackend()
+        let coordinator = TranslationCoordinator(
+            backends: [cloudBackend],
+            permissions: FakePermissionController(snapshot: .allGranted)
+        )
+        let store = RecordingConfigurationStore(configuration: AppConfiguration(
+            autoTranslateEnabled: false, backend: .deepSeekCloud, deepSeekModel: "deepseek-chat"
+        ))
+        let controller = ApplicationController(
+            paths: try RuntimePaths(validatingRoot: temporaryRoot()),
+            components: makeComponents(store: store, coordinator: coordinator)
+        )
+        try await controller.start()
+        await waitForStartupHealthCheck(controller)
+        let session = try #require(controller.session)
+        let source = Self.longEnglish(characters: 7_200)
+        let plan = SelectionTranslateSupport.prepareSource(source, direction: .toChinese)
+        #expect(plan.chunks.count >= 4)
+
+        let outcome = try await session.translateSelection(source)
+        let expected = SelectionTranslateSupport.joinTranslatedChunks(plan.chunks.map { "译:\($0)" })
+        #expect(outcome.text == expected)
+        #expect(await cloudBackend.maxInFlight <= 3)
+        #expect(await cloudBackend.maxInFlight >= 2)
+        await controller.stop()
+    }
+
     private static func longEnglish(characters: Int) -> String {
         let unit = "A cinematic wide shot of a girl standing in the rain on a city street at night. "
         var text = ""

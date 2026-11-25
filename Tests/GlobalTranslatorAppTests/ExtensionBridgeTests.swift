@@ -1103,4 +1103,39 @@ struct ExtensionBridgeSecurityHardeningTests {
         let applicable = await translator.isApplicable(bundleIdentifier: "com.apple.Safari", windowPID: 0)
         #expect(!applicable)
     }
+
+    @Test
+    func bridgeSupportsHTTP11KeepAliveAndCorsMaxAge() async throws {
+        let server = ExtensionBridgeServer(port: 0) { texts, _ in
+            ExtensionBridgeTranslation(translations: texts.map { $0 })
+        }
+        server.start()
+        defer { server.stop() }
+        var port: UInt16?
+        for _ in 0..<200 where port == nil {
+            port = server.boundPort
+            if port == nil { try? await Task.sleep(for: .milliseconds(10)) }
+        }
+        let resolvedPort = try #require(port)
+
+        // Two sequential HTTP/1.1 requests over one ephemeral URLSession should reuse
+        // the keep-alive connection and expose Keep-Alive / Access-Control-Max-Age headers.
+        let session = URLSession(configuration: .ephemeral)
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(resolvedPort)/health")!)
+        req.httpMethod = "POST"
+        req.setValue(ExtensionBridgeServer.allowedOrigin, forHTTPHeaderField: "Origin")
+        let (d1, r1) = try await session.data(for: req)
+        let http1 = try #require(r1 as? HTTPURLResponse)
+        #expect(http1.statusCode == 200)
+        #expect(http1.value(forHTTPHeaderField: "Connection")?.lowercased() == "keep-alive")
+        #expect(http1.value(forHTTPHeaderField: "Access-Control-Max-Age") == "86400")
+        let json1 = try #require(try JSONSerialization.jsonObject(with: d1) as? [String: Any])
+        #expect(json1["ok"] as? Bool == true)
+
+        let (d2, r2) = try await session.data(for: req)
+        let http2 = try #require(r2 as? HTTPURLResponse)
+        #expect(http2.statusCode == 200)
+        let json2 = try #require(try JSONSerialization.jsonObject(with: d2) as? [String: Any])
+        #expect(json2["ok"] as? Bool == true)
+    }
 }

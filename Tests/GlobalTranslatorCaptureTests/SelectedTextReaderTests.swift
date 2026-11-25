@@ -14,6 +14,7 @@ struct SelectedTextReaderTests {
         let reader = AXSelectedTextReader(
             attributeReader: ax,
             clipboard: clipboard,
+            permissions: FakePermissionController(snapshot: .allGranted),
             frontmostApplication: { FrontmostApplicationInfo(pid: 42, bundleIdentifier: "com.apple.TextEdit") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 1440, height: 900) }
         )
@@ -48,6 +49,7 @@ struct SelectedTextReaderTests {
         let reader = AXSelectedTextReader(
             attributeReader: ax,
             clipboard: RecordingClipboardFallback(text: "should-not-use"),
+            permissions: FakePermissionController(snapshot: .allGranted),
             frontmostApplication: { FrontmostApplicationInfo(pid: 42, bundleIdentifier: "com.apple.TextEdit") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 1440, height: 900) }
         )
@@ -72,6 +74,7 @@ struct SelectedTextReaderTests {
         let reader = AXSelectedTextReader(
             attributeReader: ax,
             clipboard: RecordingClipboardFallback(text: "should-not-use"),
+            permissions: FakePermissionController(snapshot: .allGranted),
             frontmostApplication: { FrontmostApplicationInfo(pid: 42, bundleIdentifier: "com.apple.TextEdit") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 1440, height: 900) }
         )
@@ -97,6 +100,7 @@ struct SelectedTextReaderTests {
         let reader = AXSelectedTextReader(
             attributeReader: ax,
             clipboard: RecordingClipboardFallback(text: "should-not-use"),
+            permissions: FakePermissionController(snapshot: .allGranted),
             frontmostApplication: { FrontmostApplicationInfo(pid: 42, bundleIdentifier: "com.apple.TextEdit") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 1440, height: 900) }
         )
@@ -115,6 +119,7 @@ struct SelectedTextReaderTests {
         let reader = AXSelectedTextReader(
             attributeReader: ax,
             clipboard: clipboard,
+            permissions: FakePermissionController(snapshot: .allGranted),
             frontmostApplication: { FrontmostApplicationInfo(pid: 7, bundleIdentifier: "com.apple.Notes") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
@@ -129,6 +134,7 @@ struct SelectedTextReaderTests {
         let reader = AXSelectedTextReader(
             attributeReader: ax,
             clipboard: clipboard,
+            permissions: FakePermissionController(snapshot: .allGranted),
             frontmostApplication: { FrontmostApplicationInfo(pid: 21, bundleIdentifier: "com.electron.lark") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
@@ -153,6 +159,7 @@ struct SelectedTextReaderTests {
         let reader = AXSelectedTextReader(
             attributeReader: ax,
             clipboard: clipboard,
+            permissions: FakePermissionController(snapshot: .allGranted),
             frontmostApplication: { FrontmostApplicationInfo(pid: 21, bundleIdentifier: "com.electron.lark") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
@@ -169,6 +176,7 @@ struct SelectedTextReaderTests {
         let reader = AXSelectedTextReader(
             attributeReader: ax,
             clipboard: clipboard,
+            permissions: FakePermissionController(snapshot: .allGranted),
             frontmostApplication: { FrontmostApplicationInfo(pid: 21, bundleIdentifier: "com.google.Chrome") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
@@ -185,6 +193,7 @@ struct SelectedTextReaderTests {
         let reader = AXSelectedTextReader(
             attributeReader: ax,
             clipboard: clipboard,
+            permissions: FakePermissionController(snapshot: .allGranted),
             frontmostApplication: { FrontmostApplicationInfo(pid: 11, bundleIdentifier: "com.google.Chrome") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
@@ -199,6 +208,7 @@ struct SelectedTextReaderTests {
         let reader = AXSelectedTextReader(
             attributeReader: ax,
             clipboard: clipboard,
+            permissions: FakePermissionController(snapshot: .allGranted),
             frontmostApplication: { FrontmostApplicationInfo(pid: 9, bundleIdentifier: "com.electron.lark") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
@@ -227,6 +237,7 @@ struct SelectedTextReaderTests {
         let reader = AXSelectedTextReader(
             attributeReader: ax,
             clipboard: clipboard,
+            permissions: FakePermissionController(snapshot: .allGranted),
             frontmostApplication: { FrontmostApplicationInfo(pid: 21, bundleIdentifier: "com.electron.lark") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 1_440, height: 900) }
         )
@@ -249,6 +260,7 @@ struct SelectedTextReaderTests {
         let reader = AXSelectedTextReader(
             attributeReader: ax,
             clipboard: clipboard,
+            permissions: FakePermissionController(snapshot: .allGranted),
             frontmostApplication: { FrontmostApplicationInfo(pid: 9, bundleIdentifier: "com.apple.Safari") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
@@ -263,6 +275,7 @@ struct SelectedTextReaderTests {
         let reader = AXSelectedTextReader(
             attributeReader: ax,
             clipboard: clipboard,
+            permissions: FakePermissionController(snapshot: .allGranted),
             frontmostApplication: { FrontmostApplicationInfo(pid: 11, bundleIdentifier: "com.google.Chrome") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
@@ -294,6 +307,7 @@ struct SelectedTextReaderTests {
         let reader = AXSelectedTextReader(
             attributeReader: ax,
             clipboard: clipboard,
+            permissions: FakePermissionController(snapshot: .allGranted),
             frontmostApplication: { FrontmostApplicationInfo(pid: 3, bundleIdentifier: "com.apple.Safari") },
             primaryDisplayFrame: { CGRect(x: 0, y: 0, width: 800, height: 600) }
         )
@@ -348,6 +362,7 @@ struct ClipboardRestoreTests {
         let fallback = RestoringClipboardSelectionFallback(
             pasteboard: pasteboard,
             keystroke: keystroke,
+            permissions: FakePermissionController(snapshot: .allGranted),
             wait: {}
         )
         #expect(await fallback.copySelectedTextRestoringClipboard() == "selected phrase")
@@ -362,6 +377,7 @@ struct ClipboardRestoreTests {
         let fallback = RestoringClipboardSelectionFallback(
             pasteboard: pasteboard,
             keystroke: keystroke,
+            permissions: FakePermissionController(snapshot: .allGranted),
             wait: {}
         )
         #expect(await fallback.copySelectedTextRestoringClipboard() == nil)
@@ -376,6 +392,7 @@ struct ClipboardRestoreTests {
         let fallback = RestoringClipboardSelectionFallback(
             pasteboard: pasteboard,
             keystroke: keystroke,
+            permissions: FakePermissionController(snapshot: .allGranted),
             wait: {}
         )
         #expect(await fallback.copySelectedTextRestoringClipboard() == nil)
@@ -397,6 +414,7 @@ struct ClipboardRestoreTests {
         let fallback = RestoringClipboardSelectionFallback(
             pasteboard: pasteboard,
             keystroke: keystroke,
+            permissions: FakePermissionController(snapshot: .allGranted),
             wait: { waits.run() }
         )
         #expect(await fallback.copySelectedTextRestoringClipboard() == "late selection")
@@ -416,7 +434,8 @@ struct ClipboardRestoreTests {
         let keystroke = FakeCopyKeystroke {}
         let fallback = RestoringClipboardSelectionFallback(
             pasteboard: pasteboard,
-            keystroke: keystroke
+            keystroke: keystroke,
+            permissions: FakePermissionController(snapshot: .allGranted)
         )
         let read = Task { await fallback.copySelectedTextRestoringClipboard() }
         for _ in 0..<400 where keystroke.callCount == 0 {

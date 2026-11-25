@@ -181,22 +181,27 @@ public final class UnixControlServer: @unchecked Sendable {
                     socklen_t(MemoryLayout<Int32>.size)
                 )
             }
-            handleConnection(client)
+            handleConnectionAsync(client)
+        }
+    }
+
+    private let connectionQueue = DispatchQueue(
+        label: "GlobalTranslatorRuntime.control.connections",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
+    private let connectionLimiter = DispatchSemaphore(value: 8)
+
+    private func handleConnectionAsync(_ descriptor: Int32) {
+        connectionLimiter.wait()
+        connectionQueue.async { [self] in
+            defer { connectionLimiter.signal() }
+            handleConnection(descriptor)
         }
     }
 
     private func handleConnection(_ descriptor: Int32) {
         defer { _ = Darwin.close(descriptor) }
-        var noSignal: Int32 = 1
-        _ = withUnsafePointer(to: &noSignal) { pointer in
-            setsockopt(
-                descriptor,
-                SOL_SOCKET,
-                SO_NOSIGPIPE,
-                pointer,
-                socklen_t(MemoryLayout<Int32>.size)
-            )
-        }
         var receiveTimeout = timeval(tv_sec: 1, tv_usec: 0)
         _ = withUnsafePointer(to: &receiveTimeout) { pointer in
             setsockopt(

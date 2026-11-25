@@ -72,7 +72,9 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
     private static let maximumConcurrentConnections = 32
     private static let maximumConcurrentTranslateTasks = 8
     private static let readTimeoutSeconds: TimeInterval = 5
+    private static let keepAliveTimeoutSeconds: TimeInterval = 30
     private static let translateTimeoutSeconds: TimeInterval = 180
+    private static let headerDelimiter = Data("\r\n\r\n".utf8)
 
     private struct ConnectionState: @unchecked Sendable {
         var connections: [ObjectIdentifier: NWConnection] = [:]
@@ -239,14 +241,8 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
             return
         }
 
-        let timeoutTask = Task { [weak self, weak connection] in
-            try? await Task.sleep(for: .seconds(Self.readTimeoutSeconds))
-            guard !Task.isCancelled, let self, let connection else { return }
-            self.cleanupConnection(id: id)
-            self.logger?.event("bridge_rejected", fields: ["status": "read_timeout"])
-            connection.cancel()
-        }
-        stateLock.withLock { $0.readTimers[id] = timeoutTask }
+        let timeoutTask = armReadTimer(for: id, connection: connection, timeout: Self.readTimeoutSeconds)
+        _ = timeoutTask
 
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
@@ -258,6 +254,33 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         }
         connection.start(queue: queue)
         receive(on: connection, id: id, buffer: Data(), head: nil)
+    }
+
+    @discardableResult
+    private func armReadTimer(
+        for id: ObjectIdentifier,
+        connection: NWConnection,
+        timeout: TimeInterval
+    ) -> Task<Void, Never> {
+        let timeoutTask = Task { [weak self, weak connection] in
+            try? await Task.sleep(for: .seconds(timeout))
+            guard !Task.isCancelled, let self, let connection else { return }
+            self.cleanupConnection(id: id)
+            self.logger?.event("bridge_rejected", fields: ["status": "read_timeout"])
+            connection.cancel()
+        }
+        let previous = stateLock.withLock { current -> Task<Void, Never>? in
+            guard current.connections[id] != nil else { return nil }
+            let old = current.readTimers[id]
+            current.readTimers[id] = timeoutTask
+            return old
+        }
+        previous?.cancel()
+        return timeoutTask
+    }
+
+    private func isConnectionTracked(id: ObjectIdentifier) -> Bool {
+        stateLock.withLock { $0.connections[id] != nil }
     }
 
     private func cleanupConnection(id: ObjectIdentifier) {
@@ -281,59 +304,87 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
             guard let self else { connection.cancel(); return }
             var buffer = buffer
             if let content { buffer.append(content) }
-            if buffer.count > Self.maximumBodyBytes + Self.maximumHeaderBytes {
-                self.clearReadTimer(for: id)
-                self.send(.plain(status: 413, body: "payload too large"), on: connection)
-                return
-            }
-            var activeHead = head
-            if activeHead == nil {
-                switch Self.parseHead(buffer) {
-                case .incomplete:
-                    if isComplete || error != nil {
-                        self.cleanupConnection(id: id)
-                        connection.cancel()
-                    } else {
-                        self.receive(on: connection, id: id, buffer: buffer, head: nil)
-                    }
-                    return
-                case .malformed(let status, let message):
-                    self.clearReadTimer(for: id)
-                    self.send(.plain(status: status, body: message), on: connection)
-                    return
-                case .complete(let parsed):
-                    guard self.isAllowedHost(parsed.host) else {
-                        self.clearReadTimer(for: id)
-                        self.logger?.event("bridge_rejected", fields: ["status": "host", "path": parsed.path])
-                        self.send(.json(status: 403, object: ["error": "forbidden"]), on: connection)
-                        return
-                    }
-                    if parsed.method != "OPTIONS" && !Self.allowedOrigins.contains(parsed.origin ?? "") {
-                        self.clearReadTimer(for: id)
-                        self.logger?.event("bridge_rejected", fields: ["status": "origin", "path": parsed.path])
-                        self.send(.json(status: 403, object: ["error": "forbidden"]), on: connection)
-                        return
-                    }
-                    activeHead = parsed
+            self.processBufferedInput(on: connection, id: id, buffer: buffer, head: head, isComplete: isComplete, error: error)
+        }
+    }
+
+    private func processBufferedInput(
+        on connection: NWConnection,
+        id: ObjectIdentifier,
+        buffer: Data,
+        head: ParsedHead?,
+        isComplete: Bool,
+        error: NWError?
+    ) {
+        if buffer.count > Self.maximumBodyBytes + Self.maximumHeaderBytes {
+            clearReadTimer(for: id)
+            send(.plain(status: 413, body: "payload too large"), on: connection, id: id)
+            return
+        }
+        var activeHead = head
+        if activeHead == nil {
+            switch Self.parseHead(buffer) {
+            case .incomplete:
+                if isComplete || error != nil {
+                    cleanupConnection(id: id)
+                    connection.cancel()
+                } else {
+                    receive(on: connection, id: id, buffer: buffer, head: nil)
                 }
+                return
+            case .malformed(let status, let message):
+                clearReadTimer(for: id)
+                send(.plain(status: status, body: message), on: connection, id: id)
+                return
+            case .complete(let parsed):
+                guard isAllowedHost(parsed.host) else {
+                    clearReadTimer(for: id)
+                    logger?.event("bridge_rejected", fields: ["status": "host", "path": parsed.path])
+                    send(.json(status: 403, object: ["error": "forbidden"]), on: connection, id: id)
+                    return
+                }
+                if parsed.method != "OPTIONS" && !Self.allowedOrigins.contains(parsed.origin ?? "") {
+                    clearReadTimer(for: id)
+                    logger?.event("bridge_rejected", fields: ["status": "origin", "path": parsed.path])
+                    send(.json(status: 403, object: ["error": "forbidden"]), on: connection, id: id)
+                    return
+                }
+                activeHead = parsed
             }
-            guard let parsedHead = activeHead else { return }
-            if buffer.count >= parsedHead.bodyStart + parsedHead.contentLength {
-                self.clearReadTimer(for: id)
-                let body = buffer.subdata(in: parsedHead.bodyStart..<(parsedHead.bodyStart + parsedHead.contentLength))
-                let request = Request(
-                    method: parsedHead.method,
-                    path: parsedHead.path,
-                    origin: parsedHead.origin,
-                    body: body
-                )
-                self.dispatch(request, on: connection, id: id)
-            } else if isComplete || error != nil {
-                self.cleanupConnection(id: id)
-                connection.cancel()
-            } else {
-                self.receive(on: connection, id: id, buffer: buffer, head: parsedHead)
-            }
+        }
+        guard let parsedHead = activeHead else { return }
+        let bodyEnd = parsedHead.bodyStart + parsedHead.contentLength
+        if buffer.count >= bodyEnd {
+            clearReadTimer(for: id)
+            let body = buffer.subdata(in: parsedHead.bodyStart..<bodyEnd)
+            let trailing = buffer.count > bodyEnd ? Data(buffer[bodyEnd...]) : Data()
+            let request = Request(
+                method: parsedHead.method,
+                path: parsedHead.path,
+                origin: parsedHead.origin,
+                body: body,
+                keepAlive: parsedHead.keepAlive,
+                trailingBuffer: trailing
+            )
+            dispatch(request, on: connection, id: id)
+        } else if isComplete || error != nil {
+            cleanupConnection(id: id)
+            connection.cancel()
+        } else {
+            receive(on: connection, id: id, buffer: buffer, head: parsedHead)
+        }
+    }
+
+    private func scheduleNextKeepAliveRequest(on connection: NWConnection, id: ObjectIdentifier, buffer: Data) {
+        guard isConnectionTracked(id: id) else {
+            connection.cancel()
+            return
+        }
+        armReadTimer(for: id, connection: connection, timeout: Self.keepAliveTimeoutSeconds)
+        if buffer.isEmpty {
+            receive(on: connection, id: id, buffer: Data(), head: nil)
+        } else {
+            processBufferedInput(on: connection, id: id, buffer: buffer, head: nil, isComplete: false, error: nil)
         }
     }
 
@@ -344,6 +395,7 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         let host: String?
         let contentLength: Int
         let bodyStart: Int
+        let keepAlive: Bool
     }
 
     private enum HeadParseResult {
@@ -357,10 +409,13 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         let path: String
         let origin: String?
         let body: Data
+        let keepAlive: Bool
+        let trailingBuffer: Data
     }
 
     private static func parseHead(_ buffer: Data) -> HeadParseResult {
-        guard let headerRange = buffer.range(of: Data("\r\n\r\n".utf8)) else {
+        let scanEnd = min(buffer.count, maximumHeaderBytes + 4)
+        guard let headerRange = buffer[..<scanEnd].range(of: Self.headerDelimiter) else {
             return buffer.count > maximumHeaderBytes
                 ? .malformed(431, "request header fields too large")
                 : .incomplete
@@ -378,11 +433,14 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         guard parts.count >= 2, parts[0].allSatisfy({ $0.isASCII && $0.isLetter }) else {
             return .malformed(400, "bad request")
         }
+        let httpVersion = parts.count >= 3 ? String(parts[2]).uppercased() : "HTTP/1.0"
         var origin: String?
         var seenOrigin = false
         var host: String?
         var seenHost = false
         var contentLength: Int?
+        var connectionClose = false
+        var connectionKeepAlive = false
         for line in lines where !line.isEmpty {
             guard let separator = line.firstIndex(of: ":") else {
                 return .malformed(400, "bad request")
@@ -398,6 +456,12 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
                 guard !seenHost else { return .malformed(400, "duplicate host") }
                 seenHost = true
                 host = value
+            case "connection":
+                for rawToken in value.split(separator: ",") {
+                    let token = rawToken.trimmingCharacters(in: .whitespaces).lowercased()
+                    if token == "close" { connectionClose = true }
+                    if token == "keep-alive" { connectionKeepAlive = true }
+                }
             case "transfer-encoding":
                 return .malformed(400, "transfer-encoding unsupported")
             case "content-length":
@@ -417,13 +481,17 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
                 break
             }
         }
+        let keepAlive = httpVersion == "HTTP/1.1"
+            ? !connectionClose
+            : (connectionKeepAlive && !connectionClose)
         return .complete(ParsedHead(
             method: String(parts[0]).uppercased(),
             path: String(parts[1]),
             origin: origin,
             host: host,
             contentLength: contentLength ?? 0,
-            bodyStart: headerRange.upperBound
+            bodyStart: headerRange.upperBound,
+            keepAlive: keepAlive
         ))
     }
 
@@ -456,16 +524,22 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
 
     private func dispatch(_ request: Request, on connection: NWConnection, id: ObjectIdentifier) {
         guard !request.method.isEmpty else {
-            send(.plain(status: 400, body: "bad request"), on: connection)
+            send(.plain(status: 400, body: "bad request"), on: connection, id: id)
             return
         }
         if request.method == "OPTIONS" {
-            send(corsPreflightResponse(for: request.origin), on: connection)
+            send(
+                corsPreflightResponse(for: request.origin),
+                on: connection,
+                id: id,
+                keepAlive: request.keepAlive,
+                trailingBuffer: request.trailingBuffer
+            )
             return
         }
         guard Self.allowedOrigins.contains(request.origin ?? "") else {
             logger?.event("bridge_rejected", fields: ["status": "origin", "path": request.path])
-            send(.json(status: 403, object: ["error": "forbidden"]), on: connection)
+            send(.json(status: 403, object: ["error": "forbidden"]), on: connection, id: id)
             return
         }
         switch (request.method, request.path) {
@@ -473,7 +547,7 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         // fetches, so the extension pings with POST to prove its identity.
         case ("GET", "/health"), ("POST", "/health"):
             guard controlRateLimiter.allow() else {
-                send(.json(status: 429, object: ["error": "too many requests"]), on: connection, origin: request.origin)
+                send(.json(status: 429, object: ["error": "too many requests"]), on: connection, id: id, origin: request.origin)
                 return
             }
             Task { [weak self] in
@@ -498,45 +572,76 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
                     if let reason, !reason.isEmpty {
                         object["blockedReason"] = reason
                     }
-                    self.send(.json(status: 200, object: object), on: connection, origin: request.origin)
+                    self.send(
+                        .json(status: 200, object: object),
+                        on: connection,
+                        id: id,
+                        origin: request.origin,
+                        keepAlive: request.keepAlive,
+                        trailingBuffer: request.trailingBuffer
+                    )
                 }
             }
         case ("POST", "/video-translate"):
-            handleSetVideoTranslate(request.body, origin: request.origin, on: connection)
+            handleSetVideoTranslate(request, on: connection, id: id)
         case ("POST", "/translate"):
             handleTranslate(request.body, origin: request.origin, on: connection, id: id)
         case ("POST", "/video-asr"):
-            handleVideoASR(request.body, origin: request.origin, on: connection)
+            handleVideoASR(request, on: connection, id: id)
         default:
-            send(.json(status: 404, object: ["error": "not found"]), on: connection, origin: request.origin)
+            send(
+                .json(status: 404, object: ["error": "not found"]),
+                on: connection,
+                id: id,
+                origin: request.origin,
+                keepAlive: request.keepAlive,
+                trailingBuffer: request.trailingBuffer
+            )
         }
     }
 
-    private func handleSetVideoTranslate(_ body: Data, origin: String?, on connection: NWConnection) {
+    private func handleSetVideoTranslate(_ request: Request, on connection: NWConnection, id: ObjectIdentifier) {
+        let origin = request.origin
         guard controlRateLimiter.allow() else {
-            send(.json(status: 429, object: ["error": "too many requests"]), on: connection, origin: origin)
+            send(.json(status: 429, object: ["error": "too many requests"]), on: connection, id: id, origin: origin)
             return
         }
-        guard let payload = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+        guard let payload = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
               let enabled = payload["enabled"] as? Bool else {
-            send(.json(status: 400, object: ["error": "bad request"]), on: connection, origin: origin)
+            send(.json(status: 400, object: ["error": "bad request"]), on: connection, id: id, origin: origin)
             return
         }
         Task { [weak self] in
             guard let self else { return }
-            let autoActive = await MainActor.run { self.autoTranslateEnabled() }
-            if enabled && !autoActive {
-                self.queue.async {
-                    self.send(.json(status: 503, object: ["error": "inactive"]), on: connection, origin: origin)
+            let resolved: Bool? = await MainActor.run {
+                if enabled && !self.autoTranslateEnabled() {
+                    return nil
                 }
-                return
+                return self.setVideoTranslateEnabled(enabled)
             }
-            let resolved = await MainActor.run { self.setVideoTranslateEnabled(enabled) }
             self.queue.async {
-                self.send(.json(status: 200, object: [
-                    "ok": true,
-                    "videoTranslateEnabled": resolved
-                ]), on: connection, origin: origin)
+                guard let resolved else {
+                    self.send(
+                        .json(status: 503, object: ["error": "inactive"]),
+                        on: connection,
+                        id: id,
+                        origin: origin,
+                        keepAlive: request.keepAlive,
+                        trailingBuffer: request.trailingBuffer
+                    )
+                    return
+                }
+                self.send(
+                    .json(status: 200, object: [
+                        "ok": true,
+                        "videoTranslateEnabled": resolved
+                    ]),
+                    on: connection,
+                    id: id,
+                    origin: origin,
+                    keepAlive: request.keepAlive,
+                    trailingBuffer: request.trailingBuffer
+                )
             }
         }
     }
@@ -546,7 +651,7 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
               let texts = payload["texts"] as? [String],
               !texts.isEmpty, texts.count <= Self.maximumTexts,
               texts.allSatisfy({ $0.utf8.count <= Self.maximumTextUTF8 }) else {
-            send(.json(status: 400, object: ["error": "bad request"]), on: connection, origin: origin)
+            send(.json(status: 400, object: ["error": "bad request"]), on: connection, id: id, origin: origin)
             return
         }
         // Missing hints retain the legacy protocol. Present hints must be
@@ -554,7 +659,7 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         var sourceLanguage: TranslationSourceLanguage?
         if let raw = payload["sourceLanguage"] {
             guard let tag = raw as? String, let language = TranslationSourceLanguage(tag) else {
-                send(.json(status: 400, object: ["error": "bad request"]), on: connection, origin: origin)
+                send(.json(status: 400, object: ["error": "bad request"]), on: connection, id: id, origin: origin)
                 return
             }
             sourceLanguage = language
@@ -562,7 +667,7 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         var validatedPageOrigin: String?
         if let rawOrigin = payload["pageOrigin"] {
             guard let parsed = Self.normalizedPageOrigin(rawOrigin) else {
-                send(.json(status: 400, object: ["error": "bad request"]), on: connection, origin: origin)
+                send(.json(status: 400, object: ["error": "bad request"]), on: connection, id: id, origin: origin)
                 return
             }
             validatedPageOrigin = parsed
@@ -570,7 +675,7 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         let cost = min(30.0, 1.0 + floor(Double(max(0, texts.count - 1)) / 15.0))
         guard rateLimiter.allow(cost: cost) else {
             logger?.event("bridge_translate", fields: ["status": "rate_limited"])
-            send(.json(status: 429, object: ["error": "too many requests"]), on: connection, origin: origin)
+            send(.json(status: 429, object: ["error": "too many requests"]), on: connection, id: id, origin: origin)
             return
         }
         let reservedSlot = stateLock.withLock { current -> Bool in
@@ -580,7 +685,7 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         }
         guard reservedSlot else {
             logger?.event("bridge_translate", fields: ["status": "concurrency_limited"])
-            send(.json(status: 429, object: ["error": "too many requests"]), on: connection, origin: origin)
+            send(.json(status: 429, object: ["error": "too many requests"]), on: connection, id: id, origin: origin)
             return
         }
         let validatedLanguage = sourceLanguage
@@ -629,7 +734,9 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
                 response = .json(status: 500, object: ["error": "translation failed"])
             }
             guard !Task.isCancelled else { return }
-            self.queue.async { self.send(response, on: connection, origin: origin) }
+            // Keep-Alive is disabled on POST /translate because watchDisconnect
+            // has an active NWConnection.receive monitoring client aborts.
+            self.queue.async { self.send(response, on: connection, id: id, origin: origin) }
         }
         let stored = stateLock.withLock { current -> Bool in
             guard current.connections[id] != nil else { return false }
@@ -673,20 +780,21 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         return "\(scheme)://\(host)"
     }
 
-    private func handleVideoASR(_ body: Data, origin: String?, on connection: NWConnection) {
+    private func handleVideoASR(_ request: Request, on connection: NWConnection, id: ObjectIdentifier) {
+        let origin = request.origin
         guard controlRateLimiter.allow() else {
-            send(.json(status: 429, object: ["error": "too many requests"]), on: connection, origin: origin)
+            send(.json(status: 429, object: ["error": "too many requests"]), on: connection, id: id, origin: origin)
             return
         }
         var needed: Bool?
-        if !body.isEmpty {
-            guard let payload = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
-                send(.json(status: 400, object: ["error": "bad request"]), on: connection, origin: origin)
+        if !request.body.isEmpty {
+            guard let payload = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any] else {
+                send(.json(status: 400, object: ["error": "bad request"]), on: connection, id: id, origin: origin)
                 return
             }
             if let rawNeeded = payload["needed"] {
                 guard let value = rawNeeded as? Bool else {
-                    send(.json(status: 400, object: ["error": "bad request"]), on: connection, origin: origin)
+                    send(.json(status: 400, object: ["error": "bad request"]), on: connection, id: id, origin: origin)
                     return
                 }
                 needed = value
@@ -698,17 +806,24 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         let requestedNeeded = needed
         Task { [weak self] in
             guard let self else { return }
-            if let requestedNeeded {
-                let allowed = await MainActor.run {
-                    !requestedNeeded || (self.autoTranslateEnabled() && self.videoTranslateEnabled())
+            let snapshot = await MainActor.run {
+                if let requestedNeeded {
+                    let allowed = !requestedNeeded || (self.autoTranslateEnabled() && self.videoTranslateEnabled())
+                    if allowed {
+                        self.videoASRSetNeeded(requestedNeeded)
+                    }
                 }
-                if allowed {
-                    await MainActor.run { self.videoASRSetNeeded(requestedNeeded) }
-                }
+                return self.videoASRSnapshot()
             }
-            let snapshot = await MainActor.run { self.videoASRSnapshot() }
             self.queue.async {
-                self.send(.json(status: 200, object: snapshot.jsonObject()), on: connection, origin: origin)
+                self.send(
+                    .json(status: 200, object: snapshot.jsonObject()),
+                    on: connection,
+                    id: id,
+                    origin: origin,
+                    keepAlive: request.keepAlive,
+                    trailingBuffer: request.trailingBuffer
+                )
             }
         }
     }
@@ -739,25 +854,54 @@ public final class ExtensionBridgeServer: @unchecked Sendable {
         return Response(status: 204, contentType: "text/plain", body: Data(), origin: origin)
     }
 
-    private func send(_ response: Response, on connection: NWConnection, origin: String? = nil) {
+    private func send(
+        _ response: Response,
+        on connection: NWConnection,
+        id: ObjectIdentifier? = nil,
+        origin: String? = nil,
+        keepAlive: Bool = false,
+        trailingBuffer: Data = Data()
+    ) {
         var head = "HTTP/1.1 \(response.status) \(Self.statusText(response.status))\r\n"
         head += "Content-Type: \(response.contentType)\r\n"
         head += "Content-Length: \(response.body.count)\r\n"
-        head += "Connection: close\r\n"
+        if keepAlive {
+            head += "Connection: keep-alive\r\n"
+            head += "Keep-Alive: timeout=\(Int(Self.keepAliveTimeoutSeconds))\r\n"
+        } else {
+            head += "Connection: close\r\n"
+        }
         if response.cors {
             let allow = origin ?? response.origin
             let echoed = allow.flatMap { Self.allowedOrigins.contains($0) ? $0 : nil } ?? Self.allowedOrigin
             head += "Access-Control-Allow-Origin: \(echoed)\r\n"
             head += "Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n"
             head += "Access-Control-Allow-Headers: content-type\r\n"
+            head += "Access-Control-Max-Age: 86400\r\n"
             head += "Vary: Origin\r\n"
         }
         head += "\r\n"
-        var payload = Data(head.utf8)
-        payload.append(response.body)
-        connection.send(content: payload, completion: .contentProcessed { _ in
-            connection.cancel()
-        })
+        let headData = Data(head.utf8)
+        let completion: @Sendable (NWError?) -> Void = { [weak self] error in
+            guard let self else {
+                connection.cancel()
+                return
+            }
+            guard keepAlive, error == nil, let id, self.isConnectionTracked(id: id) else {
+                if let id { self.cleanupConnection(id: id) }
+                connection.cancel()
+                return
+            }
+            self.scheduleNextKeepAliveRequest(on: connection, id: id, buffer: trailingBuffer)
+        }
+        if response.body.isEmpty {
+            connection.send(content: headData, completion: .contentProcessed(completion))
+        } else {
+            connection.batch {
+                connection.send(content: headData, completion: .idempotent)
+                connection.send(content: response.body, completion: .contentProcessed(completion))
+            }
+        }
     }
 
     private static func statusText(_ status: Int) -> String {

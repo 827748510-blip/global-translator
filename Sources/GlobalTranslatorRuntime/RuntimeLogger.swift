@@ -45,6 +45,9 @@ public final class RuntimeLogger: @unchecked Sendable {
 
     private let lock = NSLock()
     private let timestampFormatter: ISO8601DateFormatter
+    private let encoder: JSONEncoder
+    private var fileDescriptor: Int32 = -1
+    private var currentBytes = 0
 
     public init(url: URL, maximumBytes: Int = 1_048_576, backupCount: Int = 3) throws {
         guard url.isFileURL, url.path.hasPrefix("/"), maximumBytes > 0, backupCount >= 0 else {
@@ -56,6 +59,9 @@ public final class RuntimeLogger: @unchecked Sendable {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         timestampFormatter = formatter
+        let jsonEncoder = JSONEncoder()
+        jsonEncoder.outputFormatting = [.sortedKeys]
+        encoder = jsonEncoder
 
         do {
             let parent = url.deletingLastPathComponent()
@@ -75,10 +81,16 @@ public final class RuntimeLogger: @unchecked Sendable {
                   (information.st_mode & S_IFMT) == S_IFREG else {
                 throw RuntimeError.invalidPath
             }
-            try FileManager.default.setAttributes(
-                [.posixPermissions: NSNumber(value: 0o600)],
-                ofItemAtPath: url.path
-            )
+            let fd = Darwin.open(url.path, O_WRONLY | O_APPEND | O_CLOEXEC | O_NOFOLLOW)
+            guard fd >= 0 else {
+                throw RuntimeError.ioFailure
+            }
+            if Darwin.fchmod(fd, mode_t(0o600)) != 0 {
+                Darwin.close(fd)
+                throw RuntimeError.ioFailure
+            }
+            self.fileDescriptor = fd
+            self.currentBytes = max(0, Int(information.st_size))
         } catch let error as RuntimeError {
             throw error
         } catch {
@@ -86,40 +98,44 @@ public final class RuntimeLogger: @unchecked Sendable {
         }
     }
 
+    deinit {
+        if fileDescriptor >= 0 {
+            Darwin.close(fileDescriptor)
+        }
+    }
+
     public func write(level: String, event: String, fields: [String: String] = [:]) throws {
         let safeFields = fields.reduce(into: [String: String]()) { result, pair in
             result[String(pair.key.prefix(64))] = RuntimeRedactor.redact(String(pair.value.prefix(2_048)))
         }
+        let safeLevel = String(level.prefix(32))
+        let safeEvent = RuntimeRedactor.redact(String(event.prefix(128)))
+
+        lock.lock()
+        defer { lock.unlock() }
         let record = LogRecord(
             timestamp: timestampFormatter.string(from: Date()),
-            level: String(level.prefix(32)),
-            event: RuntimeRedactor.redact(String(event.prefix(128))),
+            level: safeLevel,
+            event: safeEvent,
             fields: safeFields
         )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let encoded: Data
+        var encoded: Data
         do {
-            encoded = try encoder.encode(record) + Data([0x0A])
+            encoded = try encoder.encode(record)
+            encoded.append(0x0A)
         } catch {
             throw RuntimeError.ioFailure
         }
 
-        lock.lock()
-        defer { lock.unlock() }
         do {
-            let existingBytes = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
-            if existingBytes + encoded.count > maximumBytes {
+            if currentBytes + encoded.count > maximumBytes {
                 try rotateLocked()
             }
-            let handle = try FileHandle(forWritingTo: url)
-            try handle.seekToEnd()
-            try handle.write(contentsOf: encoded)
-            try handle.close()
-            try FileManager.default.setAttributes(
-                [.posixPermissions: NSNumber(value: 0o600)],
-                ofItemAtPath: url.path
-            )
+            if fileDescriptor < 0 {
+                try openFileDescriptorLocked()
+            }
+            try writeAllLocked(encoded, to: fileDescriptor)
+            currentBytes += encoded.count
         } catch let error as RuntimeError {
             throw error
         } catch {
@@ -131,7 +147,41 @@ public final class RuntimeLogger: @unchecked Sendable {
         try? write(level: level, event: event, fields: ["message": message])
     }
 
+    private func openFileDescriptorLocked() throws {
+        let fd = Darwin.open(url.path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, mode_t(0o600))
+        guard fd >= 0 else {
+            throw RuntimeError.ioFailure
+        }
+        _ = Darwin.fchmod(fd, mode_t(0o600))
+        var st = stat()
+        if Darwin.fstat(fd, &st) == 0 {
+            currentBytes = max(0, Int(st.st_size))
+        }
+        fileDescriptor = fd
+    }
+
+    private func writeAllLocked(_ data: Data, to fd: Int32) throws {
+        try data.withUnsafeBytes { rawBuffer in
+            guard let base = rawBuffer.baseAddress else { return }
+            var offset = 0
+            while offset < rawBuffer.count {
+                let written = Darwin.write(fd, base.advanced(by: offset), rawBuffer.count - offset)
+                if written > 0 {
+                    offset += written
+                } else if written < 0 && errno == EINTR {
+                    continue
+                } else {
+                    throw RuntimeError.ioFailure
+                }
+            }
+        }
+    }
+
     private func rotateLocked() throws {
+        if fileDescriptor >= 0 {
+            Darwin.close(fileDescriptor)
+            fileDescriptor = -1
+        }
         let manager = FileManager.default
         if backupCount > 0 {
             for index in stride(from: backupCount, through: 1, by: -1) {
@@ -148,12 +198,11 @@ public final class RuntimeLogger: @unchecked Sendable {
                     )
                 }
             }
+        } else if manager.fileExists(atPath: url.path) {
+            try manager.removeItem(at: url)
         }
-        manager.createFile(atPath: url.path, contents: Data())
-        try manager.setAttributes(
-            [.posixPermissions: NSNumber(value: 0o600)],
-            ofItemAtPath: url.path
-        )
+        currentBytes = 0
+        try openFileDescriptorLocked()
     }
 
     private func backupURL(_ index: Int) -> URL {

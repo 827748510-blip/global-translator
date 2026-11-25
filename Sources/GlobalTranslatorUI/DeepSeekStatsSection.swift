@@ -8,18 +8,46 @@ public final class DeepSeekStatsViewModel: ObservableObject {
     @Published public private(set) var snapshot: DeepSeekUsageSnapshot
 
     private let store: DeepSeekUsageStore
+    private let throttleMilliseconds: Int
     private var usageCancellable: AnyCancellable?
 
-    public init(store: DeepSeekUsageStore = .shared) {
+    public init(
+        store: DeepSeekUsageStore = .shared,
+        autoSubscribe: Bool = true,
+        throttleMilliseconds: Int = 0
+    ) {
         self.store = store
+        self.throttleMilliseconds = max(0, throttleMilliseconds)
         self.snapshot = store.snapshot()
-        usageCancellable = NotificationCenter.default
-            .publisher(for: .deepSeekUsageDidChange)
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                guard let self else { return }
-                self.snapshot = self.store.snapshot()
-            }
+        if autoSubscribe {
+            startObserving()
+        }
+    }
+
+    public func startObserving() {
+        snapshot = store.snapshot()
+        guard usageCancellable == nil else { return }
+        let base = NotificationCenter.default.publisher(for: .deepSeekUsageDidChange)
+        if throttleMilliseconds > 0 {
+            usageCancellable = base
+                .throttle(for: .milliseconds(throttleMilliseconds), scheduler: RunLoop.main, latest: true)
+                .sink { [weak self] _ in
+                    guard let self else { return }
+                    self.snapshot = self.store.snapshot()
+                }
+        } else {
+            usageCancellable = base
+                .receive(on: RunLoop.main)
+                .sink { [weak self] _ in
+                    guard let self else { return }
+                    self.snapshot = self.store.snapshot()
+                }
+        }
+    }
+
+    public func stopObserving() {
+        usageCancellable?.cancel()
+        usageCancellable = nil
     }
 }
 
@@ -30,7 +58,13 @@ struct DeepSeekStatsSection: View {
     @State private var isExpanded = false
 
     init(store: DeepSeekUsageStore = .shared) {
-        _viewModel = StateObject(wrappedValue: DeepSeekStatsViewModel(store: store))
+        _viewModel = StateObject(
+            wrappedValue: DeepSeekStatsViewModel(
+                store: store,
+                autoSubscribe: false,
+                throttleMilliseconds: 300
+            )
+        )
     }
 
     var body: some View {
@@ -82,6 +116,8 @@ struct DeepSeekStatsSection: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear { viewModel.startObserving() }
+        .onDisappear { viewModel.stopObserving() }
     }
 
     private var summaryText: String {

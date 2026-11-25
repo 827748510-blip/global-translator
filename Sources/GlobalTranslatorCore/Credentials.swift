@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Security
 
 public protocol CredentialStoring: Sendable {
@@ -11,6 +12,8 @@ public extension CredentialStoring {
     func save(_ apiKey: String) throws {
         try save(apiKey: apiKey)
     }
+
+    func invalidateCache() {}
 }
 
 public enum CredentialStoreError: Error, Equatable, Sendable {
@@ -39,6 +42,20 @@ public struct MacOSKeychainStore: CredentialStoring, Sendable {
     public static let defaultService = "com.maodashu.global-translator.deepseek"
     public static let defaultAccount = "default"
 
+    private struct CacheKey: Hashable, Sendable {
+        let service: String
+        let account: String
+    }
+
+    private struct CacheState: Sendable {
+        var keys: [CacheKey: String] = [:]
+        var missingCheckedAt: [CacheKey: TimeInterval] = [:]
+        var dataProtectionUnavailable = false
+    }
+
+    private static let cache = OSAllocatedUnfairLock(initialState: CacheState())
+    private static let missingCacheTTL: TimeInterval = 2.0
+
     public let service: String
     public let account: String
 
@@ -50,54 +67,111 @@ public struct MacOSKeychainStore: CredentialStoring, Sendable {
         self.account = account
     }
 
+    private var cacheKey: CacheKey {
+        CacheKey(service: service, account: account)
+    }
+
+    public func invalidateCache() {
+        let key = cacheKey
+        Self.cache.withLock { state in
+            state.keys.removeValue(forKey: key)
+            state.missingCheckedAt.removeValue(forKey: key)
+        }
+    }
+
     public func save(apiKey: String) throws {
         let normalized = try DeepSeekAPIKeyValidator.normalized(apiKey)
         guard let data = normalized.data(using: .utf8) else {
             throw CredentialStoreError.invalidValue
         }
-        do {
-            try write(data, useDataProtection: true)
-        } catch let error as CredentialStoreError {
-            guard case .keychainFailure(let status) = error,
-                  isDataProtectionUnavailable(status) else {
-                throw error
+        let dpUnavailable = Self.cache.withLock { $0.dataProtectionUnavailable }
+        if !dpUnavailable {
+            do {
+                try write(data, useDataProtection: true)
+                Self.cache.withLock { state in
+                    state.keys[cacheKey] = normalized
+                    state.missingCheckedAt.removeValue(forKey: cacheKey)
+                }
+                return
+            } catch let error as CredentialStoreError {
+                guard case .keychainFailure(let status) = error,
+                      isDataProtectionUnavailable(status) else {
+                    throw error
+                }
+                Self.cache.withLock { $0.dataProtectionUnavailable = true }
             }
-            // Only fall back to the login keychain when the process lacks the
-            // data-protection entitlement (e.g. local ad-hoc builds); surface
-            // other keychain failures directly instead of silently downgrading.
-            try write(data, useDataProtection: false)
-            let deleteStatus = SecItemDelete(baseQuery(useDataProtection: true) as CFDictionary)
-            guard deleteStatus == errSecSuccess
-                || deleteStatus == errSecItemNotFound
-                || isDataProtectionUnavailable(deleteStatus) else {
-                throw CredentialStoreError.keychainFailure(status: deleteStatus)
-            }
+        }
+        // Only fall back to the login keychain when the process lacks the
+        // data-protection entitlement (e.g. local ad-hoc builds); surface
+        // other keychain failures directly instead of silently downgrading.
+        try write(data, useDataProtection: false)
+        let deleteStatus = SecItemDelete(baseQuery(useDataProtection: true) as CFDictionary)
+        guard deleteStatus == errSecSuccess
+            || deleteStatus == errSecItemNotFound
+            || isDataProtectionUnavailable(deleteStatus) else {
+            throw CredentialStoreError.keychainFailure(status: deleteStatus)
+        }
+        Self.cache.withLock { state in
+            state.keys[cacheKey] = normalized
+            state.missingCheckedAt.removeValue(forKey: cacheKey)
         }
     }
 
     public func read() throws -> String? {
-        var dataProtectionError: Error?
-        do {
-            if let value = try copyMatching(useDataProtection: true) {
-                return value
+        let key = cacheKey
+        let now = ProcessInfo.processInfo.systemUptime
+        let snapshot = Self.cache.withLock { state -> (cached: String??, dpUnavailable: Bool) in
+            if let value = state.keys[key] {
+                return (.some(value), state.dataProtectionUnavailable)
             }
-        } catch let error as CredentialStoreError {
-            if case .keychainFailure(let status) = error, isDataProtectionUnavailable(status) {
-                // Expected for self-signed builds; fall through to login keychain.
-            } else {
+            if let missingAt = state.missingCheckedAt[key], now - missingAt < Self.missingCacheTTL {
+                return (.some(nil), state.dataProtectionUnavailable)
+            }
+            return (.none, state.dataProtectionUnavailable)
+        }
+        if let cached = snapshot.cached {
+            return cached
+        }
+
+        var dataProtectionError: Error?
+        var dpUnavailable = snapshot.dpUnavailable
+        if !dpUnavailable {
+            do {
+                if let value = try copyMatching(useDataProtection: true) {
+                    Self.cache.withLock { state in
+                        state.keys[key] = value
+                        state.missingCheckedAt.removeValue(forKey: key)
+                    }
+                    return value
+                }
+            } catch let error as CredentialStoreError {
+                if case .keychainFailure(let status) = error, isDataProtectionUnavailable(status) {
+                    dpUnavailable = true
+                    Self.cache.withLock { $0.dataProtectionUnavailable = true }
+                } else {
+                    dataProtectionError = error
+                }
+            } catch {
                 dataProtectionError = error
             }
-        } catch {
-            dataProtectionError = error
         }
         // Self-signed builds cannot read the data-protection keychain. Older
         // builds stored the secret in the file-based login keychain.
         do {
             guard let legacy = try copyMatching(useDataProtection: false) else {
                 if let dataProtectionError { throw dataProtectionError }
+                Self.cache.withLock { state in
+                    state.missingCheckedAt[key] = ProcessInfo.processInfo.systemUptime
+                }
                 return nil
             }
-            migrateLegacyItemToDataProtection(legacy)
+            if !dpUnavailable {
+                migrateLegacyItemToDataProtection(legacy)
+            }
+            Self.cache.withLock { state in
+                state.keys[key] = legacy
+                state.missingCheckedAt.removeValue(forKey: key)
+            }
             return legacy
         } catch let fallbackError {
             if let dataProtectionError { throw dataProtectionError }
@@ -106,7 +180,16 @@ public struct MacOSKeychainStore: CredentialStoring, Sendable {
     }
 
     public func delete() throws {
-        let dataProtectionStatus = SecItemDelete(baseQuery(useDataProtection: true) as CFDictionary)
+        let dpUnavailable = Self.cache.withLock { $0.dataProtectionUnavailable }
+        let dataProtectionStatus: OSStatus
+        if dpUnavailable {
+            dataProtectionStatus = errSecMissingEntitlement
+        } else {
+            dataProtectionStatus = SecItemDelete(baseQuery(useDataProtection: true) as CFDictionary)
+            if isDataProtectionUnavailable(dataProtectionStatus) {
+                Self.cache.withLock { $0.dataProtectionUnavailable = true }
+            }
+        }
         let legacyStatus = SecItemDelete(baseQuery(useDataProtection: false) as CFDictionary)
         let dataProtectionOK = dataProtectionStatus == errSecSuccess
             || dataProtectionStatus == errSecItemNotFound
@@ -115,6 +198,10 @@ public struct MacOSKeychainStore: CredentialStoring, Sendable {
         guard dataProtectionOK && legacyOK else {
             let status = dataProtectionOK ? legacyStatus : dataProtectionStatus
             throw CredentialStoreError.keychainFailure(status: status)
+        }
+        Self.cache.withLock { state in
+            state.keys.removeValue(forKey: cacheKey)
+            state.missingCheckedAt[cacheKey] = ProcessInfo.processInfo.systemUptime
         }
     }
 

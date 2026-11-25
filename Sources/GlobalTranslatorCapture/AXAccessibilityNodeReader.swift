@@ -38,35 +38,39 @@ public final class AXAccessibilityNodeReader: AccessibilityNodeReading, @uncheck
     ) -> AccessibilityNode? {
         guard budget > 0, clock() < deadline else { return nil }
         budget -= 1
-        let rawRole = attributeReader.role(of: element)
-        let rawSubrole = attributeReader.subrole(of: element)
-        let secure = rawRole == "AXTextField" && rawSubrole == "AXSecureTextField"
-        let frame = attributeReader.frame(of: element)
+        let attrs = attributeReader.batchAttributes(of: element)
+        let secure = attrs.role == "AXTextField" && attrs.subrole == "AXSecureTextField"
         if secure {
             return AccessibilityNode(
                 role: .textField,
-                frame: frame,
+                frame: attrs.frame,
                 isSecure: true,
                 coordinateSpace: .quartzTopLeft
             )
         }
+        if attrs.isHidden {
+            return AccessibilityNode(
+                role: mapRole(attrs.role),
+                frame: attrs.frame,
+                children: [],
+                isSecure: false,
+                isOffscreen: true,
+                coordinateSpace: .quartzTopLeft
+            )
+        }
         guard clock() < deadline else { return nil }
-        let value = attributeReader.value(of: element)
-        let title = attributeReader.title(of: element)
-        let description = attributeReader.description(of: element)
-        let hidden = attributeReader.isHidden(element)
         let children = attributeReader.children(of: element).compactMap {
             materialize($0, budget: &budget, deadline: deadline)
         }
         return AccessibilityNode(
-            role: mapRole(rawRole),
-            value: value,
-            title: title,
-            description: description,
-            frame: frame,
+            role: mapRole(attrs.role),
+            value: attrs.value,
+            title: attrs.title,
+            description: attrs.description,
+            frame: attrs.frame,
             children: children,
             isSecure: false,
-            isOffscreen: hidden,
+            isOffscreen: false,
             coordinateSpace: .quartzTopLeft
         )
     }
